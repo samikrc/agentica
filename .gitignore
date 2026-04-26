@@ -1,0 +1,20 @@
+# Folders from tools
+.idea/
+.vscode/
+.metals/
+.bloop/
+.bsp/
+.scala-build/
+.run/
+
+# Other folders
+target/
+bin/
+data/
+node_modules/
+restserver/src/main/scripts/
+
+# Files
+*.iml
+*.jar
+dev.conf

@@ -27,23 +27,26 @@ The application will:
 ## 3. High-Level Architecture
 
 ```text
-[ UI (Vanilla HTML/CSS/JS, SSE client) ]
-          ↓  (HTTP + SSE on 127.0.0.1, bearer-token auth)
-[ Tauri Shell (Rust) ]
-          ↓  (spawns sidecar, injects bearer token via env/stdin)
-[ Scala Backend (Sidecar, JVM) ]
-   ├── Session Management (SQLite via ScalaSQL)
-   ├── Agent Loop (custom, ~300 LOC — to be developed)
+[ Browser (any) — Vanilla HTML/CSS/JS, SSE client ]
+          ↓  (HTTP + SSE on localhost, bearer-token auth)
+[ Scala Backend (JVM fat-jar) ]
+   ├── Static file server (serves ui/ folder)
+   ├── Session Management (SQLite)
+   ├── Agent Loop (custom, ~300 LOC)
    ├── Virtual Shell Runtime (tokenizer-based DSL)
    ├── Tool Execution Layer (typed, whitelisted)
    ├── File System Access (sandboxed to user-selected roots)
-   ├── LLM Provider Abstraction (LlmProvider trait)
+   ├── LLM Provider Abstraction (LLMProvider trait)
    └── Observability (structured logs, trace IDs, token/cost accounting)
           ↓
 [ LLM Providers ]
-   ├── Local (Ollama — default, llama.cpp — power-user)
+   ├── Local (LM Studio / Ollama — OpenAI-compatible API)
    └── Cloud (OpenAI, Anthropic) — later phase
 ```
+
+**Distribution model**: The backend fat-jar serves both the API and the `ui/` static files.
+Users launch via `launch.bat` (Windows) or `launch.sh` (Linux/macOS), then open a browser.
+No Tauri, no Electron, no OS-specific packaging required for v1.
 
 ---
 
@@ -58,9 +61,10 @@ The application will:
 
 ### Desktop Layer
 
-* Tauri
-* Distribution via native OS-specific executables/installers (no portable mode)
-* **Primary target for v1: Windows**. macOS and Linux are supported by the stack but are not release targets for the initial milestone.
+* **v1: Browser-based** — no native shell required. The Scala backend serves the `ui/` folder as static files. Users open `http://localhost:8080` in any browser.
+* Distribution: a JVM fat-jar + `launch.bat` / `launch.sh`. Requires only a JDK on the user's machine.
+* **Primary target for v1: Windows** (via `launch.bat`). Linux and macOS work identically via `launch.sh`.
+* Tauri shell is retained in the `tauri/` directory for future packaging (native installer / system tray) but is not required for v1.
 
 ### Backend (Sidecar)
 
@@ -373,7 +377,29 @@ files.write path=out.txt content="..."
 
 Rationale: piping between tools forces a common intermediate representation (text vs structured values), which causes lossy conversions (e.g., Apache POI cell objects stringified into a `summarize` stage). Requiring explicit steps keeps each tool's I/O type clean and defers the pipeline/typed-value design to a later revision.
 
-**Output-capture variables (e.g., `$last`, `$1`, `$2`) are deferred.** A future revision may add executor-side substitution so the agent can reference prior results without re-emitting their text. Not in v1.
+**Output-capture variables (`$last`, `$1`, `$2`, ...) are deferred to Phase 2.** Design notes for when this is implemented:
+
+- Every `run()` stores its raw typed result in a **run context** — a short-lived in-memory map scoped to the current agent turn.
+- `$last` is always overwritten by the most recent `run()`. Named slots (`$1`, `$2`, ...) are bound explicitly via an `as=` argument.
+- The executor performs a **substitution pass** between tokenizing and dispatching: `value=$1` is resolved to the typed value in the run context before the target tool receives it. The agent emits the literal token `$1`; the file contents never travel through the conversation.
+- The receiving tool gets the **typed value directly** (e.g., `llm.summarize` receives `text: String` from `FileContent.text`) — no stringify/re-parse, which is what typed pipes would give without the pipeline syntax.
+
+Example agent turn with output-capture:
+
+```text
+run(command="files.read path=foo.txt as=$1")
+   → $1 = FileContent(text="...", lines=47)   [stored in run context]
+
+run(command="llm.summarize text=$1")
+   → $last = SummaryResult(text="...")         [$1 substituted by executor, not agent]
+
+run(command="files.write path=out.txt content=$last")
+   → done
+```
+
+Primary motivation: **token savings**. Without capture variables the agent must echo full file content back in its next message to pass it to `summarize`; for large files this consumes context budget and risks truncation. With `$last` the AgentResponse shows only a truncated preview; the full value lives in executor memory and is referenced by name.
+
+Implementation cost: ~50–80 extra LOC (substitution pass in the tokenizer, variable store threaded through the agent loop, error handling for unset/type-mismatch). Not in v1 because the LLM has no awareness of `$last` until it is trained into the system prompt; the token savings only materialise once golden scenarios confirm the benefit is real.
 
 ### Action Families
 
