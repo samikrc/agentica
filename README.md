@@ -49,7 +49,7 @@ Edit the top of `launch.sh` / `launch.bat` to set:
 cd backend
 AGENTICA_DEV_TOKEN=dev-token \
 AGENTICA_PORT=8080 \
-LLM_BASE_URL=http://172.23.64.1:1234 \
+LLM_BASE_URL=http://localhost:1234 \
 LLM_MODEL=mistralai/ministral-3-14b-reasoning \
 mvn compile exec:java
 ```
@@ -57,6 +57,8 @@ mvn compile exec:java
 #### Browser
 
 Open `http://localhost:8080/?token=dev-token`
+
+If the backend runs inside WSL and LM Studio runs on Windows, set `LLM_BASE_URL` to the Windows host IP reachable from WSL, for example `http://172.23.64.1:1234`.
 
 Hot-editing `ui/` JS/CSS files takes effect on the next browser refresh — no rebuild needed.
 
@@ -88,7 +90,10 @@ agentica/
 ├── docs/
 │   └── FTRD.md                          # Functional & Technical Requirements Document
 │
-├── ui/                                  # Tauri frontend (vanilla HTML/CSS/JS, no build step)
+├── launch.bat                           # Windows launcher for browser mode
+├── launch.sh                            # Linux/macOS launcher for browser mode
+│
+├── ui/                                  # Browser UI served directly by the backend
 │   ├── index.html
 │   ├── css/
 │   │   └── main.css
@@ -99,19 +104,12 @@ agentica/
 │       ├── debug.js                     # Debug pane (tool calls, iterations, latencies)
 │       └── api.js                       # HTTP wrapper with bearer-token injection
 │
-├── tauri/                               # Tauri shell (Rust)
-│   ├── Cargo.toml
-│   ├── tauri.conf.json
-│   └── src/
-│       ├── main.rs                      # App entry: spawn sidecar, generate bearer token
-│       └── sidecar.rs                   # Sidecar lifecycle: start/stop/port handshake
-│
-├── backend/                             # Scala 3 sidecar (Maven)
+├── backend/                             # Scala 3 local backend + static UI server (Maven)
 │   ├── pom.xml
 │   └── src/main/scala/agentica/
-│       ├── Main.scala                   # Entry point: read bearer token, start Cask server
+│       ├── BackendServer.scala          # Entry point: configure app, start Cask server
 │       ├── server/
-│       │   ├── Routes.scala             # Cask routes (chat, sessions, stream, runs)
+│       │   ├── Routes.scala             # Static UI, chat, sessions, stream, runs
 │       │   └── Auth.scala               # Bearer-token middleware
 │       ├── session/
 │       │   ├── SessionStore.scala       # ScalaSQL: sessions CRUD
@@ -120,7 +118,7 @@ agentica/
 │       │   └── Models.scala             # Case classes: Session, Message, ToolRun
 │       ├── agent/
 │       │   ├── AgentEngine.scala        # trait AgentEngine (pluggable)
-│       │   ├── AgentLoop.scala          # Custom plan→act→observe loop (~300 LOC)
+│       │   ├── AgentLoop.scala          # Phase 1 single-call streaming loop
 │       │   └── ContextManager.scala     # Sliding window, token budget, summarization
 │       ├── shell/
 │       │   ├── VirtualShell.scala       # run() entry point; dispatches via registry
@@ -151,10 +149,10 @@ agentica/
 │       │       ├── PptAddSlide.scala
 │       │       └── PptToImages.scala    # Sealed soffice wrapper
 │       ├── llm/
-│       │   ├── LlmProvider.scala        # trait LlmProvider (stream / complete)
-│       │   ├── OllamaProvider.scala     # Default local provider
-│       │   ├── LlamaCppProvider.scala   # Power-user local provider (Phase 3)
-│       │   └── OpenAiProvider.scala     # Cloud provider (Phase 3)
+│       │   ├── LLMProvider.scala        # trait LLMProvider (stream / complete)
+│       │   ├── OpenAIProvider.scala     # OpenAI-compatible provider (LM Studio)
+│       │   ├── OllamaProvider.scala     # Ollama provider
+│       │   └── LlamaCppProvider.scala   # Power-user local provider (Phase 3)
 │       ├── permissions/
 │       │   └── ScopeStore.scala         # Scoped grants: (tool-set, path-prefix, TTL)
 │       ├── observability/
@@ -162,20 +160,14 @@ agentica/
 │       │   └── TokenAccounting.scala    # Per-call token/cost recording
 │       └── platform/
 │           └── AppDirs.scala            # OS-specific data dir resolution
-│
-├── scenarios/                           # Golden scenarios catalog (§15c of FTRD)
-│   └── README.md
-│
-└── scripts/
-    ├── package-windows.sh               # jlink + jpackage → Windows .msi
-    └── dev-sidecar.sh                   # Run sidecar standalone for curl/browser dev
 ```
 
 ### Key structural notes
 
 - **`ui/api.js`** — only file that knows the bearer token and HTTP base URL; all other JS calls through it.
-- **`tauri/src/sidecar.rs`** — owns the port-handshake protocol: sidecar prints `PORT=<n>` to stdout on startup, Tauri reads it before opening the window.
+- **`backend/BackendServer.scala`** — owns runtime configuration, including HTTP port, bind host, LLM provider, data directory, and `AGENTICA_UI_ROOT`.
+- **`backend/server/Routes.scala`** — serves both static browser assets and authenticated REST/SSE APIs.
 - **`backend/shell/`** — virtual shell is a self-contained package: `Tokenizer` → `CommandAst` → `CommandRegistry` dispatch → `Presentation` envelope. Each stage is independently unit-testable.
 - **`backend/tools/`** — one file per tool, grouped by action family. `CommandRegistry` is the only place that enumerates the full tool list.
 - **`backend/agent/`** — `AgentEngine` trait keeps the loop swappable; `ContextManager` evolves independently of loop control flow.
-- **`scenarios/`** — at repo root, tooling-agnostic; consumed by integration tests and CI.
+- **Future desktop mode** — should be a JavaFX WebView thin launcher that loads the same backend-served UI, not a separate UI rewrite.

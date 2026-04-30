@@ -1,9 +1,8 @@
 /**
  * api.js — HTTP wrapper with bearer-token injection.
  * All other JS modules call through this file only.
- * Token is injected by Tauri via window.__AGENTICA_TOKEN__ at startup.
- * In dev mode (plain browser), set window.__AGENTICA_TOKEN__ manually or
- * via a <script> tag before api.js loads.
+ * main.js initializes this module with the backend origin and bearer token
+ * parsed from the browser URL.
  */
 
 const Api = (() => {

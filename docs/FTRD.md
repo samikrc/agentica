@@ -1,12 +1,12 @@
-# AI Desktop Assistant (Claude Cowork-like) — Requirements & Architecture
+# Agentica — Local AI Assistant Requirements & Architecture
 
 ## 1. Overview
 
-This document defines the functional requirements, technical architecture, and key design decisions for building a cross-platform desktop AI assistant application similar to Claude Cowork.
+This document defines the functional requirements, technical architecture, and key design decisions for building a local-first AI assistant application similar to Claude Cowork.
 
 The application will:
 
-* Run as a desktop app (Windows, macOS, Linux)
+* Run locally via a Scala backend that serves a browser UI
 * Use local and cloud LLMs
 * Operate on user-selected local folders
 * Provide chat-based and agent-driven workflows
@@ -64,9 +64,9 @@ No Tauri, no Electron, no OS-specific packaging required for v1.
 * **v1: Browser-based** — no native shell required. The Scala backend serves the `ui/` folder as static files. Users open `http://localhost:8080` in any browser.
 * Distribution: a JVM fat-jar + `launch.bat` / `launch.sh`. Requires only a JDK on the user's machine.
 * **Primary target for v1: Windows** (via `launch.bat`). Linux and macOS work identically via `launch.sh`.
-* Tauri shell is retained in the `tauri/` directory for future packaging (native installer / system tray) but is not required for v1.
+* A JavaFX WebView "thin launcher" is the preferred future packaged mode: it should wrap the same browser UI rather than rewrite it.
 
-### Backend (Sidecar)
+### Backend
 
 * Scala 3
 * HTTP server — Li Haoyi's **Cask** (with hand-rolled SSE endpoints; Cask does not provide first-class SSE helpers, but chunked responses are straightforward)
@@ -76,53 +76,44 @@ No Tauri, no Electron, no OS-specific packaging required for v1.
 
 ### Agent Engine
 
-* **Custom agent loop written in Scala** (estimated ~300 LOC for the initial plan→act→observe loop). **To be developed** — see §9.
+* **Custom agent loop written in Scala**. Phase 1 has a single-call streaming loop; Phase 2 expands it into the full plan→act→observe loop with tool dispatch — see §9.
 * Google ADK was considered and **dropped for v1**. Rationale: ADK's value-add shrinks when the tool surface is a single `run()` command backed by a virtual shell (§10). ADK would drag in gRPC/Guava/Protobuf and constrain the loop to Google's abstractions for little benefit. A purpose-built loop is small, debuggable, and keeps the project dependency-light.
 
 ### LLM Integration
 
-* **Local (default): Ollama** — chosen for its built-in model management, OpenAI-compatible HTTP API, and automatic GPU selection. Reduces first-run friction for end users.
+* **Local (current primary): LM Studio / OpenAI-compatible API** — used for the current development flow and compatible with locally hosted OpenAI-style `/v1/chat/completions` servers.
+* **Local (also supported): Ollama** — useful for users who prefer Ollama's model management and local runtime.
 * **Local (power-user): llama.cpp** — direct integration for users who want fine-grained control (custom quantization, non-Ollama models, lower overhead).
 * **Cloud**: OpenAI / Anthropic APIs (later phase).
 * All providers sit behind a single `LlmProvider` Scala trait so the agent loop and context manager are provider-agnostic.
 
 ### Build & Packaging
 
-* **Maven** for the Scala backend. Maven's incremental compilation is adequate for a single-module sidecar, and the team is already comfortable with it; avoiding sbt/Mill keeps the build surface familiar.
-* **`jlink` + `jpackage`** for distribution: produce a minimal custom JRE containing only the modules the sidecar needs, then let `jpackage` wrap it into OS-native installers. A shaded fat-jar + bundled JRE is an acceptable alternative during development.
-* **GraalVM native-image is explicitly NOT used** in v1. Rationale: the backend depends on Apache POI (heavy reflection) and the JVM ecosystem generally; native-image would require extensive reachability metadata and risks silent runtime failures. `jlink`/`jpackage` gives us a self-contained native installer without those hazards. Native-image may be revisited as a future optimization.
+* **Maven** for the Scala backend. Maven's incremental compilation is adequate for a single-module JVM application, and the team is already comfortable with it; avoiding sbt/Mill keeps the build surface familiar.
+* **Shaded fat-jar** for the current distribution model. The jar serves both the REST/SSE API and the static `ui/` assets.
+* **JavaFX WebView launcher** is the preferred next packaging experiment. It should be a thin shell that loads the existing backend-served UI, preserving the browser-based development loop.
+* **`jlink` + `jpackage`** remain future options for producing self-contained OS-native installers with a bundled runtime.
+* **GraalVM native-image is explicitly NOT used** in v1. Rationale: the backend depends on Apache POI (heavy reflection) and the JVM ecosystem generally; native-image would require extensive reachability metadata and risks silent runtime failures.
 
 ---
 
-## 4.1 Deployment Model (Executable Mode Only)
+## 4.1 Deployment Model
 
-The application is distributed exclusively as a native executable application using OS-specific packaging.
+The v1 deployment model is browser-first:
 
-Supported formats:
+* Run the Scala backend as a JVM process.
+* The backend serves both the static UI and the REST/SSE API.
+* Users open `http://localhost:<port>/?token=<token>` in a browser.
+* `launch.bat` and `launch.sh` provide a convenient local startup path.
 
-* **Windows (primary v1 target)**: `.exe` / `.msi` produced via `jpackage`
-* macOS: `.app` bundle / `.dmg` (future)
-* Linux: AppImage / `.deb` / `.rpm` (future)
+The preferred packaged-mode experiment is a JavaFX WebView thin launcher:
 
-Portable (run-from-folder) mode is explicitly NOT supported.
+* The JavaFX shell opens a desktop window.
+* It loads the same backend-served `ui/` over local HTTP.
+* It must not duplicate session, chat, rendering, or backend logic.
+* It can later provide native integrations such as a full-path folder picker bridge.
 
-### Rationale
-
-* Ensures alignment with OS conventions and security models
-* Avoids platform inconsistencies (especially macOS bundle restrictions)
-* Enables better integration with OS-level features (permissions, updates, sandboxing)
-
-### Code Signing & Notarization
-
-* **Windows**: the `.exe`/`.msi` must be signed with an Authenticode certificate to avoid SmartScreen warnings. The bundled JRE's DLLs inherit the installer's signature when shipped inside the `.msi`.
-* **macOS (future)**: the bundled JRE's `.dylib` files must each be signed, and the resulting `.app` must be notarized by Apple. This is non-trivial and should be planned before the macOS release.
-* **Linux (future)**: no mandatory signing; optional GPG signing of `.deb`/`.rpm` for repositories.
-
-### Auto-Update (Phase 1)
-
-* Use **Tauri's built-in updater plugin** for delivering signed updates.
-* Release artifacts and update manifests are published to a controlled distribution endpoint (e.g., GitHub Releases) and verified via public-key signature before install.
-* Rationale: shipping updates is a Phase 1 requirement because the agent loop, tool surface, and prompts will evolve rapidly; relying on users to manually reinstall is not viable.
+Native installers are deferred. `jlink`/`jpackage`, code signing, notarization, and update delivery should be revisited once the browser mode and JavaFX shell are stable.
 
 ### Data Storage Model
 
@@ -225,42 +216,44 @@ All components must resolve paths via a configurable BASE_DIR abstraction.
 * Session persistence (SQLite via ScalaSQL)
 * Context management (sliding window, summarization, RAG) — design TBD, see §13
 * Model routing (local vs cloud) via `LlmProvider` trait
-* **Agent orchestration (custom Scala loop — to be developed; see §9)**
+* **Agent orchestration (Phase 1 single-call loop; Phase 2 plan→act→observe loop; see §9)**
 * Virtual shell runtime (command parsing + execution)
 * Tool execution with validation and permission gating
 * File system access (sandboxed, no direct shell)
 * LLM API integration (connectors + streaming)
 * Resolve storage paths via OS-specific base directory (no relative executable storage)
-* Observability: structured logs + trace IDs spanning UI → sidecar → LLM → tool
+* Observability: structured logs + trace IDs spanning UI → backend → LLM → tool
 * Token and cost accounting per session
 
 ---
 
-## 8. Sidecar Pattern
+## 8. Local HTTP App Pattern
 
-- Scala backend runs as a separate executable (the JVM runtime is bundled via `jlink`/`jpackage`).
-- Tauri launches it at app startup and terminates it on app shutdown.
-- Communication via **HTTP + SSE on `127.0.0.1`**. The listening port is chosen from the ephemeral range at launch and passed back to the Tauri shell via the sidecar's stdout handshake.
+- Scala backend runs as the main local JVM application.
+- It serves both the browser UI and the API from the same origin.
+- Communication uses **HTTP + SSE on localhost** with bearer-token authentication.
+- In browser-development mode, the user launches the backend directly and opens the browser manually.
+- In future packaged mode, a JavaFX WebView thin launcher may start or embed the backend and load the same local URL.
 
 ### Local Transport Security
 
-A bare localhost port is still reachable by any local process/user. To mitigate:
+A bare local HTTP port is still reachable by other local processes, and may be reachable on the network if bound to all interfaces. To mitigate:
 
-- Sidecar **binds only to `127.0.0.1`** (never `0.0.0.0`).
-- On each launch, Tauri generates a **cryptographically random per-launch bearer token** and passes it to the sidecar via environment variable (or stdin on startup).
-- Every HTTP/SSE request from the UI must carry this token in an `Authorization: Bearer <token>` header. Requests without the token are rejected with `401`.
-- The token is never written to disk; it exists only in the parent (Tauri) and child (sidecar) process memory.
+- The bind host must be configurable. Browser development on WSL may use `0.0.0.0`; packaged desktop mode should prefer `127.0.0.1`.
+- Each launch should use a bearer token supplied through environment variables or generated by the launcher.
+- Every API/SSE request from the UI must carry this token in an `Authorization: Bearer <token>` header. Requests without the token are rejected with `401`.
+- The token should not be written to disk.
 
 ### Benefits
-- Language flexibility (Rust for desktop shell, Scala for heavy backend logic)
-- Clean separation of concerns
-- Easier debugging (the sidecar can be run standalone against a browser or curl for backend development)
+- Clean separation between browser UI, HTTP API, agent orchestration, and tool execution
+- Fast browser refresh loop for UI development
+- Straightforward packaged path via a thin JavaFX WebView launcher without rewriting the UI
 
 ---
 
-## 9. Agent Loop (Custom, To Be Developed)
+## 9. Agent Loop
 
-The system will use a **custom Scala agent loop** rather than a third-party framework.
+The system uses a **custom Scala agent loop** rather than a third-party framework.
 
 ### Rationale
 
@@ -269,7 +262,7 @@ The system will use a **custom Scala agent loop** rather than a third-party fram
 - Avoids pulling in heavy transitive dependencies (gRPC, Guava, Protobuf) that Google ADK would introduce.
 - Keeps the project aligned with the local-first, dependency-light design ethos.
 
-> **Status: to be developed.** This is a net-new component, not a wrapper around an existing library.
+> **Status:** Phase 1 implements a single streaming LLM turn so the UI, persistence, observability, and SSE pipeline are exercised. Phase 2 replaces/extends this with the full plan→act→observe loop and virtual shell dispatch.
 
 ### Responsibilities of the Agent Loop
 
@@ -529,7 +522,7 @@ The system will support reading, writing, and updating Microsoft Office document
 - POI uses significant memory for large `.xlsx` / `.docx` files. Reads of large workbooks should use the **XSSF event (SAX) API**; writes of large workbooks should use **SXSSF** streaming.
 - POI's `.doc`/`.xls` (binary, pre-2007) support is lossy for round-trip edits. v1 targets only the Office Open XML formats (`.docx`, `.pptx`, `.xlsx`).
 - Chart and embedded-object support is partial; complex documents may lose fidelity on write.
-- POI is heavily reflective — this is another reason `jlink`/`jpackage` is used instead of GraalVM native-image (§4).
+- POI is heavily reflective — this is another reason the JVM runtime is preferred over GraalVM native-image (§4).
 
 ---
 
@@ -663,9 +656,10 @@ Higher-level intent commands (e.g., "add a derived column") are **deferred**. An
   - File modifications  
   - Tool execution  
 
-### 12.2 Tauri Restrictions
-- File system scope limitation  
-- Disable shell execution by default  
+### 12.2 UI / Launcher Restrictions
+- Browser mode cannot expose absolute filesystem paths through the web folder picker; users can paste or edit the selected root path manually.
+- A future JavaFX WebView launcher may provide a native folder picker bridge that returns full local paths to the existing web UI.
+- The UI must not execute shell commands directly; all local effects flow through authenticated backend APIs and whitelisted tools.
 
 ### 12.3 Backend Sandbox
 - Strict tool abstraction (no arbitrary commands)
@@ -696,8 +690,8 @@ Higher-level intent commands (e.g., "add a derived column") are **deferred**. An
   - Windows: Credential Manager
   - macOS: Keychain
   - Linux: libsecret / Secret Service API
-- Access is brokered through a Tauri plugin; the Scala sidecar requests secrets by name over the local HTTP channel and never persists them to SQLite or disk.
-- **Note**: v1 targets local LLM usage only (Ollama / llama.cpp), so secrets storage is implemented but lightly exercised in v1. Cloud providers arrive in a later phase.
+- Access should be brokered by the backend or future desktop launcher integration; secrets must not be persisted to SQLite or ordinary files.
+- **Note**: v1 targets local LLM usage primarily (LM Studio / Ollama), so OS-keychain-backed secrets are deferred until cloud providers arrive in a later phase.
 
 ---
 
@@ -754,7 +748,7 @@ All tool implementations follow the two-layer model from §10 (clean execution l
 
 ## 15a. Observability
 
-- **Structured logs** (JSON lines) with a shared `traceId` propagated across UI → sidecar → LLM calls → tool invocations, enabling end-to-end reconstruction of a single user turn.
+- **Structured logs** (JSON lines) with a shared `traceId` propagated across UI → backend → LLM calls → tool invocations, enabling end-to-end reconstruction of a single user turn.
 - **Debug pane in the UI** showing, for the current session: each iteration of the agent loop, every tool call (input + output + duration), and LLM latency/token counts. This is the single highest-leverage developer/user feature for an agent app.
 - Log output paths follow the OS data-directory conventions (§4.1) and rotate on size.
 
@@ -768,8 +762,8 @@ All tool implementations follow the two-layer model from §10 (clean execution l
 
 - **Unit tests**: execution-layer tool implementations, presentation-layer envelope rendering, DSL tokenizer, context manager, `LlmProvider` adapters (against recorded fixtures). Execution and presentation layers are tested independently.
 - **Agent-loop replay tests**: record real LLM interactions once, replay deterministically against fixtures. Ensures prompt/tool changes can be reviewed via diffs on expected traces.
-- **Integration tests**: spin up the sidecar, hit it over HTTP+SSE with a test bearer token, run end-to-end scenarios against a mock `LlmProvider`.
-- **UI smoke tests**: basic DOM-level checks that SSE events render correctly; full E2E (Tauri + UI + sidecar) deferred.
+- **Integration tests**: spin up the backend, hit it over HTTP+SSE with a test bearer token, run end-to-end scenarios against a mock `LlmProvider`.
+- **UI smoke tests**: basic DOM-level checks that SSE events render correctly; JavaFX WebView smoke tests are added once the thin launcher exists.
 
 ### Golden Scenarios Catalog
 
@@ -802,20 +796,20 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 | Area | Decision |
 |------|--------|
 | UI | Vanilla HTML/CSS/JS, SSE transport |
-| Desktop Framework | Tauri (primary v1 target: Windows) |
-| Backend | Scala 3 sidecar, Cask HTTP server |
+| Desktop Framework | Browser-first v1; JavaFX WebView thin launcher planned for packaged mode |
+| Backend | Scala 3 local JVM app, Cask HTTP server |
 | Concurrency | Direct-style + JDK 21 virtual threads (Loom) |
-| Communication | HTTP + SSE on `127.0.0.1`, per-launch bearer token |
-| Agent Engine | **Custom Scala loop (~300 LOC, to be developed)** — ADK dropped |
+| Communication | HTTP + SSE on localhost, bearer-token auth |
+| Agent Engine | Custom Scala loop: Phase 1 single-call streaming; Phase 2 plan→act→observe; ADK dropped |
 | Execution Model | Virtual shell, two-layer (execution + presentation), action families, AgentResponse envelope; no pipelines in v1; `commit()` deferred |
 | DSL Parser | Hand-written tokenizer |
 | Storage | SQLite via ScalaSQL; manual schema management for now |
-| LLM Support | Local: Ollama (default) + llama.cpp (power-user); Cloud: later |
+| LLM Support | Local: LM Studio/OpenAI-compatible primary + Ollama supported; llama.cpp/cloud later |
 | Office Handling | Apache POI (Word, PowerPoint); **Excel deferred** |
 | Security | Multi-layer sandboxing + scoped permissions + OS keychain |
 | Build | Maven |
-| Packaging | `jlink` + `jpackage` (not GraalVM native-image) |
-| Updates | Tauri updater plugin (Phase 1) |
+| Packaging | Shaded fat-jar now; JavaFX WebView launcher next; `jlink`/`jpackage` deferred |
+| Updates | Deferred until packaged mode stabilizes |
 | Observability | Structured logs, trace IDs, token/cost accounting, debug pane |
 
 ---
@@ -832,12 +826,17 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 
 ### Phase 1 (MVP)
 - Basic chat UI (vanilla HTML/CSS/JS, SSE)
-- Tauri shell + Scala sidecar with bearer-token auth
+- Scala backend serving browser UI + API with bearer-token auth
 - SQLite session storage via ScalaSQL
-- Local LLM integration (Ollama default)
-- `jlink`/`jpackage` Windows installer
-- Tauri auto-updater wired up
+- Local LLM integration (LM Studio / OpenAI-compatible API; Ollama also supported)
+- Shaded fat-jar and launch scripts (`launch.bat`, `launch.sh`)
 - Structured logging + token/cost accounting scaffolding
+
+### Phase 1.5
+- JavaFX WebView thin launcher that loads the existing backend-served UI
+- Validate WebView compatibility with chat, SSE, modals, scrolling, and debug pane
+- Optional native folder-picker bridge for packaged mode
+- Per-OS packaging exploration after launcher compatibility is proven
 
 ### Phase 2
 - Custom agent loop (§9) — the ~300 LOC plan→act→observe implementation
@@ -853,7 +852,7 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 - Office document tools (Word, PowerPoint via POI; LibreOffice sealed wrapper)
 - llama.cpp provider as power-user option
 - Cloud LLM providers (OpenAI, Anthropic) + OS-keychain secrets
-- macOS packaging + notarization
+- Native packaging + signing/notarization exploration after JavaFX launcher stabilizes
 
 ### Phase 4
 - RAG (file indexing + retrieval)

@@ -120,7 +120,7 @@ class Routes(
     }
 
     // --- Health ---
-    /** Returns `{"status":"ok"}` — used by the Tauri shell to confirm the sidecar is up. */
+    /** Returns `{"status":"ok"}` for launchers and smoke checks. */
     @cask.route("/health", methods = Seq("get", "options"))
     def health(request: Request): Response[Response.Data] =
     {

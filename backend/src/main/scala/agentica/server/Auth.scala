@@ -3,8 +3,8 @@ package agentica.server
 import cask.Request
 
 /** Bearer-token middleware.
- *  In production: token is set by Tauri via AGENTICA_TOKEN env var.
- *  In dev mode:   AGENTICA_DEV_TOKEN is accepted as a fallback (see dev-sidecar.sh).
+ *  Packaged launchers should provide AGENTICA_TOKEN.
+ *  Browser/dev mode can use AGENTICA_DEV_TOKEN as a fallback.
  */
 object Auth
 {

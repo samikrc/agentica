@@ -10,15 +10,15 @@ import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import java.net.ServerSocket
 import java.nio.file.{Path, Paths}
 
-/** Application entry point for the Agentica backend sidecar.
- *  Initialises the database, wires dependencies, prints the port handshake line
- *  (`PORT=<n>`) for the Tauri shell to read, then starts the Cask HTTP server.
+/** Application entry point for the Agentica local backend.
+ *  Initialises the database, wires dependencies, prints the selected port,
+ *  then starts the Cask HTTP server.
  */
 object BackendServer extends cask.Main 
 {
     // Required for HttpClient to send the Connection header (used by OpenAIProvider).
     // Must be set before any HttpClient is constructed; doing it here covers all launch modes
-    // (mvn exec:java, fat-jar sidecar, tests) without relying on JVM command-line flags.
+    // (mvn exec:java, fat-jar, tests) without relying on JVM command-line flags.
     System.setProperty("jdk.httpclient.allowRestrictedHeaders", "connection")
 
     /** Binds a [[java.net.ServerSocket]] on port 0 to let the OS pick a free port,
@@ -73,14 +73,14 @@ object BackendServer extends cask.Main
     val uiRoot: Path  = Paths.get(sys.env.getOrElse("AGENTICA_UI_ROOT", "../ui")).toAbsolutePath.normalize()
 
     // --- Logging startup ---
-    TraceLogger.info("-", "sidecar_start", Map(
+    TraceLogger.info("-", "backend_start", Map(
         "port"     -> port.toString,
         "db"       -> AppDirs.dbPath.toString,
         "provider" -> llmProvider,
         "model"    -> llm.modelName
     ))
 
-    // --- Announce port to Tauri (port handshake protocol) ---
+    // --- Announce selected port for launch scripts and future launchers ---
     println(s"Starting backend on PORT=$port")
     System.out.flush()
 
