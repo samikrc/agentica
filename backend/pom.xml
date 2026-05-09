@@ -17,6 +17,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <mainClass>agentica.BackendServer</mainClass>
         <exec.mainClass>agentica.BackendServer</exec.mainClass>
+        <javafx.version>25</javafx.version>
+        <javafx.platform>linux</javafx.platform>
     </properties>
 
     <dependencies>
@@ -71,10 +73,33 @@
             <artifactId>HikariCP</artifactId>
             <version>7.0.2</version>
         </dependency>
+
+        <!-- ScalaTest: unit and integration tests -->
+        <dependency>
+            <groupId>org.scalatest</groupId>
+            <artifactId>scalatest_3</artifactId>
+            <version>3.2.19</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JavaFX -->
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-controls</artifactId>
+            <version>${javafx.version}</version>
+            <classifier>${javafx.platform}</classifier>
+        </dependency>
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-web</artifactId>
+            <version>${javafx.version}</version>
+            <classifier>${javafx.platform}</classifier>
+        </dependency>
     </dependencies>
 
     <build>
         <sourceDirectory>src/main/scala</sourceDirectory>
+        <testSourceDirectory>src/test/scala</testSourceDirectory>
         <plugins>
             <!-- Scala compiler -->
             <plugin>

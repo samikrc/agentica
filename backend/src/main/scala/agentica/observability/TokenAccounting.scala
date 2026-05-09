@@ -11,6 +11,11 @@ import java.util.UUID
 class TokenAccounting(runStore: RunStore)
 {
 
+    /** Persists LLM usage and emits a structured completion log event.
+     *  @param traceId    Trace identifier for the agent turn.
+     *  @param sessionId  Session identifier associated with the LLM call.
+     *  @param usage      Provider-reported usage and latency values.
+     */
     def record(traceId: String, sessionId: String, usage: LLMUsage): Unit =
     {
         val row = TokenUsage(

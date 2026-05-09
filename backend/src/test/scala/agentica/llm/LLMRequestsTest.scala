@@ -4,7 +4,8 @@ import ujson.*
 import requests.*
 import java.util.concurrent.{Executors, TimeUnit, TimeoutException}
 
-/** Manual integration test against a locally running LM Studio instance.
+/**
+ *  Manual integration test against a locally running LM Studio instance.
  *  Run with:
  *   LLM_BASE_URL=http://172.23.64.1:1234 \
  *   LLM_MODEL=mistralai/ministral-3-14b-reasoning \

@@ -14,6 +14,10 @@ object Auth
             .orElse(sys.env.get("AGENTICA_DEV_TOKEN"))
             .getOrElse(throw RuntimeException("Neither AGENTICA_TOKEN nor AGENTICA_DEV_TOKEN is set"))
 
+    /** Validates the request's `Authorization: Bearer ...` header.
+     *  @param request  Incoming HTTP request.
+     *  @return         [[Right]] when authorized, otherwise [[Left]] with an error message.
+     */
     def validate(request: Request): Either[String, Unit] =
     {
         request.headers.get("authorization").flatMap(_.headOption) match

@@ -5,6 +5,7 @@ import agentica.llm.{OllamaProvider, OpenAIProvider}
 import agentica.observability.{TokenAccounting, TraceLogger}
 import agentica.platform.AppDirs
 import agentica.server.Routes
+import agentica.settings.SettingsStore
 import agentica.session.{MessageStore, RunStore, SessionStore}
 import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import java.net.ServerSocket
@@ -47,12 +48,14 @@ object BackendServer extends cask.Main
     val sessionStore = SessionStore(conn)
     val messageStore = MessageStore(conn)
     val runStore     = RunStore(conn)
+    val settingsStore = SettingsStore(AppDirs.settingsPath)
 
     sessionStore.init()
     messageStore.init()
     runStore.init()
 
-    // --- Dependencies ---
+    // --- Settings + Dependencies ---
+    val settings      = settingsStore.load()
     val llmProvider   = sys.env.getOrElse("LLM_PROVIDER", "openai")
     val llm           = llmProvider match
     {
@@ -61,10 +64,11 @@ object BackendServer extends cask.Main
             val model   = sys.env.getOrElse("OLLAMA_MODEL", "llama3.2")
             OllamaProvider(baseUrl = baseUrl, modelName = model)
         case _ =>
-            val baseUrl = sys.env.getOrElse("LLM_BASE_URL", "http://localhost:1234")
-            val model   = sys.env.getOrElse("LLM_MODEL", "local-model")
-            val apiKey  = sys.env.getOrElse("LLM_API_KEY", "lm-studio")
-            OpenAIProvider(baseUrl = baseUrl, modelName = model, apiKey = apiKey)
+            OpenAIProvider(
+                baseUrl   = settings.serverUrl,
+                modelName = settings.modelName,
+                apiKey    = sys.env.getOrElse("LLM_API_KEY", "lm-studio")
+            )
     }
     val accounting    = TokenAccounting(runStore)
     val agentEngine   = AgentLoop(llm, messageStore, accounting)
@@ -85,6 +89,6 @@ object BackendServer extends cask.Main
     System.out.flush()
 
     // --- Start HTTP server ---
-    override val allRoutes = Seq(Routes(sessionStore, messageStore, runStore, agentEngine, uiRoot))
+    override val allRoutes = Seq(Routes(sessionStore, messageStore, runStore, settingsStore, agentEngine, uiRoot))
     TraceLogger.info("-", "http_server_start", Map("port" -> port.toString))
 }

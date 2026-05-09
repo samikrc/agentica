@@ -1,6 +1,6 @@
 /**
  * chat.js — Chat rendering and SSE stream management.
- * Depends on: api.js, debug.js
+ * Depends on: api.js
  */
 
 const Chat = (() => {
@@ -20,7 +20,6 @@ const Chat = (() => {
     messagesEl.innerHTML = '';
     inputEl.disabled     = !session;
     btnSend.disabled     = !session;
-    Debug.clear();
 
     if (session) loadHistory();
   }
@@ -59,7 +58,6 @@ const Chat = (() => {
     inputEl.disabled = true;
     btnSend.disabled = true;
     btnCancel.style.display = 'inline-block';
-    Debug.clear();
 
     appendMessage('user', content);
     const asstBubble = appendMessage('assistant', '');
@@ -76,29 +74,25 @@ const Chat = (() => {
     }
 
     _activeRunId = result.runId;
-    Debug.append('run_start', { runId: result.runId, traceId: result.traceId });
 
     _activeStream = Api.stream(`/sessions/${_sessionId}/stream/${result.runId}`, {
       onToken: tok => {
         asstBubble.textContent += tok;
         messagesEl.scrollTop    = messagesEl.scrollHeight;
       },
-      onIteration: d => Debug.append('iteration', d),
-      onToolStart:  d => Debug.append('tool_start', d),
-      onToolResult: d => Debug.append('tool_result', d),
+      onIteration: d => {},
+      onToolStart:  d => {},
+      onToolResult: d => {},
       onFinal: d => {
-        Debug.append('final', d);
         asstBubble.classList.remove('streaming');
         setIdle();
       },
       onCancelled: () => {
-        Debug.append('cancelled', {});
         asstBubble.classList.remove('streaming');
         asstBubble.textContent += ' [cancelled]';
         setIdle();
       },
       onError: msg => {
-        Debug.append('error', msg);
         asstBubble.textContent += `\n[Error: ${msg}]`;
         asstBubble.classList.remove('streaming');
         setIdle();
@@ -126,9 +120,13 @@ const Chat = (() => {
 
   btnSend.addEventListener('click', send);
   btnCancel.addEventListener('click', cancel);
-  inputEl.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-  });
+  function handleInputKey(e) {
+    const isEnter = e.key === 'Enter' || e.code === 'Enter' || e.keyCode === 13 || e.which === 13;
+    if (isEnter && !e.shiftKey) { e.preventDefault(); send(); }
+  }
+
+  inputEl.addEventListener('keydown', handleInputKey);
+  inputEl.addEventListener('keypress', handleInputKey);
 
   return { setSession };
 })();

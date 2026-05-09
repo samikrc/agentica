@@ -6,6 +6,7 @@
 .bsp/
 .scala-build/
 .run/
+.mvn/
 
 # Other folders
 target/

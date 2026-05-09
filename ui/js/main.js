@@ -15,4 +15,11 @@
   Sessions.onSelect(session => Chat.setSession(session));
 
   await Sessions.load();
+
+  // Sidebar toggle
+  const btnToggleSidebar = document.getElementById('btn-toggle-sidebar');
+  const content = document.getElementById('content');
+  btnToggleSidebar.addEventListener('click', () => {
+    content.classList.toggle('sidebar-hidden');
+  });
 })();

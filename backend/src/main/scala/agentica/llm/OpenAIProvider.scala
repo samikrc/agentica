@@ -6,7 +6,8 @@ import java.net.URI
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
 import java.time.Duration
 
-/** LLM provider that speaks the OpenAI /v1/chat/completions API.
+/** 
+ *  LLM provider that speaks the OpenAI /v1/chat/completions API.
  *  Compatible with LM Studio (default: http://localhost:1234),
  *  OpenAI, and any other OpenAI-compatible server.
  *  Streams SSE `data: {...}` lines and calls onToken for each content delta.
@@ -23,6 +24,12 @@ class OpenAIProvider(
             ujson.Obj("role" -> m.role, "content" -> m.content)
         }*)
 
+    /** 
+     *  Sends a chat completion request and forwards the resulting content to `onToken`.
+     *  @param messages  Full conversation history to send as context.
+     *  @param onToken   Callback invoked with the returned assistant content.
+     *  @return          [[LLMUsage]] capturing provider usage and latency.
+     */
     def stream(messages: List[Message], onToken: String => Unit): LLMUsage =
     {
         val t0 = System.currentTimeMillis()
@@ -74,6 +81,11 @@ class OpenAIProvider(
         )
     }
 
+    /** 
+     *  Runs a non-streaming completion and returns the full assistant response.
+     *  @param messages  Full conversation history to send as context.
+     *  @return          Tuple of (full response text, [[LLMUsage]]).
+     */
     def complete(messages: List[Message]): (String, LLMUsage) =
     {
         val buf   = StringBuilder()

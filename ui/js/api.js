@@ -82,7 +82,7 @@ const Api = (() => {
 
   function dispatchEvent(event, data, handlers) {
     switch (event) {
-      case 'token':       handlers.onToken?.(data); break;
+      case 'token':       handlers.onToken?.(data.replace(/\\n/g, '\n')); break;
       case 'iteration':   handlers.onIteration?.(JSON.parse(data)); break;
       case 'tool_start':  handlers.onToolStart?.(JSON.parse(data)); break;
       case 'tool_result': handlers.onToolResult?.(JSON.parse(data)); break;

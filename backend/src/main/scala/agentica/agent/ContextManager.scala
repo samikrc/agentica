@@ -2,7 +2,8 @@ package agentica.agent
 
 import agentica.session.Message
 
-/** Assembles the message list sent to the LLM.
+/** 
+ *  Assembles the message list sent to the LLM.
  *  Phase 1: returns all messages as-is (no token budget enforcement, no summarization).
  *  Phase 2: sliding window + summarization of older context + RAG injection.
  */
@@ -17,6 +18,11 @@ object ContextManager
         timestamp = ""
     )
 
+    /** 
+     *  Prepends Agentica's system prompt to the supplied conversation history.
+     *  @param history  Session messages in chronological order.
+     *  @return         Messages ready to send to the LLM provider.
+     */
     def assemble(history: List[Message]): List[Message] =
     {
         systemPrompt +: history

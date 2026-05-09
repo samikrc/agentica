@@ -52,16 +52,31 @@ object TraceLogger
         }
     }
 
+    /** Emits an informational structured log line.
+     *  @param traceId  Trace identifier associated with the event.
+     *  @param msg      Event name or message.
+     *  @param extra    Additional string fields to include in the JSON line.
+     */
     def info(traceId: String, msg: String, extra: Map[String, String] = Map.empty): Unit =
     {
         emit("INFO", traceId, msg, extra)
     }
 
+    /** Emits a warning structured log line.
+     *  @param traceId  Trace identifier associated with the event.
+     *  @param msg      Event name or message.
+     *  @param extra    Additional string fields to include in the JSON line.
+     */
     def warn(traceId: String, msg: String, extra: Map[String, String] = Map.empty): Unit =
     {
         emit("WARN", traceId, msg, extra)
     }
 
+    /** Emits an error structured log line.
+     *  @param traceId  Trace identifier associated with the event.
+     *  @param msg      Event name or message.
+     *  @param extra    Additional string fields to include in the JSON line.
+     */
     def error(traceId: String, msg: String, extra: Map[String, String] = Map.empty): Unit =
     {
         emit("ERROR", traceId, msg, extra)

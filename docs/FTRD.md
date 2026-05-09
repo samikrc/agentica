@@ -749,7 +749,7 @@ All tool implementations follow the two-layer model from §10 (clean execution l
 ## 15a. Observability
 
 - **Structured logs** (JSON lines) with a shared `traceId` propagated across UI → backend → LLM calls → tool invocations, enabling end-to-end reconstruction of a single user turn.
-- **Debug pane in the UI** showing, for the current session: each iteration of the agent loop, every tool call (input + output + duration), and LLM latency/token counts. This is the single highest-leverage developer/user feature for an agent app.
+- **Debug log viewer**: a dedicated log viewer window (opened via a "Debug log" button in the main UI header) that tails `agentica.log` in real time via a `GET /log/stream` SSE endpoint. Replays the last 200 lines on connect, then streams live. Supports client-side substring filtering and pause-scroll. Replaces the original inline debug pane concept — a separable window is more useful for developer/user debugging of multi-step agent runs. *(Phase 2 decision — see `agent_loop_runtime.md` §9.1 for rationale.)*
 - Log output paths follow the OS data-directory conventions (§4.1) and rotate on size.
 
 ## 15b. Token & Cost Accounting
@@ -810,7 +810,7 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 | Build | Maven |
 | Packaging | Shaded fat-jar now; JavaFX WebView launcher next; `jlink`/`jpackage` deferred |
 | Updates | Deferred until packaged mode stabilizes |
-| Observability | Structured logs, trace IDs, token/cost accounting, debug pane |
+| Observability | Structured logs, trace IDs, token/cost accounting, log viewer window (`GET /log/stream` SSE + `log-viewer.html`) |
 
 ---
 
@@ -834,7 +834,7 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 
 ### Phase 1.5
 - JavaFX WebView thin launcher that loads the existing backend-served UI
-- Validate WebView compatibility with chat, SSE, modals, scrolling, and debug pane
+- Validate WebView compatibility with chat, SSE, modals, scrolling, and log viewer window
 - Optional native folder-picker bridge for packaged mode
 - Per-OS packaging exploration after launcher compatibility is proven
 
@@ -845,7 +845,7 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 - Action families: `files`, `memory`, `llm` (read/search/list + summarize/extract/classify)
 - On-demand `help` command + central command registry (drives dispatch, help, replay schemas)
 - Scoped permission model + UI prompts
-- Debug pane in UI (tool calls, iterations, latencies)
+- Debug log viewer: `GET /log/stream` SSE endpoint + `log-viewer.html` + "Debug log" button in main UI header (replaces original inline debug pane)
 - Golden scenarios catalog scaffolded with first 5–10 scenarios
 
 ### Phase 3

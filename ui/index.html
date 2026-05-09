@@ -8,35 +8,70 @@
 </head>
 <body>
   <div id="app">
-    <!-- Sidebar: session list -->
-    <aside id="sidebar">
-      <div id="sidebar-header">
-        <span class="app-name">Agentica</span>
-        <button id="btn-new-session" title="New session">+</button>
-      </div>
-      <ul id="session-list"></ul>
-    </aside>
+    <div id="content">
+      <!-- Sidebar: session list -->
+      <aside id="sidebar">
+        <div id="sidebar-header">
+          <span class="app-name">Agentica</span>
+          <div class="sidebar-actions">
+            <button id="btn-settings" title="Settings" aria-label="Settings">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M19.4 13.5c.1-.5.1-1 .1-1.5s0-1-.1-1.5l2.1-1.6-2-3.5-2.5 1a8 8 0 0 0-2.6-1.5L14 2h-4l-.4 2.9A8 8 0 0 0 7 6.4l-2.5-1-2 3.5 2.1 1.6a9 9 0 0 0-.1 1.5c0 .5 0 1 .1 1.5L2.5 15.1l2 3.5 2.5-1a8 8 0 0 0 2.6 1.5L10 22h4l.4-2.9a8 8 0 0 0 2.6-1.5l2.5 1 2-3.5-2.1-1.6ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/>
+              </svg>
+            </button>
+            <button id="btn-new-session" title="New session">+</button>
+          </div>
+        </div>
+        <ul id="session-list"></ul>
+      </aside>
 
-    <!-- Main: chat pane -->
-    <main id="main">
-      <div id="chat-header">
-        <span id="chat-title">Select or create a session</span>
-        <button id="btn-cancel-run" title="Stop generation" style="display:none">■ Stop</button>
-      </div>
+      <!-- Main: chat pane -->
+      <main id="main">
+        <div id="chat-header">
+          <button id="btn-toggle-sidebar" title="Toggle sidebar" aria-label="Toggle sidebar">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
+            </svg>
+          </button>
+          <span id="chat-title">Select or create a session</span>
+          <button id="btn-cancel-run" title="Stop generation" style="display:none">■ Stop</button>
+        </div>
 
-      <div id="messages"></div>
+        <div id="messages"></div>
 
-      <div id="input-area">
-        <textarea id="msg-input" placeholder="Message…" rows="3" disabled></textarea>
-        <button id="btn-send" disabled>Send</button>
-      </div>
+        <div id="input-area">
+          <textarea id="msg-input" placeholder="Message…" rows="3" disabled></textarea>
+          <button id="btn-send" disabled>Send</button>
+        </div>
+      </main>
+    </div>
 
-      <!-- Debug pane (collapsed by default) -->
-      <details id="debug-pane">
-        <summary>Debug events</summary>
-        <pre id="debug-log"></pre>
-      </details>
-    </main>
+    <div id="status-line" style="display:none"></div>
+  </div>
+
+  <div id="settings-modal">
+    <div class="modal-box">
+      <h2>Settings</h2>
+      <form id="settings-form">
+        <label for="settings-theme">Theme</label>
+        <select id="settings-theme">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
+        <label for="settings-server-url" style="margin-top:12px">Server URL</label>
+        <input type="text" id="settings-server-url" placeholder="http://172.23.64.1:1234" />
+        <label for="settings-model-name" style="margin-top:12px">Model</label>
+        <input type="text" id="settings-model-name" placeholder="mistralai/ministral-3-14b-reasoning" />
+        <label for="settings-show-status-line" style="margin-top:12px">
+          <input type="checkbox" id="settings-show-status-line" />
+          Show status line
+        </label>
+        <div class="modal-actions">
+          <button type="button" id="settings-cancel">Cancel</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
+    </div>
   </div>
 
   <!-- New session modal -->
@@ -49,7 +84,7 @@
         <label for="new-session-path">Working folder <span class="label-hint">(optional — paste a full path)</span></label>
         <div class="path-row">
           <input id="new-session-path" type="text" placeholder="C:\Users\sam\projects\mywork" />
-          <button type="button" id="btn-browse-folder" title="Pick folder">&#128193;</button>
+          <button type="button" id="btn-browse-folder" title="Pick folder">Browse</button>
         </div>
         <input id="folder-picker" type="file" webkitdirectory style="display:none" />
         <div class="modal-actions">
@@ -61,8 +96,8 @@
   </div>
 
   <script src="js/api.js"></script>
+  <script src="js/settings.js"></script>
   <script src="js/session.js"></script>
-  <script src="js/debug.js"></script>
   <script src="js/chat.js"></script>
   <script src="js/main.js"></script>
 </body>

@@ -27,12 +27,21 @@ REM Open: http://localhost:8080/?token=dev-token
 
 ### Configuration
 
-Edit the top of `launch.sh` / `launch.bat` to set:
+LLM server URL and model name are configured in the **Settings** modal (gear icon in the sidebar). Defaults:
+
+| Setting | Default |
+|---|---|
+| Server URL | `http://172.23.64.1:1234` |
+| Model | `mistralai/ministral-3-14b-reasoning` |
+
+Settings are persisted as `settings.json` alongside the SQLite database.
+
+Launch scripts accept additional environment variables:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LLM_BASE_URL` | `http://localhost:1234` | LM Studio / Ollama base URL |
-| `LLM_MODEL` | `mistralai/ministral-3-14b-reasoning` | Model name |
+| `LLM_BASE_URL` | `http://localhost:1234` | LM Studio / Ollama base URL (launch script only) |
+| `LLM_MODEL` | `mistralai/ministral-3-14b-reasoning` | Model name (launch script only) |
 | `AGENTICA_DEV_TOKEN` | `dev-token` | Bearer token for the API |
 | `AGENTICA_PORT` | `8080` | HTTP port the backend listens on |
 | `AGENTICA_UI_ROOT` | `../ui` (relative to jar) | Path to the `ui/` folder |
@@ -69,7 +78,8 @@ Hot-editing `ui/` JS/CSS files takes effect on the next browser refresh — no r
 The backend serves both the REST/SSE API **and** the static UI files:
 
 - `GET /` → redirects to `/index.html`
-- `GET /index.html`, `/css/*`, `/js/*` → served from `AGENTICA_UI_ROOT`
+- `GET /index.html`, `/css/*`, `/js/*`, `/fonts/*` → served from `AGENTICA_UI_ROOT`
+- `GET /settings`, `POST /settings` → user-configurable settings
 - All API routes are under `/sessions`, `/runs`, `/health`
 
 The bearer token is passed as a `?token=` URL query param, which `api.js` picks up automatically.
@@ -78,7 +88,7 @@ The bearer token is passed as a `?token=` URL query param, which `api.js` picks 
 
 ### Data Storage
 
-SQLite database is stored in the OS-appropriate app data directory (see `AppDirs.scala`).
+SQLite database and `settings.json` are stored in the OS-appropriate app data directory (see `AppDirs.scala`).
 
 ---
 
@@ -88,7 +98,8 @@ SQLite database is stored in the OS-appropriate app data directory (see `AppDirs
 agentica/
 │
 ├── docs/
-│   └── FTRD.md                          # Functional & Technical Requirements Document
+│   ├── FTRD.md                          # Functional & Technical Requirements Document
+│   └── tasklist.md                      # Phase-by-phase implementation task list
 │
 ├── launch.bat                           # Windows launcher for browser mode
 ├── launch.sh                            # Linux/macOS launcher for browser mode
@@ -97,17 +108,23 @@ agentica/
 │   ├── index.html
 │   ├── css/
 │   │   └── main.css
+│   ├── fonts/
+│   │   ├── NotoEmoji-Regular.ttf        # Emoji fallback font
+│   │   └── Symbola.ttf                  # Symbol/emoji fallback font
 │   └── js/
 │       ├── main.js                      # App entry point, session init
 │       ├── chat.js                      # Chat rendering, SSE client
 │       ├── session.js                   # Session list, create/load/delete
-│       ├── debug.js                     # Debug pane (tool calls, iterations, latencies)
+│       ├── settings.js                  # Settings modal, theme, LLM config
 │       └── api.js                       # HTTP wrapper with bearer-token injection
 │
 ├── backend/                             # Scala 3 local backend + static UI server (Maven)
 │   ├── pom.xml
 │   └── src/main/scala/agentica/
 │       ├── BackendServer.scala          # Entry point: configure app, start Cask server
+│       ├── DesktopLauncher.scala        # JavaFX WebView thin launcher
+│       ├── settings/
+│       │   └── SettingsStore.scala      # JSON-backed app settings persistence
 │       ├── server/
 │       │   ├── Routes.scala             # Static UI, chat, sessions, stream, runs
 │       │   └── Auth.scala               # Bearer-token middleware
@@ -170,4 +187,11 @@ agentica/
 - **`backend/shell/`** — virtual shell is a self-contained package: `Tokenizer` → `CommandAst` → `CommandRegistry` dispatch → `Presentation` envelope. Each stage is independently unit-testable.
 - **`backend/tools/`** — one file per tool, grouped by action family. `CommandRegistry` is the only place that enumerates the full tool list.
 - **`backend/agent/`** — `AgentEngine` trait keeps the loop swappable; `ContextManager` evolves independently of loop control flow.
-- **Future desktop mode** — should be a JavaFX WebView thin launcher that loads the same backend-served UI, not a separate UI rewrite.
+- **Desktop mode** — `DesktopLauncher` is a JavaFX WebView thin launcher that loads the same backend-served UI. It requires the backend to be running separately (Phase 1.5A). Automatic backend startup is planned for Phase 1.5B.
+
+---
+
+## Known Issues
+
+- **Emoji rendering in JavaFX WebView on WSL/Linux** — Some emoji and symbol characters may not render correctly in the JavaFX WebView on WSL or Linux due to limited font support. Local fallback fonts (`NotoEmoji-Regular.ttf`, `Symbola.ttf`) are bundled and served to improve coverage, but full emoji rendering depends on the host OS font stack. Native Windows typically renders better.
+- **JavaFX classpath warning** — `Unsupported JavaFX configuration: classes were loaded from 'unnamed module'` appears at startup because JavaFX is on the classpath rather than the module path. This is cosmetic and does not affect functionality.

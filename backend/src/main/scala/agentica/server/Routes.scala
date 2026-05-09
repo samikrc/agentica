@@ -2,6 +2,7 @@ package agentica.server
 
 import agentica.agent.{AgentEngine, AgentEvent, ContextManager}
 import agentica.observability.TraceLogger
+import agentica.settings.{AppSettings, SettingsStore}
 import agentica.session.{MessageStore, RunStore, Session, SessionStore}
 import cask.*
 import upickle.default.*
@@ -10,28 +11,20 @@ import java.util.concurrent.{ConcurrentHashMap, Executors}
 import java.nio.file.{Files, Paths}
 import scala.jdk.CollectionConverters.*
 
-// All HTTP + SSE routes for the Agentica backend.
-// Every route validates the bearer token before processing.
-//
-// Routes:
-//   GET    /                              serves ui/index.html (redirect)
-//   GET    /index.html                    serves ui/index.html
-//   GET    /css/:file                     serves ui/css/:file
-//   GET    /js/:file                      serves ui/js/:file
-//   GET    /health
-//   GET    /sessions
-//   POST   /sessions
-//   GET    /sessions/:id
-//   DELETE /sessions/:id
-//   GET    /sessions/:id/messages
-//   POST   /sessions/:id/messages         starts agent run, returns runId
-//   GET    /sessions/:id/stream/:runId    SSE stream of tokens + events
-//   DELETE /runs/:runId                   cancel in-flight run
-//   GET    /sessions/:id/token-usage
+/** All HTTP, static-file, and SSE routes for the Agentica backend.
+ *  API routes validate bearer tokens before processing.
+ *  @param sessionStore   Persistence layer for sessions.
+ *  @param messageStore   Persistence layer for chat messages.
+ *  @param runStore       Persistence layer for tool runs and token usage.
+ *  @param settingsStore  JSON-backed application settings store.
+ *  @param agentEngine    Agent execution engine used to process user messages.
+ *  @param uiRoot         Root directory containing static UI files.
+ */
 class Routes(
     sessionStore: SessionStore,
     messageStore: MessageStore,
     runStore:     RunStore,
+    settingsStore: SettingsStore,
     agentEngine:  AgentEngine,
     uiRoot:       java.nio.file.Path
 ) extends MainRoutes
@@ -51,6 +44,7 @@ class Routes(
         case n if n.endsWith(".js")   => "application/javascript; charset=utf-8"
         case n if n.endsWith(".png")  => "image/png"
         case n if n.endsWith(".ico")  => "image/x-icon"
+        case n if n.endsWith(".ttf")  => "font/ttf"
         case _                        => "application/octet-stream"
     }
 
@@ -69,22 +63,31 @@ class Routes(
     }
 
     // --- Static UI ---
+    /** Redirects `/` to `/index.html`, preserving the optional query-token. */
     @cask.get("/")
     def root(token: String = "", request: Request): Response[Response.Data] =
         val loc = if token.nonEmpty then s"/index.html?token=$token" else "/index.html"
         Response("", statusCode = 302, headers = Seq("Location" -> loc))
 
+    /** Serves the browser UI entrypoint. */
     @cask.get("/index.html")
     def indexHtml(token: String = "", request: Request): Response[Response.Data] =
         serveFile("index.html")
 
+    /** Serves stylesheet assets from the UI root. */
     @cask.get("/css/:file")
     def cssFile(file: String, request: Request): Response[Response.Data] =
         serveFile(s"css/$file")
 
+    /** Serves JavaScript assets from the UI root. */
     @cask.get("/js/:file")
     def jsFile(file: String, request: Request): Response[Response.Data] =
         serveFile(s"js/$file")
+
+    /** Serves font assets from the UI root. */
+    @cask.get("/fonts/:file")
+    def fontFile(file: String, request: Request): Response[Response.Data] =
+        serveFile(s"fonts/$file")
 
     private val corsHeaders: Seq[(String, String)] = Seq(
         "Access-Control-Allow-Origin"  -> "*",
@@ -117,6 +120,26 @@ class Routes(
     private def sseEvent(event: String, data: String): String =
     {
         s"event: $event\ndata: ${data.replace("\n", "\\n")}\n\n"
+    }
+
+    // --- Settings ---
+    /** Returns persisted application settings. */
+    @cask.get("/settings")
+    def getSettings(request: Request): Response[Response.Data] =
+    {
+        withAuth(request) {
+            Response(write(settingsStore.load()), headers = Seq("Content-Type" -> "application/json"))
+        }
+    }
+
+    /** Saves application settings and returns the normalized persisted value. */
+    @cask.route("/settings", methods = Seq("post", "options"))
+    def saveSettings(request: Request): Response[Response.Data] =
+    {
+        withAuth(request) {
+            val body = read[AppSettings](request.text())
+            Response(write(settingsStore.save(body)), headers = Seq("Content-Type" -> "application/json"))
+        }
     }
 
     // --- Health ---
