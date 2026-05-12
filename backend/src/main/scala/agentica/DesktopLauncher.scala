@@ -10,6 +10,8 @@ import javafx.scene.control.Alert
 import javafx.scene.control.ButtonType
 import javafx.scene.control.Label
 import javafx.scene.layout.BorderPane
+import javafx.scene.web.PopupFeatures
+import javafx.scene.web.WebEngine
 import javafx.scene.web.WebEvent
 import javafx.scene.web.WebView
 import javafx.stage.Stage
@@ -34,6 +36,19 @@ class DesktopLauncher extends Application
 
         val webView = WebView()
         val root    = BorderPane(webView)
+
+        webView.getEngine.setCreatePopupHandler(new Callback[PopupFeatures, WebEngine] {
+            override def call(features: PopupFeatures): WebEngine =
+            {
+                val popupView   = WebView()
+                val popupRoot   = BorderPane(popupView)
+                val popupStage  = Stage()
+                popupStage.setTitle("Agentica — Debug Log")
+                popupStage.setScene(Scene(popupRoot, 1200, 800))
+                popupStage.show()
+                popupView.getEngine
+            }
+        })
 
         webView.getEngine.setOnAlert((event: WebEvent[String]) => {
             val alert = Alert(Alert.AlertType.INFORMATION, event.getData, ButtonType.OK)

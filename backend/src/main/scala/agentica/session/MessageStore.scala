@@ -32,12 +32,14 @@ class MessageStore(conn: () => Connection)
         } finally { c.close() }
     }
 
-    /** Appends a new message to a session's history and returns the persisted [[Message]].
+    /**
+     *  Appends a new message to a session's history and returns the persisted [[Message]].
      *  @param sessionId  Parent session identifier.
-     *  @param role       Speaker role: "user", "assistant", or "system".
+     *  @param role       Speaker role: [[MessageRole.User]], [[MessageRole.Assistant]], or [[MessageRole.System]].
      *  @param content    Text content of the message.
+     *  @return           The persisted [[Message]] with its generated UUID and timestamp.
      */
-    def append(sessionId: String, role: String, content: String): Message =
+    def append(sessionId: String, role: MessageRole, content: String): Message =
     {
         val msg = Message(
             id          = UUID.randomUUID().toString,
@@ -53,7 +55,7 @@ class MessageStore(conn: () => Connection)
         )
         ps.setString(1, msg.id)
         ps.setString(2, msg.sessionId)
-        ps.setString(3, msg.role)
+        ps.setString(3, msg.role.value)
         ps.setString(4, msg.content)
         ps.setString(5, msg.timestamp)
         ps.setString(6, "[]")
@@ -80,7 +82,7 @@ class MessageStore(conn: () => Connection)
             buf += Message(
                 id          = rs.getString("id"),
                 sessionId   = rs.getString("session_id"),
-                role        = rs.getString("role"),
+                role        = MessageRole.unsafe(rs.getString("role")),
                 content     = rs.getString("content"),
                 timestamp   = rs.getString("timestamp"),
                 attachments = Nil

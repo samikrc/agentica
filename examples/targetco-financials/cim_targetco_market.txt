@@ -1,0 +1,15 @@
+TargetCo operates in a large and growing addressable market. The global workflow
+automation software market is estimated at $8.5 billion in 2023 and is expected to
+grow at a 14% CAGR through 2028, driven by continued digitization and labour cost
+inflation.
+
+Competitive dynamics are rational, with a mix of legacy on-premise software vendors
+and newer cloud-native players. TargetCo has a defensible position in the mid-market
+segment, with high switching costs due to workflow configuration, user training,
+and integrations with core ERP systems.
+
+Key growth drivers for TargetCo include:
+- Expansion of seat count within existing customers
+- Upsell of advanced analytics and AI-based modules
+- Geographic expansion into Western Europe and APAC
+- Targeted acquisitions of smaller competitors

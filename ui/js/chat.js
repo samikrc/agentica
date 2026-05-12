@@ -11,12 +11,13 @@ const Chat = (() => {
   const messagesEl  = document.getElementById('messages');
   const inputEl     = document.getElementById('msg-input');
   const btnSend     = document.getElementById('btn-send');
-  const btnCancel   = document.getElementById('btn-cancel-run');
   const titleEl     = document.getElementById('chat-title');
+  const pathEl      = document.getElementById('chat-path');
 
   function setSession(session) {
     _sessionId = session?.id ?? null;
     titleEl.textContent = session ? session.title : 'Select or create a session';
+    pathEl.textContent  = session?.rootPath ?? '';
     messagesEl.innerHTML = '';
     inputEl.disabled     = !session;
     btnSend.disabled     = !session;
@@ -30,6 +31,10 @@ const Chat = (() => {
     for (const m of messages) appendMessage(m.role, m.content);
   }
 
+  function renderMarkdown(text) {
+    return marked.parse(text || '', { breaks: true, gfm: true });
+  }
+
   function appendMessage(role, content) {
     const wrap = document.createElement('div');
     wrap.className = `msg ${role}`;
@@ -39,8 +44,12 @@ const Chat = (() => {
     roleEl.textContent = role === 'user' ? 'You' : 'Agentica';
 
     const bubble = document.createElement('div');
-    bubble.className   = 'msg-bubble';
-    bubble.textContent = content;
+    bubble.className = 'msg-bubble';
+    if (role === 'assistant') {
+      bubble.innerHTML = renderMarkdown(content);
+    } else {
+      bubble.textContent = content;
+    }
 
     wrap.appendChild(roleEl);
     wrap.appendChild(bubble);
@@ -56,8 +65,7 @@ const Chat = (() => {
 
     inputEl.value    = '';
     inputEl.disabled = true;
-    btnSend.disabled = true;
-    btnCancel.style.display = 'inline-block';
+    setRunning();
 
     appendMessage('user', content);
     const asstBubble = appendMessage('assistant', '');
@@ -75,10 +83,13 @@ const Chat = (() => {
 
     _activeRunId = result.runId;
 
+    let rawText = '';
+
     _activeStream = Api.stream(`/sessions/${_sessionId}/stream/${result.runId}`, {
       onToken: tok => {
-        asstBubble.textContent += tok;
-        messagesEl.scrollTop    = messagesEl.scrollHeight;
+        rawText += tok;
+        asstBubble.innerHTML = renderMarkdown(rawText);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
       },
       onIteration: d => {},
       onToolStart:  d => {},
@@ -97,8 +108,18 @@ const Chat = (() => {
         asstBubble.classList.remove('streaming');
         setIdle();
       },
-      onDone: () => setIdle()
+      onDone: () => setIdle(),
+      onPermissionRequired: data => {
+        // Pause streaming display while permission modal is open
+        Permissions.show(data, result.runId);
+      }
     });
+  }
+
+  function setRunning() {
+    btnSend.textContent = '■ Stop';
+    btnSend.classList.add('stopping');
+    btnSend.disabled = false;
   }
 
   function cancel() {
@@ -111,15 +132,18 @@ const Chat = (() => {
   }
 
   function setIdle() {
-    inputEl.disabled        = !_sessionId;
-    btnSend.disabled        = !_sessionId;
-    btnCancel.style.display = 'none';
-    _activeStream           = null;
-    _activeRunId            = null;
+    inputEl.disabled = !_sessionId;
+    btnSend.textContent = 'Send';
+    btnSend.classList.remove('stopping');
+    btnSend.disabled = !_sessionId;
+    _activeStream    = null;
+    _activeRunId     = null;
   }
 
-  btnSend.addEventListener('click', send);
-  btnCancel.addEventListener('click', cancel);
+  btnSend.addEventListener('click', () => {
+    if (btnSend.classList.contains('stopping')) cancel();
+    else send();
+  });
   function handleInputKey(e) {
     const isEnter = e.key === 'Enter' || e.code === 'Enter' || e.keyCode === 13 || e.which === 13;
     if (isEnter && !e.shiftKey) { e.preventDefault(); send(); }

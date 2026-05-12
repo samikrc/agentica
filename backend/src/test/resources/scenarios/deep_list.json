@@ -1,0 +1,8 @@
+{
+  "model": "golden-test-model",
+  "description": "Deep recursive directory listing with depth limit",
+  "responses": [
+    "I'll list the project structure with depth 2.\nrun(command=\"files.list path=. recursive=true depth=2\")",
+    "Found the project structure.\n<done>"
+  ]
+}

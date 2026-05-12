@@ -1,6 +1,6 @@
 package agentica.llm
 
-import agentica.session.Message
+import agentica.session.{Message, MessageRole}
 import ujson.*
 
 /** LlmProvider backed by a locally running Ollama instance.
@@ -17,7 +17,7 @@ class OllamaProvider(
     private def toOllamaMessages(messages: List[Message]): ujson.Arr =
     {
         ujson.Arr(messages.map { m =>
-            ujson.Obj("role" -> m.role, "content" -> m.content)
+            ujson.Obj("role" -> m.role.value, "content" -> m.content)
         }*)
     }
 

@@ -1,6 +1,6 @@
 package agentica.llm
 
-import agentica.session.Message
+import agentica.session.{Message, MessageRole}
 import ujson.*
 import java.net.URI
 import java.net.http.{HttpClient, HttpRequest, HttpResponse}
@@ -21,7 +21,7 @@ class OpenAIProvider(
 
     private def toMessages(messages: List[Message]): ujson.Arr =
         ujson.Arr(messages.map { m =>
-            ujson.Obj("role" -> m.role, "content" -> m.content)
+            ujson.Obj("role" -> m.role.value, "content" -> m.content)
         }*)
 
     /** 

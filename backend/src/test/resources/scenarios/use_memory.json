@@ -1,0 +1,8 @@
+{
+  "model": "golden-test-model",
+  "description": "Store and retrieve from session memory",
+  "responses": [
+    "I'll store the user preference and then read it back.\nrun(command=\"memory.set key=preference value=dark_mode\") run(command=\"memory.get key=preference\")",
+    "Stored and retrieved the preference successfully.\n<done>"
+  ]
+}

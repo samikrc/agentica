@@ -1,0 +1,9 @@
+{
+  "model": "golden-test-model",
+  "description": "Stat a large file to check size before reading",
+  "responses": [
+    "Let me check the file size first.\nrun(command=\"files.stat path=large.log\")",
+    "The file is large but manageable. Let me read it.\nrun(command=\"files.read path=large.log lines=1-100\")",
+    "Read the first 100 lines of the log file.\n<done>"
+  ]
+}

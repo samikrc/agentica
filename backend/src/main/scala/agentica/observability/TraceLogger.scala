@@ -6,7 +6,8 @@ import java.nio.file.{Files, Path}
 import java.time.Instant
 import java.util.concurrent.locks.ReentrantLock
 
-/** Structured JSON-lines logger.
+/**
+ *  Structured JSON-lines logger.
  *  Thread-safe; rotates log file when it exceeds maxBytes.
  *  Output: one JSON object per line with at minimum {ts, level, traceId, msg}.
  */
@@ -17,11 +18,18 @@ object TraceLogger
     private val maxBytes = 10L * 1024 * 1024  // 10 MB rotation threshold
     private var writer: PrintWriter = openWriter()
 
+    /**
+     *  Opens (or re-opens) the log file in append mode and returns a flushing [[PrintWriter]].
+     */
     private def openWriter(): PrintWriter =
     {
         PrintWriter(FileWriter(AppDirs.logFile.toFile, true), true)
     }
 
+    /**
+     *  Rotates the active log file: closes the current writer, archives the file with a
+     *  millisecond timestamp suffix, then opens a fresh writer on the canonical log path.
+     */
     private def rotate(): Unit =
     {
         writer.close()
@@ -30,6 +38,14 @@ object TraceLogger
         writer = openWriter()
     }
 
+    /**
+     *  Formats and writes a single JSON-lines log record, rotating the file first if necessary.
+     *  Acquires [[lock]] for the duration; safe to call from any thread.
+     *  @param level    Log level string: "INFO", "WARN", or "ERROR".
+     *  @param traceId  Trace identifier associated with the event.
+     *  @param msg      Event name or free-form message.
+     *  @param extra    Additional string fields merged into the JSON object.
+     */
     private def emit(level: String, traceId: String, msg: String, extra: Map[String, String] = Map.empty): Unit =
     {
         lock.lock()
@@ -52,7 +68,8 @@ object TraceLogger
         }
     }
 
-    /** Emits an informational structured log line.
+    /**
+     *  Emits an informational structured log line.
      *  @param traceId  Trace identifier associated with the event.
      *  @param msg      Event name or message.
      *  @param extra    Additional string fields to include in the JSON line.
@@ -62,7 +79,8 @@ object TraceLogger
         emit("INFO", traceId, msg, extra)
     }
 
-    /** Emits a warning structured log line.
+    /**
+     *  Emits a warning structured log line.
      *  @param traceId  Trace identifier associated with the event.
      *  @param msg      Event name or message.
      *  @param extra    Additional string fields to include in the JSON line.
@@ -72,7 +90,8 @@ object TraceLogger
         emit("WARN", traceId, msg, extra)
     }
 
-    /** Emits an error structured log line.
+    /**
+     *  Emits an error structured log line.
      *  @param traceId  Trace identifier associated with the event.
      *  @param msg      Event name or message.
      *  @param extra    Additional string fields to include in the JSON line.

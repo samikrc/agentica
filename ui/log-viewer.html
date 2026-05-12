@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agentica — Debug Log</title>
+  <link rel="stylesheet" href="css/main.css" />
+  <style>
+    #log-viewer { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    #log-header {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    #log-header h1 { font-size: 18px; margin: 0; flex: 1; }
+    #log-filter {
+      flex: 2;
+      min-width: 200px;
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+    }
+    #log-controls { display: flex; gap: 8px; }
+    #log-controls button {
+      padding: 8px 16px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--text);
+      cursor: pointer;
+    }
+    #log-controls button:hover { border-color: var(--accent); }
+    #log-controls button.active { background: var(--accent); color: #fff; }
+    #log-display {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      height: calc(100vh - 140px);
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    #log-lines { padding: 12px; }
+    .log-line {
+      padding: 2px 0;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .log-line.hidden { display: none; }
+    .log-line.info { color: var(--text); }
+    .log-line.warn { color: #d97706; }
+    .log-line.error { color: #dc2626; }
+    .log-line:hover { background: var(--bg); }
+    .log-timestamp { color: var(--text-dim, #999); margin-right: 8px; }
+    .log-trace { color: var(--text-dim, #999); margin-right: 4px; }
+    .log-field { margin-left: 8px; font-size: 11px; opacity: 0.75; }
+    .log-field-key { color: #6366f1; }
+    .log-field-val { color: inherit; }
+    [data-theme="dark"] .log-field-key { color: #a5b4fc; }
+    .log-level {
+      display: inline-block;
+      padding: 0 6px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      margin-right: 8px;
+    }
+    .log-level.info { background: #e0e7ff; color: #4338ca; }
+    .log-level.warn { background: #fef3c7; color: #d97706; }
+    .log-level.error { background: #fee2e2; color: #dc2626; }
+    [data-theme="dark"] .log-level.info { background: #4338ca; color: #e0e7ff; }
+    [data-theme="dark"] .log-level.warn { background: #78350f; color: #fcd34d; }
+    [data-theme="dark"] .log-level.error { background: #7f1d1d; color: #fca5a5; }
+    #connection-status {
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      background: var(--bg);
+    }
+    #connection-status.connected { background: #d1fae5; color: #065f46; }
+    #connection-status.disconnected { background: #fee2e2; color: #991b1b; }
+    [data-theme="dark"] #connection-status.connected { background: #064e3b; color: #6ee7b7; }
+    [data-theme="dark"] #connection-status.disconnected { background: #450a0a; color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <div id="log-viewer">
+    <div id="log-header">
+      <h1>Debug Log</h1>
+      <input type="text" id="log-filter" placeholder="Filter logs... (e.g., ERROR, tool_call, traceId)" />
+      <div id="log-controls">
+        <button id="btn-pause" title="Pause/Resume streaming">Pause</button>
+        <button id="btn-clear" title="Clear display">Clear</button>
+        <button id="btn-scroll" class="active" title="Auto-scroll">Auto-scroll</button>
+      </div>
+      <span id="connection-status" class="disconnected">Disconnected</span>
+    </div>
+    <div id="log-display">
+      <div id="log-lines"></div>
+    </div>
+  </div>
+  <script src="js/log-viewer.js"></script>
+</body>
+</html>

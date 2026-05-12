@@ -4,18 +4,22 @@ import upickle.default.*
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, StandardOpenOption}
 
-/** 
+/**
  *  User-configurable application settings persisted outside the SQLite database.
- *  @param theme          UI theme identifier, currently `"light"` or `"dark"`.
- *  @param showStatusLine Whether to show the status line at the bottom of the chat pane.
- *  @param serverUrl      Base URL of the OpenAI-compatible LLM server.
- *  @param modelName      Model identifier sent to the LLM server.
+ *  @param theme                UI theme identifier, currently `"light"` or `"dark"`.
+ *  @param showStatusLine       Whether to show the status line at the bottom of the chat pane.
+ *  @param serverUrl            Base URL of the OpenAI-compatible LLM server.
+ *  @param modelName            Model identifier sent to the LLM server.
+ *  @param maxIterations        Maximum number of plan→act→observe loop iterations per agent run.
+ *  @param contextBudgetTokens  Approximate token budget for the sliding context window.
  */
 case class AppSettings(
-    theme: String = "light",
-    showStatusLine: Boolean = false,
-    serverUrl: String = "http://172.23.64.1:1234",
-    modelName: String = "mistralai/ministral-3-14b-reasoning"
+    theme:                String  = "light",
+    showStatusLine:       Boolean = false,
+    serverUrl:            String  = "http://172.23.64.1:1234",
+    modelName:            String  = "mistralai/ministral-3-14b-reasoning",
+    maxIterations:        Int     = 20,
+    contextBudgetTokens:  Int     = 8000
 ) derives ReadWriter
 
 /** 

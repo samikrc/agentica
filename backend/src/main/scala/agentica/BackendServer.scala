@@ -1,12 +1,16 @@
 package agentica
 
-import agentica.agent.AgentLoop
+import agentica.agent.{AgentLoop, ContextManager}
 import agentica.llm.{OllamaProvider, OpenAIProvider}
 import agentica.observability.{TokenAccounting, TraceLogger}
+import agentica.permissions.ScopeStoreImpl
 import agentica.platform.AppDirs
 import agentica.server.Routes
+import agentica.session.{MemoryStoreImpl, MessageStore, RunStore, SessionStore}
 import agentica.settings.SettingsStore
-import agentica.session.{MessageStore, RunStore, SessionStore}
+import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
+import agentica.tools.files.{FilesList, FilesRead, FilesSearch, FilesStat, FilesWrite}
+import agentica.tools.memory.{MemoryGet, MemoryList, MemorySet}
 import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import java.net.ServerSocket
 import java.nio.file.{Path, Paths}
@@ -49,10 +53,14 @@ object BackendServer extends cask.Main
     val messageStore = MessageStore(conn)
     val runStore     = RunStore(conn)
     val settingsStore = SettingsStore(AppDirs.settingsPath)
+    val memoryStore  = MemoryStoreImpl(conn)
+    val scopeStore   = ScopeStoreImpl(conn)
 
     sessionStore.init()
     messageStore.init()
     runStore.init()
+    memoryStore.init()
+    scopeStore.init()
 
     // --- Settings + Dependencies ---
     val settings      = settingsStore.load()
@@ -71,7 +79,22 @@ object BackendServer extends cask.Main
             )
     }
     val accounting    = TokenAccounting(runStore)
-    val agentEngine   = AgentLoop(llm, messageStore, accounting)
+
+    val commandRegistry = CommandRegistry()
+    commandRegistry.register(FilesRead)
+    commandRegistry.register(FilesWrite)
+    commandRegistry.register(FilesList)
+    commandRegistry.register(FilesSearch)
+    commandRegistry.register(FilesStat)
+    commandRegistry.register(MemorySet)
+    commandRegistry.register(MemoryGet)
+    commandRegistry.register(MemoryList)
+
+    ContextManager.applyToolIndex(commandRegistry.helpIndex)
+
+    val virtualShell = VirtualShell(commandRegistry)
+    val agentEngine  = AgentLoop(llm, messageStore, runStore, accounting, virtualShell, settings,
+        scopeStore, memoryStore, () => java.util.concurrent.SynchronousQueue[agentica.permissions.GrantDecision]())
 
     // UI root: AGENTICA_UI_ROOT env var, or ../ui relative to the working directory
     val uiRoot: Path  = Paths.get(sys.env.getOrElse("AGENTICA_UI_ROOT", "../ui")).toAbsolutePath.normalize()
@@ -89,6 +112,6 @@ object BackendServer extends cask.Main
     System.out.flush()
 
     // --- Start HTTP server ---
-    override val allRoutes = Seq(Routes(sessionStore, messageStore, runStore, settingsStore, agentEngine, uiRoot))
+    override val allRoutes = Seq(Routes(sessionStore, messageStore, runStore, settingsStore, memoryStore, scopeStore, commandRegistry, agentEngine, uiRoot))
     TraceLogger.info("-", "http_server_start", Map("port" -> port.toString))
 }

@@ -7,6 +7,9 @@ const Settings = (() => {
   };
 
   const btnSettings = document.getElementById('btn-settings');
+  const dropdown    = document.getElementById('settings-dropdown');
+  const menuSettings = document.getElementById('menu-settings');
+  const menuDebugLog = document.getElementById('menu-debug-log');
   const modal       = document.getElementById('settings-modal');
   const form        = document.getElementById('settings-form');
   const themeSelect = document.getElementById('settings-theme');
@@ -80,7 +83,46 @@ const Settings = (() => {
     }
   });
 
-  btnSettings.addEventListener('click', openModal);
+  // Dropdown menu handlers
+  function openDropdown() {
+    dropdown.classList.add('open');
+    btnSettings.setAttribute('aria-expanded', 'true');
+  }
+
+  function closeDropdown() {
+    dropdown.classList.remove('open');
+    btnSettings.setAttribute('aria-expanded', 'false');
+  }
+
+  btnSettings.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (dropdown.classList.contains('open')) {
+      closeDropdown();
+    } else {
+      openDropdown();
+    }
+  });
+
+  // Close dropdown when clicking outside
+  document.addEventListener('click', (e) => {
+    if (!dropdown.contains(e.target)) {
+      closeDropdown();
+    }
+  });
+
+  // Menu item handlers
+  menuSettings?.addEventListener('click', () => {
+    closeDropdown();
+    openModal();
+  });
+
+  menuDebugLog?.addEventListener('click', () => {
+    closeDropdown();
+    const params = new URLSearchParams(window.location.search);
+    const token  = params.get('token') || '';
+    window.open(`/log-viewer.html?token=${encodeURIComponent(token)}`, '_blank');
+  });
+
   btnCancel.addEventListener('click', closeModal);
   modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
 

@@ -1,66 +1,313 @@
 package agentica.agent
 
-import agentica.llm.LLMProvider
-import agentica.observability.{TraceLogger, TokenAccounting}
-import agentica.session.{Session, Message, MessageStore}
+import agentica.agent.AgentEvent
+import agentica.llm.{LLMProvider, LLMUsage}
+import agentica.observability.{TokenAccounting, TraceLogger}
+import agentica.permissions.{GrantDecision, ScopeStore}
+import agentica.session.{MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, ToolRun}
+import agentica.settings.AppSettings
+import agentica.shell.{SessionScratchpad, VirtualShell}
+import agentica.tools.ExecutionContext
+import java.time.Instant
+import java.util.UUID
+import java.util.concurrent.{SynchronousQueue}
+import java.util.concurrent.atomic.AtomicBoolean
 
-/** Phase 1 stub: single LLM call, no tool dispatch.
- *  Fulfils the AgentEngine contract so the full SSE pipeline is exercised.
- *  Phase 2 replaces this with the full plan→act→observe loop + virtual shell.
+/**
+ *  Full Phase 2 plan→act→observe agent loop.
+ *  Iterates up to `settings.maxIterations` times, dispatching all `run(command="...")` calls
+ *  found in each LLM response through [[VirtualShell]], injecting results as `user`-role
+ *  `[TOOL RESULT]` turns, until the model emits `<done>` or no further tool calls.
+ *  @param llm                     LLM provider for streaming and completion.
+ *  @param messageStore             Persistence layer for chat messages.
+ *  @param runStore                 Persistence layer for tool runs.
+ *  @param tokenAccounting          Records LLM token usage per call.
+ *  @param virtualShell             Dispatches tool calls through the command registry.
+ *  @param settings                 Application settings (maxIterations, etc.).
+ *  @param scopeStore               Permission grant store for sensitive tools.
+ *  @param memoryStore              Session-scoped key-value memory store.
+ *  @param permissionLatchFactory   Produces the per-run [[SynchronousQueue]] for permission handoff.
  */
 class AgentLoop(
-    llm:             LLMProvider,
-    messageStore:    MessageStore,
-    tokenAccounting: TokenAccounting
+    llm:                    LLMProvider,
+    messageStore:           MessageStore,
+    runStore:               RunStore,
+    tokenAccounting:        TokenAccounting,
+    virtualShell:           VirtualShell,
+    settings:               AppSettings,
+    scopeStore:             ScopeStore,
+    memoryStore:            MemoryStore,
+    permissionLatchFactory: () => SynchronousQueue[GrantDecision]
 ) extends AgentEngine
 {
 
-    /** Executes a single agent turn: streams one LLM call, records token usage,
-     *  persists the assistant reply, and emits [[AgentEvent]] lifecycle events.
-     *  On LLM error, fires [[AgentEvent.AgentError]] and returns early.
-     *  @param session  Current session metadata (model, id, rootPath, etc.).
-     *  @param history  Assembled message history passed to the LLM as context.
-     *  @param userMsg  The new user message (appended to history before the call).
-     *  @param traceId  Trace identifier propagated to logging and token accounting.
-     *  @param onToken  Callback invoked for each streamed text token.
-     *  @param onEvent  Callback invoked for structured lifecycle events.
+    /**
+     *  Runs the full plan→act→observe loop for one user turn.
+     *  Emits exactly one terminal event: [[AgentEvent.Final]], [[AgentEvent.Cancelled]],
+     *  or [[AgentEvent.AgentError]].
+     *  @param session     Active session metadata.
+     *  @param history     Prior message history (assembled by caller).
+     *  @param userMsg     New user message appended to the history.
+     *  @param traceId     Trace ID for this run.
+     *  @param cancelFlag  Polled between iterations and tool calls for external cancellation.
+     *  @param emitToken   Called to emit each streamed text token from the LLM.
+     *  @param emitEvent   Called to emit structured lifecycle SSE events.
      */
     def run(
-        session: Session,
-        history: List[Message],
-        userMsg: Message,
-        traceId: String,
-        onToken: String => Unit,
-        onEvent: AgentEvent => Unit
+        session:    Session,
+        history:    List[Message],
+        userMsg:    Message,
+        traceId:    String,
+        cancelFlag: AtomicBoolean,
+        emitToken:  String => Unit,
+        emitEvent:  AgentEvent => Unit
     ): Unit =
     {
-        TraceLogger.info(traceId, "agent_loop_start", Map("sessionId" -> session.id, "model" -> session.model))
-        onEvent(AgentEvent.IterationBoundary(1))
+        TraceLogger.info(traceId, "agent_loop_start",
+            Map("sessionId" -> session.id, "model" -> session.model))
 
-        val buf            = StringBuilder()
-        val wrappedOnToken = (tok: String) => { buf.append(tok); onToken(tok) }
+        // Accumulates assistant + [TOOL RESULT] turn pairs added during the current run.
+        // These are appended after the budget-windowed history on every buildContext() call
+        // so the model always sees the full in-flight tool exchange, regardless of budget.
+        val toolResultTurns = scala.collection.mutable.ListBuffer.empty[Message]
+        val permLatch          = permissionLatchFactory()
+        var iteration = 1
 
-        val usage = try
+        // Rebuilds the full message list for the next LLM call on every iteration.
+        // ContextManager applies the token-budget window to the persistent history,
+        // then toolResultTurns (always included) are appended after.
+        def buildContext(): List[Message] =
         {
-            llm.stream(history :+ userMsg, wrappedOnToken)
+            val assembled = ContextManager.assemble(
+                history             = history,
+                userMsg             = userMsg,
+                session             = session,
+                contextBudgetTokens = settings.contextBudgetTokens,
+                traceId             = traceId
+            )
+            assembled ++ toolResultTurns.toList
         }
-        catch
+
+        var running = true
+        while (running)
         {
-            case ex: Exception =>
-                TraceLogger.error(traceId, "llm_stream_error", Map("error" -> ex.getMessage))
-                onEvent(AgentEvent.AgentError(ex.getMessage))
-                return
+            // --- Safety guards (checked before every LLM call) ---
+
+            if (iteration > settings.maxIterations)
+            {
+                // Hard cap: prevents runaway loops on models that never emit <done>.
+                TraceLogger.warn(traceId, "max_iterations_exceeded",
+                    Map("maxIterations" -> settings.maxIterations.toString))
+                emitEvent(AgentEvent.AgentError("max_iterations_exceeded"))
+                running = false
+            }
+            else if (cancelFlag.get())
+            {
+                // The UI sent a cancel request (DELETE /runs/:runId sets this flag).
+                TraceLogger.info(traceId, "agent_cancelled", Map("iteration" -> iteration.toString))
+                emitEvent(AgentEvent.Cancelled)
+                running = false
+            }
+            else
+            {
+                // --- PLAN: signal iteration start, then call the LLM ---
+
+                emitEvent(AgentEvent.IterationBoundary(iteration))
+
+                val buf = StringBuilder()
+                // wrappedEmitToken captures each token into buf (for full-response parsing)
+                // and simultaneously streams it to the SSE client via emitToken.
+                val wrappedEmitToken = (tok: String) => { buf.append(tok); emitToken(tok) }
+
+                val context = buildContext()
+                emitEvent(AgentEvent.LLMCallStart(iteration, llm.modelName, context.length))
+                TraceLogger.info(traceId, "llm_call_start", Map(
+                    "iteration" -> iteration.toString,
+                    "model"     -> llm.modelName,
+                    "msgCount"  -> context.length.toString,
+                    "context"   -> context.map(m =>
+                        s"[${m.role.value}] ${m.content}"
+                    ).mkString("\n---\n")
+                ))
+
+                val usageOpt: Option[LLMUsage] = try
+                {
+                    Some(llm.stream(context, wrappedEmitToken))
+                }
+                catch
+                {
+                    case ex: Exception =>
+                        TraceLogger.error(traceId, "llm_stream_error",
+                            Map("iteration" -> iteration.toString, "error" -> ex.getMessage))
+                        emitEvent(AgentEvent.AgentError(ex.getMessage))
+                        running = false
+                        None
+                }
+
+                usageOpt.foreach { usage =>
+                    tokenAccounting.record(traceId, session.id, usage)
+
+                    val responseText = buf.toString
+
+                    TraceLogger.info(traceId, "llm_response", Map(
+                        "iteration" -> iteration.toString,
+                        "response"  -> responseText
+                    ))
+
+                    // --- ACT: scan the full response for tool calls ---
+                    val toolCallResults = ToolCallParser.parse(responseText, traceId)
+
+                    if (toolCallResults.nonEmpty)
+                    {
+                        val calls = toolCallResults.collect {
+                            case ToolCallResult.Success(tc) => tc.rawCommand
+                            case ToolCallResult.Failure(e)  => s"[parse_failed: ${e.reason}]"
+                        }.mkString(" | ")
+                        TraceLogger.info(traceId, "tool_calls_parsed", Map(
+                            "iteration" -> iteration.toString,
+                            "count"     -> toolCallResults.length.toString,
+                            "calls"     -> calls
+                        ))
+                    }
+
+                    if (toolCallResults.isEmpty)
+                    {
+                        // No run() calls → the model is done. Look for the <done> marker;
+                        // accept the response regardless (soft fallback if marker is absent).
+                        val hasDone = responseText.contains("<done>")
+                        if (!hasDone)
+                        {
+                            TraceLogger.warn(traceId, "missing_terminator",
+                                Map("iteration" -> iteration.toString))
+                        }
+                        val finalText    = responseText.replace("<done>", "").trim
+                        val assistantMsg = messageStore.append(session.id, MessageRole.Assistant, finalText)
+                        TraceLogger.info(traceId, "agent_loop_complete", Map(
+                            "sessionId"        -> session.id,
+                            "assistantMsgId"   -> assistantMsg.id,
+                            "iterations"       -> iteration.toString,
+                            "promptTokens"     -> usage.promptTokens.toString,
+                            "completionTokens" -> usage.completionTokens.toString
+                        ))
+                        emitEvent(AgentEvent.Final(assistantMsg.id))
+                        running = false
+                    }
+                    else
+                    {
+                        // --- OBSERVE: dispatch each tool call and collect results ---
+
+                        // All results for this iteration are concatenated into one [TOOL RESULT] block
+                        // and injected as a user-role turn so the model can observe them together.
+                        val resultLines = StringBuilder()
+                        resultLines.append("[TOOL RESULT]\n")
+
+                        var cancelled = false
+                        val callIter  = toolCallResults.iterator
+                        while (callIter.hasNext && !cancelled)
+                        {
+                            callIter.next() match
+                            {
+                                case ToolCallResult.Failure(err) =>
+                                    // Inject a structured error so the model can observe and self-correct.
+                                    // Silently dropping would corrupt the model's reasoning chain.
+                                    // Note: cancelFlag is not checked here — Failure injection is an
+                                    // instant in-memory operation with no I/O, so the overhead is negligible.
+                                    TraceLogger.warn(traceId, "tool_parse_failure_injected",
+                                        Map("iteration" -> iteration.toString, "parseError" -> err.reason))
+                                    val errText =
+                                        s"$$ ${err.rawSnippet}\n" +
+                                        s"error: parse_failed\n" +
+                                        s"─ message: ${err.reason}\n" +
+                                        s"─ hint: check quoting — command= value must be a double-quoted string\n"
+                                    resultLines.append(errText)
+
+                                case ToolCallResult.Success(tc) =>
+                                    if (cancelFlag.get())
+                                    {
+                                        // Check for cancellation between individual tool dispatches.
+                                        TraceLogger.info(traceId, "agent_cancelled_in_tool",
+                                            Map("iteration" -> iteration.toString))
+                                        emitEvent(AgentEvent.Cancelled)
+                                        cancelled = true
+                                        running   = false
+                                    }
+                                    else
+                                    {
+                                        emitEvent(AgentEvent.ToolCallStart(tc.rawCommand, ""))
+                                        val t0       = System.currentTimeMillis()
+                                        // Dispatch through VirtualShell: Tokenizer → CommandRegistry → Presentation.
+                                        val response = virtualShell.execute(tc.rawCommand, buildCtx(session, traceId, emitEvent, permLatch))
+                                        val durMs    = System.currentTimeMillis() - t0
+                                        emitEvent(AgentEvent.ToolCallResult(tc.rawCommand, response.text, durMs))
+                                        resultLines.append(response.text)
+                                        resultLines.append("\n")
+                                        // Persist the tool run immediately (per-call, not end-of-run)
+                                        // so partial runs survive cancellation or JVM crash.
+                                        val toolName = tc.rawCommand.split(' ').headOption.getOrElse(tc.rawCommand)
+                                        val isErr    = response.text.contains("\nerror:")
+                                        runStore.insertRun(ToolRun(
+                                            id         = UUID.randomUUID().toString,
+                                            sessionId  = session.id,
+                                            tool       = toolName,
+                                            input      = s"""${tc.rawCommand}""",
+                                            output     = response.text,
+                                            status     = if isErr then RunStatus.Error else RunStatus.Success,
+                                            traceId    = traceId,
+                                            durationMs = durMs
+                                        ))
+                                        TraceLogger.info(traceId, "tool_call", Map(
+                                            "iteration"  -> iteration.toString,
+                                            "command"    -> tc.rawCommand,
+                                            "durationMs" -> durMs.toString
+                                        ))
+                                    }
+                            }
+                        }
+
+                        if (!cancelled)
+                        {
+                            // Inject the assistant turn and the tool results as a user turn
+                            // so the next buildContext() includes them after the budget window.
+                            toolResultTurns.append(
+                                Message(id = "", sessionId = session.id, role = MessageRole.Assistant,
+                                        content = responseText, timestamp = "")
+                            )
+                            toolResultTurns.append(
+                                Message(id = "", sessionId = session.id, role = MessageRole.User,
+                                        content = resultLines.toString, timestamp = "")
+                            )
+                            iteration += 1
+                            // Loop back to PLAN: the model will read the results and decide next action.
+                        }
+                    }
+                }
+            }
         }
+    }
 
-        tokenAccounting.record(traceId, session.id, usage)
-
-        val assistantMsg = messageStore.append(session.id, "assistant", buf.toString)
-        TraceLogger.info(traceId, "agent_loop_complete", Map(
-            "sessionId"        -> session.id,
-            "assistantMsgId"   -> assistantMsg.id,
-            "promptTokens"     -> usage.promptTokens.toString,
-            "completionTokens" -> usage.completionTokens.toString
-        ))
-        onEvent(AgentEvent.Final(assistantMsg.id))
+    /**
+     *  Builds an [[ExecutionContext]] for tool dispatch within a single agent run.
+     *  @param session   Active session.
+     *  @param traceId   Current trace ID.
+     *  @param onEvent   SSE event emitter callback.
+     *  @param latch     Per-run permission handoff queue.
+     *  @return          Fully wired execution context.
+     */
+    protected def buildCtx(
+        session: Session,
+        traceId: String,
+        onEvent: AgentEvent => Unit,
+        latch:   SynchronousQueue[GrantDecision]
+    ): ExecutionContext =
+    {
+        ExecutionContext(
+            session          = session,
+            traceId          = traceId,
+            scopeStore       = scopeStore,
+            scratchpad       = SessionScratchpad(),
+            memoryStore      = memoryStore,
+            onEvent          = onEvent,
+            permissionLatch  = latch
+        )
     }
 }

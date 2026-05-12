@@ -38,7 +38,7 @@ const Api = (() => {
   /**
    * Open an SSE stream. Returns an EventSource-like object with .close().
    * @param {string} path
-   * @param {{ onToken, onIteration, onToolStart, onToolResult, onFinal, onCancelled, onError, onDone }} handlers
+   * @param {{ onToken, onIteration, onToolStart, onToolResult, onFinal, onCancelled, onError, onDone, onPermissionRequired }} handlers
    */
   function stream(path, handlers) {
     const url  = new URL(_baseUrl + path);
@@ -90,6 +90,7 @@ const Api = (() => {
       case 'cancelled':   handlers.onCancelled?.(); break;
       case 'error':       handlers.onError?.(JSON.parse(data).message); break;
       case 'done':        handlers.onDone?.(); break;
+      case 'permission_required': handlers.onPermissionRequired?.(JSON.parse(data)); break;
     }
   }
 

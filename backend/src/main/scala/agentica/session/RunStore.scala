@@ -60,7 +60,7 @@ class RunStore(conn: () => Connection)
         ps.setString(3, run.tool)
         ps.setString(4, run.input)
         ps.setString(5, run.output)
-        ps.setString(6, run.status)
+        ps.setString(6, run.status.value)
         ps.setString(7, run.traceId)
         ps.setLong(8, run.durationMs)
         ps.executeUpdate()
@@ -108,7 +108,7 @@ class RunStore(conn: () => Connection)
                 tool       = rs.getString("tool"),
                 input      = rs.getString("input"),
                 output     = rs.getString("output"),
-                status     = rs.getString("status"),
+                status     = RunStatus.unsafe(rs.getString("status")),
                 traceId    = rs.getString("trace_id"),
                 durationMs = rs.getLong("duration_ms")
             )

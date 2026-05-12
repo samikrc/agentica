@@ -1,0 +1,9 @@
+{
+  "model": "golden-test-model",
+  "description": "Two iterations: stat then read",
+  "responses": [
+    "Let me check if the file exists first.\nrun(command=\"files.stat path=data.json\")",
+    "The file exists. Let me read it now.\nrun(command=\"files.read path=data.json\")",
+    "Successfully read the JSON data.\n<done>"
+  ]
+}

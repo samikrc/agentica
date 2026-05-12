@@ -1,0 +1,8 @@
+{
+  "model": "golden-test-model",
+  "description": "Multiple tool calls in a single response",
+  "responses": [
+    "I'll check the README and the main file.\nrun(command=\"files.stat path=README.md\") run(command=\"files.read path=src/main.py\")",
+    "Both files exist and I've read the main file.\n<done>"
+  ]
+}

@@ -24,12 +24,18 @@ object AppDirs
             case Some(override_) => Paths.get(override_)
             case None =>
                 val os = sys.props("os.name").toLowerCase
-                if os.contains("win") then
+                if (os.contains("win"))
+                {
                     Paths.get(sys.env.getOrElse("APPDATA", sys.props("user.home")), appName)
-                else if os.contains("mac") then
+                }
+                else if (os.contains("mac"))
+                {
                     Paths.get(sys.props("user.home"), "Library", "Application Support", appName)
+                }
                 else
+                {
                     Paths.get(sys.props("user.home"), ".local", "share", appName)
+                }
         }
         Files.createDirectories(base)
         base

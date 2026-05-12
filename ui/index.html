@@ -14,11 +14,17 @@
         <div id="sidebar-header">
           <span class="app-name">Agentica</span>
           <div class="sidebar-actions">
-            <button id="btn-settings" title="Settings" aria-label="Settings">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M19.4 13.5c.1-.5.1-1 .1-1.5s0-1-.1-1.5l2.1-1.6-2-3.5-2.5 1a8 8 0 0 0-2.6-1.5L14 2h-4l-.4 2.9A8 8 0 0 0 7 6.4l-2.5-1-2 3.5 2.1 1.6a9 9 0 0 0-.1 1.5c0 .5 0 1 .1 1.5L2.5 15.1l2 3.5 2.5-1a8 8 0 0 0 2.6 1.5L10 22h4l.4-2.9a8 8 0 0 0 2.6-1.5l2.5 1 2-3.5-2.1-1.6ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/>
-              </svg>
-            </button>
+            <div id="settings-dropdown" class="dropdown">
+              <button id="btn-settings" title="Menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
+                </svg>
+              </button>
+              <div class="dropdown-menu" role="menu" aria-labelledby="btn-settings">
+                <button class="dropdown-item" id="menu-settings" role="menuitem">Settings</button>
+                <button class="dropdown-item" id="menu-debug-log" role="menuitem">Debug Log</button>
+              </div>
+            </div>
             <button id="btn-new-session" title="New session">+</button>
           </div>
         </div>
@@ -33,8 +39,10 @@
               <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
             </svg>
           </button>
-          <span id="chat-title">Select or create a session</span>
-          <button id="btn-cancel-run" title="Stop generation" style="display:none">■ Stop</button>
+          <div id="chat-title-group">
+            <span id="chat-title">Select or create a session</span>
+            <span id="chat-path"></span>
+          </div>
         </div>
 
         <div id="messages"></div>
@@ -95,7 +103,33 @@
     </div>
   </div>
 
+  <!-- Permission Modal -->
+  <div id="permission-modal">
+    <div class="modal-box">
+      <h2>Permission Required</h2>
+      <p id="permission-message">A tool is requesting access to a file.</p>
+      <div id="permission-details">
+        <div class="permission-detail-row">
+          <span class="permission-label">Tool:</span>
+          <span id="permission-tool" class="permission-value"></span>
+        </div>
+        <div class="permission-detail-row">
+          <span class="permission-label">Path:</span>
+          <span id="permission-path" class="permission-value"></span>
+        </div>
+      </div>
+      <div id="permission-actions">
+        <button type="button" class="permission-btn permission-deny" id="btn-permission-deny">Deny</button>
+        <button type="button" class="permission-btn permission-allow" id="btn-permission-once">Allow once</button>
+        <button type="button" class="permission-btn permission-allow" id="btn-permission-session">Allow for session</button>
+        <button type="button" class="permission-btn permission-allow permission-primary" id="btn-permission-always">Allow always</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/marked.min.js"></script>
   <script src="js/api.js"></script>
+  <script src="js/permissions.js"></script>
   <script src="js/settings.js"></script>
   <script src="js/session.js"></script>
   <script src="js/chat.js"></script>

@@ -150,13 +150,33 @@ Scans the model's response text for all `run(command="...")` occurrences in orde
 ```scala
 case class ParsedToolCall(rawCommand: String, startOffset: Int, endOffset: Int)
 
+/** A run() call that could not be parsed; carries the raw offending text for error injection. */
+case class ParseFailure(rawSnippet: String, reason: String, startOffset: Int)
+
+/** Sum type returned by ToolCallParser.parse(). */
+enum ToolCallResult:
+  case Success(call: ParsedToolCall)
+  case Failure(err: ParseFailure)
+
 object ToolCallParser:
-  def parse(text: String): List[ParsedToolCall]
+  def parse(text: String, traceId: String): List[ToolCallResult]
 ```
 
 `rawCommand` is the unescaped value of the `command="..."` argument, ready for `Tokenizer.parse()`. `startOffset`/`endOffset` are used by the loop to extract any narrative text the model wrote outside `run()` calls.
 
-Edge cases to handle: nested quotes, missing closing `)`, extra whitespace. Malformed `run()` syntax is skipped silently and logged as `TraceLogger.warn` with the raw response — never thrown.
+Edge cases to handle: nested quotes, missing closing `)`, extra whitespace. Malformed `run()` syntax is **never silently dropped**. Instead:
+- A `TraceLogger.warn` is emitted with `parseError` and the raw snippet.
+- A `ToolCallResult.Failure` is returned in-position so `AgentLoop` can inject a structured error result into the `[TOOL RESULT]` block.
+
+**Rationale:** Silently skipping a malformed `run()` call corrupts the model's reasoning chain. On the next iteration the model receives a `[TOOL RESULT]` block with no entry for the call it intended to make. It cannot distinguish "tool ran and returned nothing" from "tool was never dispatched". This can cause the model to fabricate output, stall in a loop, or produce a confident wrong final answer. By injecting a structured error result the model can observe the failure and self-correct (e.g. re-issue the call with corrected syntax).
+
+Error result injected by `AgentLoop` for each `ToolCallResult.Failure`:
+```
+$ <rawSnippet>
+error: parse_failed
+─ message: <reason>
+─ hint: check quoting — command= value must be a double-quoted string
+```
 
 ### 3.7 Final Answer Detection
 
@@ -449,10 +469,10 @@ case class Grant(
   sessionId: Option[String],  // None = global
   toolSet:   String,          // "files.write", "files.*", etc.
   pathPrefix: Option[String], // None = any path
-  ttl:       GrantTtl
+  ttl:       GrantTTL
 )
 
-enum GrantTtl:
+enum GrantTTL:
   case Once          // consumed on first use, then deleted
   case ForSession    // valid while session is active
   case Always        // persisted indefinitely
@@ -466,7 +486,7 @@ Sensitive tools in Phase 2: `files.write`. (`memory.set` is not gated — it's s
 
 ```scala
 enum GrantDecision:
-  case Granted(ttl: GrantTtl, pathPrefix: Option[String])
+  case Granted(ttl: GrantTTL, pathPrefix: Option[String])
   case Denied
 ```
 
@@ -490,7 +510,7 @@ VirtualShell.execute(cmd, ctx):
 
 Flow:
 1. Agent loop hits a sensitive tool with no existing grant.
-2. Emits `AgentEvent.PermissionRequired(tool, path, List[GrantTtl])` over SSE.
+2. Emits `AgentEvent.PermissionRequired(tool, path, List[GrantTTL])` over SSE.
 3. Blocks on a per-run `SynchronousQueue[GrantDecision]` with a **60-second timeout**.
 4. Frontend receives the SSE event, shows a modal dialog with options: **Allow once / Allow for session / Allow always / Deny**.
 5. User responds → frontend calls `POST /permissions { runId, tool, path, decision }`.
@@ -733,7 +753,7 @@ Phase 2 deliberately replaces the inline debug pane with a **"Open debug log" bu
 `TraceLogger` emits structured log lines to **both stdout and `agentica.log`**. Log line fields:
 - `traceId`, `sessionId`, `iteration`, `tool`, `status`, `durationMs`
 - For `llm.*` tool calls: `callType=tool_llm`, `parentTraceId` linking to the outer run trace.
-- For permission events: `tool`, `path`, `decision`, `grantTtl`.
+- For permission events: `tool`, `path`, `decision`, `grantTTL`.
 - For context truncation: `messagesDropped`, `budgetTokens`.
 - For parse failures: `rawResponse` (first 200 chars), `parseError`.
 
@@ -875,7 +895,7 @@ Given the dependency graph, the recommended order is:
 - `shell/ToolCallParser.scala` *(extracts `run()` calls from model output)*
 - `shell/Scratchpad.scala` *(session-scoped content cache: `ScratchEntry`, `SessionScratchpad`)*
 - `agent/ExecutionContext.scala` *(carries rootPath, traceId, sessionId, scopeStore, scratchpad)*
-- `permissions/Models.scala` *(`Grant`, `GrantTtl`, `GrantDecision`)*
+- `permissions/Models.scala` *(`Grant`, `GrantTTL`, `GrantDecision`)*
 
 ### New test scaffolding:
 - `tests/.../ScriptedLLMProvider.scala` *(takes `List[String]`, returns one per `stream()` call)*
@@ -885,7 +905,150 @@ Given the dependency graph, the recommended order is:
 
 ---
 
-## 13. Out of Scope for Phase 2
+## 13. Tool Ecosystem (Phase 3+)
+
+This section maps the full set of planned tools for Agentica, grouped by category. Tools marked **Phase 3** are implemented using pure-JVM dependencies. Tools marked **Phase 4** require external binaries or cloud APIs.
+
+### 13.0 Reference Use Cases
+
+The following use cases drive tool design and are referenced throughout this section:
+
+| ID | Use Case | Triggering Input | Desired Output | Key Tools Needed |
+|---|---|---|---|---|
+| **UC1** | **Web to Presentation** | URLs or PDFs containing research/articles | PPTX slide deck summarizing content | `browser.open`, `files.read_pdf`, `llm.summarize`, `files.write_pptx` |
+| **UC2** | **Image to Document** | Image file (diagram, whiteboard, screenshot) | DOCX or PDF describing the image content | `vision.describe`, `files.write_docx` |
+| **UC3** | **Audio to Presentation** | Audio file (meeting recording, podcast) | PPTX with transcript summary and key points | `audio.transcribe`, `llm.summarize`, `files.write_pptx` |
+
+### 13.1 Browser Tools (`browser.*`)
+
+**Goal:** Full web content extraction and automation using headless browsers.
+
+**Libraries:** `playwright-java` (Microsoft Playwright Java bindings) — requires `chromium`/`firefox` browser binaries via `playwright install`.
+
+| Tool | Args | Output | Phase |
+|---|---|---|---|
+| `browser.open` | `url` | Page text/markdown | Phase 3 |
+| `browser.select` | `selector` (CSS), `attribute` (optional) | Selected element text | Phase 3 |
+| `browser.click` | `selector` | Confirmation + new page state | Phase 4 |
+| `browser.fill` | `selector`, `value` | Confirmation | Phase 4 |
+| `browser.screenshot` | `url` or `selector`, `fullPage` | PNG bytes (stored to scratchpad) | Phase 4 |
+| `browser.pdf` | `url` | PDF bytes (stored to scratchpad) | Phase 4 |
+
+**Use cases:**
+- **UC1 (web→PPTX):** `browser.open` + `browser.select` to extract content from JS-rendered pages
+- **UC2 (image review):** `browser.screenshot` for visual verification of pages
+
+### 13.2 Document Tools (`files.read_*`, `files.write_*`)
+
+**Goal:** Read and write Office documents. Two approaches: **Markdown-first** (recommended for LLM generation) and **Direct API** (fallback).
+
+**Libraries:**
+- **Pandoc** (external) — converts Markdown to DOCX/PPTX with template support
+- **Flexmark** (JVM) — parses Markdown AST for custom rendering
+- **Apache POI** (JVM) — direct DOCX/PPTX construction (fallback)
+- **Apache PDFBox** (JVM) — direct PDF generation
+- **Playwright** (external, already required for `browser.*`) — HTML → PDF
+
+#### Markdown-First Approach (Recommended)
+
+The agent generates documents in Markdown format first, then converts:
+
+```
+Content → Markdown → [Pandoc] → DOCX/PPTX
+         ↓
+         → [Flexmark → POI] → DOCX/PPTX (fallback)
+         ↓
+         → [Playwright] → PDF (print-to-PDF)
+```
+
+**Benefits:**
+- **LLM-friendly** — Markdown is simpler to generate than HTML or API calls
+- **Human-verifiable** — User can preview `.md` before conversion
+- **Professional output** — Pandoc templates provide consistent branding
+- **Graceful degradation** — Pure-JVM fallback if Pandoc unavailable
+
+| Tool | Args | Output | Phase |
+|---|---|---|---|
+| `files.write_markdown` | `path`, `content` | Saved `.md` file | Phase 3 |
+| `files.markdown_to_docx` | `path`, `template` (optional) | DOCX file | Phase 3 |
+| `files.markdown_to_pptx` | `path`, `template` (optional) | PPTX file | Phase 3 |
+| `files.markdown_to_pdf` | `path` | PDF file | Phase 3 |
+| `files.read_pdf` | `path`, `pages` (optional range) | Extracted text | Phase 3 |
+| `files.read_docx` | `path` | Extracted text | Phase 3 |
+
+**Markdown slide format for PPTX:**
+```markdown
+---
+title: Q3 2024 Results
+---
+
+# Revenue Overview
+
+- $42M (+23% YoY)
+- Strong enterprise adoption
+
+---
+
+# Key Drivers
+
+1. Seat expansion: +15%
+2. New logos: +8%
+```
+
+**Design notes:**
+- All document tools respect `PathSandbox` checks (workspace-scoped paths only).
+- `files.read_*` outputs plain text for LLM consumption; original file remains in workspace.
+- Pandoc is an optional external dependency; graceful fallback to Flexmark + POI if unavailable.
+- Templates (`.docx`, `.pptx`) can be stored in workspace for branded output.
+
+**Use cases:**
+- **UC1 (web→PPTX):** `browser.open` → `llm.summarize` → `files.write_markdown` → `files.markdown_to_pptx`
+- **UC2 (image→DOCX):** `vision.describe` → `files.write_markdown` → `files.markdown_to_docx`
+- **UC3 (audio→PPTX):** `audio.transcribe` → `llm.summarize` → `files.write_markdown` → `files.markdown_to_pptx`
+
+### 13.3 Vision Tools (`vision.*`)
+
+**Goal:** Extract structured descriptions from images.
+
+**Implementation:** Uses multimodal LLM via `LLMProvider`. Not a JVM library — depends on the connected LLM supporting `image_url` in messages (GPT-4V, LLaVA, etc.).
+
+| Tool | Args | Output | Phase |
+|---|---|---|---|
+| `vision.describe` | `path` (image file in workspace) | Structured description | Phase 4 |
+| `vision.extract_text` | `path` | OCR text | Phase 4 (uses LLM or Tesseract) |
+
+**Design notes:**
+- Images must be in the workspace (PathSandbox check applies).
+- Tool reads image bytes, base64-encodes, sends to LLM with prompt: *"Describe this image in detail..."*
+- Output is plain text suitable for downstream `files.write_docx` or `memory.set`.
+
+### 13.4 Audio Tools (`audio.*`)
+
+**Goal:** Transcribe audio files to text.
+
+**Implementation:** External dependency — no pure-JVM solution matches Whisper quality.
+
+| Tool | Args | Output | Phase |
+|---|---|---|---|
+| `audio.transcribe` | `path`, `language` (optional) | Transcribed text | Phase 4 |
+
+**Use case:**
+- **UC3 (audio→PPTX):** `audio.transcribe` → `llm.summarize` → `files.write_pptx`
+
+**Options:**
+- **Option A (subprocess):** Call `whisper` CLI if installed on host. Graceful degradation if missing.
+- **Option B (cloud API):** POST to OpenAI `/v1/audio/transcriptions` or Azure Speech. Requires API key.
+- **Option C (bundled binary):** Package `whisper.cpp` per-platform (complex; deferred).
+
+**Recommendation:** Implement Option A first (subprocess with detection), add cloud fallback later.
+
+### 13.5 Web Tools (`web.*`) — Deprecated in favor of `browser.*`
+
+The original `web.fetch` using Jsoup is superseded by `browser.open`. Jsoup cannot render SPAs or execute JavaScript. Browser tools cover all static + dynamic cases.
+
+---
+
+## 14. Out of Scope for Phase 2
 
 Noted explicitly to avoid scope creep:
 
@@ -897,7 +1060,11 @@ Noted explicitly to avoid scope creep:
 - **RAG / proactive file injection** — Phase 5; files enter context only via explicit `files.read` in Phase 2.
 - **Cloud LLM provider routing** for `llm.*` tools — Phase 3+ once cloud providers exist.
 - **Native function-call message role** — Phase 3+ behind a `nativeFunctionCalling: Boolean` per-provider flag.
-- **Office document tools** (`doc.word.*`, `doc.ppt.*`) — Phase 3.
+- **Office document tools** (`files.read_docx`, `files.write_pptx`, etc.) — Phase 3 (see §13.2).
+- **Browser automation** (`browser.*`) — Phase 3–5 (see §13.1).
+- **Vision tools** (`vision.*`) — Phase 4 (see §13.3).
+- **Audio transcription** (`audio.*`) — Phase 4 (see §13.4).
+- **Packaging** (`jlink`, `jpackage`) — Phase 5.
 
 ---
 

@@ -1,0 +1,8 @@
+{
+  "model": "golden-test-model",
+  "description": "Simple file read scenario: model reads a file and reports its contents",
+  "responses": [
+    "I'll read the data file for you.\nrun(command=\"files.read path=data.txt\")",
+    "The file contains the expected data.\n<done>"
+  ]
+}

@@ -30,7 +30,7 @@ object LLMRequestsTest extends App
     System.err.println(s"=== OpenAIProvider test ===")
     val t0       = System.currentTimeMillis()
     val provider = OpenAIProvider(baseUrl = baseUrl, modelName = modelName, apiKey = apiKey)
-    val msgs     = List(agentica.session.Message(id = "test-1", sessionId = "test-session", role = "user", content = "say hi in one word", timestamp = "2024-01-01T00:00:00Z"))
+    val msgs     = List(agentica.session.Message(id = "test-1", sessionId = "test-session", role = agentica.session.MessageRole.User, content = "say hi in one word", timestamp = "2024-01-01T00:00:00Z"))
     try
     {
         val usage = provider.stream(msgs, tok => System.err.println(s"TOKEN: $tok"))

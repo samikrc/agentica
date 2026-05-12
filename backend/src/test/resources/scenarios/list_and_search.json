@@ -1,0 +1,8 @@
+{
+  "model": "golden-test-model",
+  "description": "List directory then search within files",
+  "responses": [
+    "Let me explore the src directory and search for TODOs.\nrun(command=\"files.list path=src recursive=true\") run(command=\"files.search query=TODO path=src\")",
+    "Found the files and some TODO items.\n<done>"
+  ]
+}

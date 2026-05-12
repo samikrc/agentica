@@ -78,7 +78,7 @@
         <dependency>
             <groupId>org.scalatest</groupId>
             <artifactId>scalatest_3</artifactId>
-            <version>3.2.19</version>
+            <version>3.2.20</version>
             <scope>test</scope>
         </dependency>
 
@@ -124,6 +124,7 @@
                         <!-- Enable virtual threads (Loom) -->
                         <jvmArg>--enable-preview</jvmArg>
                     </jvmArgs>
+                    <recompileMode>incremental</recompileMode>
                 </configuration>
             </plugin>
 
@@ -136,6 +137,26 @@
                     <mainClass>${exec.mainClass}</mainClass>
                     <includePluginDependencies>false</includePluginDependencies>
                 </configuration>
+            </plugin>
+
+            <!-- enable scalatest -->
+            <plugin>
+                <groupId>org.scalatest</groupId>
+                <artifactId>scalatest-maven-plugin</artifactId>
+                <version>2.2.0</version>
+                <configuration>
+                    <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
+                    <junitxml>.</junitxml>
+                    <filereports>TestSuite.txt</filereports>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>test</id>
+                        <goals>
+                            <goal>test</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
 
             <!-- Shade: fat-jar for sidecar distribution -->
