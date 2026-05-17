@@ -3,7 +3,7 @@ package agentica.agent
 import agentica.llm.LLMUsage
 import agentica.observability.TokenAccounting
 import agentica.permissions.{GrantDecision, ScopeStore}
-import agentica.session.{MemoryEntry, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, ToolRun}
+import agentica.session.{AgentTurn, AgentTurnStore, MemoryEntry, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, ToolRun}
 import agentica.settings.AppSettings
 import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
 import agentica.testutil.ScriptedLLMProvider
@@ -113,7 +113,9 @@ class AgentLoopTest extends AnyFunSuite
         accounting:   TokenAccounting,
         shell:        VirtualShell,
         settings:     AppSettings
-    ) extends AgentLoop(llm, messageStore, runStore, accounting, shell, settings,
+    ) extends AgentLoop(llm, messageStore, runStore,
+        new AgentTurnStore(null) { override def insert(t: AgentTurn): Unit = () },
+        accounting, shell, settings,
         null.asInstanceOf[ScopeStore],
         null.asInstanceOf[MemoryStore],
         () => new SynchronousQueue()
@@ -159,7 +161,7 @@ class AgentLoopTest extends AnyFunSuite
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
             emitToken = _ => (),
             emitEvent = {
-                case AgentEvent.Final(id) => finalId = Some(id)
+                case AgentEvent.Final(id, _) => finalId = Some(id)
                 case _                   => ()
             }
         )
@@ -208,8 +210,8 @@ class AgentLoopTest extends AnyFunSuite
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
             emitToken = _ => (),
             emitEvent = {
-                case AgentEvent.Final(_) => finalEmitted = true
-                case _                  => ()
+                case AgentEvent.Final(_, _) => finalEmitted = true
+                case _                      => ()
             }
         )
 
@@ -263,7 +265,7 @@ class AgentLoopTest extends AnyFunSuite
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
             emitToken = _ => (),
             emitEvent = {
-                case AgentEvent.Final(_)                => finalEmitted    = true
+                case AgentEvent.Final(_, _)             => finalEmitted    = true
                 case AgentEvent.ToolCallStart(_, _)     => toolStartCount  += 1
                 case AgentEvent.ToolCallResult(_, _, _) => toolResultCount += 1
                 case _                                  => ()
@@ -373,8 +375,8 @@ class AgentLoopTest extends AnyFunSuite
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
             emitToken = _ => (),
             emitEvent = {
-                case AgentEvent.Final(_) => finalEmitted = true
-                case _                  => ()
+                case AgentEvent.Final(_, _) => finalEmitted = true
+                case _                      => ()
             }
         )
 
@@ -409,7 +411,7 @@ class AgentLoopTest extends AnyFunSuite
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
             emitToken = _ => (),
             emitEvent = {
-                case AgentEvent.Final(_)             => finalEmitted   = true
+                case AgentEvent.Final(_, _)          => finalEmitted   = true
                 case AgentEvent.IterationBoundary(_) => iterationCount += 1
                 case _                               => ()
             }
@@ -460,7 +462,7 @@ class AgentLoopTest extends AnyFunSuite
         assert(errorEmitted,             "AgentError emitted when second LLM call throws")
     }
 
-    test("all-failures response causes next iteration to receive parse error context") {
+    test("all parser failures still inject observations and continue") {
         // All calls in the first response are malformed → no Success dispatches.
         // The loop still injects a [TOOL RESULT] with parse errors and calls the LLM again.
         // The second response provides a final answer — verifying the loop recovered.
@@ -477,8 +479,8 @@ class AgentLoopTest extends AnyFunSuite
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
             emitToken = _ => (),
             emitEvent = {
-                case AgentEvent.Final(_) => finalEmitted = true
-                case _                  => ()
+                case AgentEvent.Final(_, _) => finalEmitted = true
+                case _                      => ()
             }
         )
 
@@ -639,7 +641,9 @@ class AgentLoopTest extends AnyFunSuite
         shell:    VirtualShell,
         settings: AppSettings
     ) extends AgentLoop(
-        llm, msgStore, rsStore, acct, shell, settings,
+        llm, msgStore, rsStore,
+        new AgentTurnStore(null) { override def insert(t: AgentTurn): Unit = () },
+        acct, shell, settings,
         allGrantsScopeStore,
         noopMemoryStore,
         () => new SynchronousQueue()
@@ -695,6 +699,199 @@ class AgentLoopTest extends AnyFunSuite
         )
     }
 
+    // ── AgentTurn trajectory persistence ─────────────────────────────────────
+
+    /**
+     *  AgentTurnStore stub that records every inserted [[AgentTurn]] in memory.
+     */
+    private class StubAgentTurnStore extends AgentTurnStore(null)
+    {
+        val inserted: mutable.ListBuffer[AgentTurn] = mutable.ListBuffer.empty
+
+        override def insert(turn: AgentTurn): Unit =
+        {
+            inserted.append(turn)
+        }
+    }
+
+    /**
+     *  Like [[makeLoop]] but returns the [[StubAgentTurnStore]] alongside the loop
+     *  so tests can inspect the persisted [[AgentTurn]].
+     */
+    private def makeLoopWithTurns(
+        llmResponses: List[String],
+        shell:        EchoVirtualShell    = new EchoVirtualShell(),
+        store:        StubMessageStore    = new StubMessageStore(),
+        runStore:     StubRunStore        = new StubRunStore(),
+        accounting:   StubTokenAccounting = new StubTokenAccounting(),
+        settings:     AppSettings         = defaultSettings
+    ): (AgentLoop, StubMessageStore, StubAgentTurnStore, EchoVirtualShell) =
+    {
+        val llm       = ScriptedLLMProvider(llmResponses)
+        val turnStore = new StubAgentTurnStore()
+        val loop = new AgentLoop(
+            llm, store, runStore, turnStore, accounting, shell, settings,
+            null.asInstanceOf[ScopeStore],
+            null.asInstanceOf[MemoryStore],
+            () => new SynchronousQueue()
+        ) {
+            override protected def buildCtx(
+                session: Session,
+                traceId: String,
+                onEvent: AgentEvent => Unit,
+                latch:   SynchronousQueue[GrantDecision]
+            ): ExecutionContext =
+            {
+                ExecutionContext(
+                    session         = session,
+                    traceId         = traceId,
+                    scopeStore      = null.asInstanceOf[ScopeStore],
+                    scratchpad      = new SessionScratchpad(),
+                    memoryStore     = null.asInstanceOf[MemoryStore],
+                    onEvent         = onEvent,
+                    permissionLatch = latch
+                )
+            }
+        }
+        (loop, store, turnStore, shell)
+    }
+
+    test("single-shot response: AgentTurn is persisted with empty steps") {
+        val (loop, msgStore, turnStore, _) = makeLoopWithTurns(List("Direct answer.\n<done>"))
+
+        loop.run(session, Nil, userMsg, "trace-1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(turnStore.inserted.size == 1, "exactly one AgentTurn must be persisted")
+        val turn = turnStore.inserted.head
+        assert(turn.steps.isEmpty, "no tool calls means no steps")
+        assert(turn.sessionId == session.id)
+        assert(turn.userMsgId == userMsg.id)
+        val asstMsg = msgStore.appended.find(_.role == MessageRole.Assistant)
+        assert(asstMsg.isDefined)
+        assert(turn.assistantMsgId == asstMsg.get.id,
+            "assistantMsgId must match the persisted assistant message id")
+    }
+
+    test("one tool call: AgentTurn contains one thinking step and one tool_call step") {
+        val (loop, _, turnStore, _) = makeLoopWithTurns(
+            llmResponses = List(
+                """Let me check.\nrun(command="files.stat path=a.txt")""",
+                "Done looking.\n<done>"
+            )
+        )
+
+        loop.run(session, Nil, userMsg, "trace-2", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(turnStore.inserted.size == 1)
+        val steps = turnStore.inserted.head.steps
+        // Iteration 1: thinking + tool_call
+        val thinkingSteps = steps.filter(_.stepType == agentica.session.StepType.Thinking)
+        val toolSteps     = steps.filter(_.stepType == agentica.session.StepType.ToolCall)
+        assert(thinkingSteps.nonEmpty, "thinking step must be recorded for iteration 1")
+        assert(toolSteps.size == 1, "exactly one tool_call step expected")
+        assert(toolSteps.head.iteration == 1)
+        assert(toolSteps.head.command.contains("files.stat"))
+        assert(toolSteps.head.durationMs >= 0L)
+    }
+
+    test("two tool calls in one iteration: both appear as tool_call steps") {
+        val (loop, _, turnStore, _) = makeLoopWithTurns(
+            llmResponses = List(
+                """run(command="files.stat path=a.txt") run(command="files.stat path=b.txt")""",
+                "All done.\n<done>"
+            )
+        )
+
+        loop.run(session, Nil, userMsg, "trace-3", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        val steps    = turnStore.inserted.head.steps
+        val toolSteps = steps.filter(_.stepType == agentica.session.StepType.ToolCall)
+        assert(toolSteps.size == 2, "two tool calls must produce two tool_call steps")
+        assert(toolSteps.forall(_.iteration == 1))
+        val commands = toolSteps.map(_.command)
+        assert(commands.exists(_.contains("a.txt")))
+        assert(commands.exists(_.contains("b.txt")))
+    }
+
+    test("multi-iteration run: each iteration gets its own thinking step") {
+        val (loop, _, turnStore, _) = makeLoopWithTurns(
+            llmResponses = List(
+                """Iter 1 thinking.\nrun(command="files.stat path=a.txt")""",
+                """Iter 2 thinking.\nrun(command="files.stat path=b.txt")""",
+                "Final answer.\n<done>"
+            )
+        )
+
+        loop.run(session, Nil, userMsg, "trace-4", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        val steps = turnStore.inserted.head.steps
+        val thinkingByIter = steps.filter(_.stepType == agentica.session.StepType.Thinking).groupBy(_.iteration)
+        val toolByIter     = steps.filter(_.stepType == agentica.session.StepType.ToolCall).groupBy(_.iteration)
+        assert(thinkingByIter.contains(1), "thinking step for iteration 1")
+        assert(thinkingByIter.contains(2), "thinking step for iteration 2")
+        assert(toolByIter.getOrElse(1, Nil).size == 1, "one tool call in iteration 1")
+        assert(toolByIter.getOrElse(2, Nil).size == 1, "one tool call in iteration 2")
+        assert(thinkingByIter(1).head.content.contains("Iter 1"))
+        assert(thinkingByIter(2).head.content.contains("Iter 2"))
+    }
+
+    test("tool_call step result matches what the shell returned") {
+        val fixedResult = "$ files.stat path=a.txt\nok\n─────\nsize: 42"
+        val fixedShell = new EchoVirtualShell()
+        {
+            override def execute(rawCommand: String, ctx: agentica.tools.ExecutionContext)
+                : agentica.tools.AgentResponse =
+            {
+                agentica.tools.AgentResponse(text = fixedResult, durationMs = 55L)
+            }
+        }
+        val (loop, _, turnStore, _) = makeLoopWithTurns(
+            llmResponses = List(
+                """run(command="files.stat path=a.txt")""",
+                "Done.\n<done>"
+            ),
+            shell = fixedShell
+        )
+
+        loop.run(session, Nil, userMsg, "trace-5", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        val toolStep = turnStore.inserted.head.steps.find(_.stepType == agentica.session.StepType.ToolCall).get
+        assert(toolStep.result == fixedResult,
+            "tool_call step result must exactly match the shell response text")
+        assert(toolStep.durationMs >= 0L,
+            "tool_call step durationMs must be a non-negative wall-clock measurement")
+    }
+
+    test("cancelled run does not persist an AgentTurn") {
+        val cancelFlag = new AtomicBoolean(true)  // already cancelled before run starts
+        val (loop, _, turnStore, _) = makeLoopWithTurns(
+            llmResponses = List("This won't reach Final.\n<done>")
+        )
+
+        loop.run(session, Nil, userMsg, "trace-6", cancelFlag,
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(turnStore.inserted.isEmpty,
+            "a cancelled run must not insert an AgentTurn")
+    }
+
     test("tool calls before cancellation are persisted; calls after are not") {
         // cancelFlag is set to true after first tool dispatch via a counting shell.
         val cancelFlag = new AtomicBoolean(false)
@@ -725,5 +922,174 @@ class AgentLoopTest extends AnyFunSuite
 
         assert(rs.runs.size == 1, "only the completed tool call before cancel is persisted")
         assert(rs.runs.head.tool == "files.stat")
+    }
+
+    // ── Session title generation ───────────────────────────────────────────────
+
+    test("isDefaultSessionTitle returns true for default-named sessions") {
+        // This test uses reflection to access the private helper function.
+        // In production code, consider making the function package-private or public for testing.
+        val loop = new AgentLoop(
+            ScriptedLLMProvider(List("")),
+            new StubMessageStore(),
+            new StubRunStore(),
+            new StubAgentTurnStore(),
+            new StubTokenAccounting(),
+            new EchoVirtualShell(),
+            defaultSettings,
+            null.asInstanceOf[ScopeStore],
+            null.asInstanceOf[MemoryStore],
+            () => new SynchronousQueue()
+        )
+
+        // Use reflection to access the private method
+        val isDefaultMethod = loop.getClass.getDeclaredMethod("isDefaultSessionTitle", classOf[String])
+        isDefaultMethod.setAccessible(true)
+
+        assert(isDefaultMethod.invoke(loop, "New Session") == true)
+        assert(isDefaultMethod.invoke(loop, "Session 2024-01-01 12:00:00") == true)
+        assert(isDefaultMethod.invoke(loop, "Session 123") == true)
+        assert(isDefaultMethod.invoke(loop, "Custom Title") == false)
+        assert(isDefaultMethod.invoke(loop, "Session") == false) // No timestamp
+        assert(isDefaultMethod.invoke(loop, "") == false)
+        assert(isDefaultMethod.invoke(loop, "  Session 2024-01-01 12:00:00  ") == true) // Trimmed
+    }
+
+    test("generateSessionTitle extracts meaningful title from first turn") {
+        val loop = new AgentLoop(
+            ScriptedLLMProvider(List("")),
+            new StubMessageStore(),
+            new StubRunStore(),
+            new StubAgentTurnStore(),
+            new StubTokenAccounting(),
+            new EchoVirtualShell(),
+            defaultSettings,
+            null.asInstanceOf[ScopeStore],
+            null.asInstanceOf[MemoryStore],
+            () => new SynchronousQueue()
+        )
+
+        val generateMethod = loop.getClass.getDeclaredMethod("generateSessionTitle", classOf[String], classOf[String])
+        generateMethod.setAccessible(true)
+
+        // Test with assistant heading
+        val result1 = generateMethod.invoke(loop, "Help me with files", "## File Summary\nHere's the summary.")
+        assert(result1.toString.contains("File Summary"))
+
+        // Test without heading (falls back to user message)
+        val result2 = generateMethod.invoke(loop, "Analyze the data", "Here is the analysis.")
+        assert(result2.toString.contains("Analyze"))
+
+        // Test with markdown heading in user message
+        val result3 = generateMethod.invoke(loop, "# Create a report", "Done.")
+        assert(result3.toString.contains("Create"))
+    }
+
+    test("AgentEvent.Final includes sessionTitle on first turn with default title") {
+        val store = new StubMessageStore()
+        val sessionWithDefaultTitle = Session(
+            id        = "s1",
+            title     = "Session 2024-01-01 12:00:00",
+            createdAt = "",
+            updatedAt = "",
+            model     = "test-model",
+            rootPath  = Some("/tmp/workspace")
+        )
+
+        var capturedTitle: Option[String] = None
+        val (loop, _, _, _, _) = makeLoop(
+            llmResponses = List("Final answer here"),
+            store        = store
+        )
+
+        loop.run(
+            sessionWithDefaultTitle,
+            Nil, // Empty history = first turn
+            userMsg,
+            "t1",
+            new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = {
+                case AgentEvent.Final(_, sessionTitle) =>
+                    capturedTitle = sessionTitle
+                case _ => ()
+            }
+        )
+
+        assert(capturedTitle.isDefined, "sessionTitle should be generated on first turn")
+        assert(capturedTitle.get.nonEmpty, "generated title should not be empty")
+    }
+
+    test("AgentEvent.Final does NOT include sessionTitle on subsequent turns") {
+        val store = new StubMessageStore()
+        val sessionWithDefaultTitle = Session(
+            id        = "s1",
+            title     = "Session 2024-01-01 12:00:00",
+            createdAt = "",
+            updatedAt = "",
+            model     = "test-model",
+            rootPath  = Some("/tmp/workspace")
+        )
+
+        // Construct a non-empty history to simulate subsequent turn
+        val priorUser = store.append("s1", MessageRole.User, "Previous question")
+        val priorAsst = store.append("s1", MessageRole.Assistant, "Previous answer")
+        val history = List(priorUser, priorAsst)
+
+        var capturedTitle: Option[String] = None
+        val (loop, _, _, _, _) = makeLoop(
+            llmResponses = List("Another answer"),
+            store        = store
+        )
+
+        loop.run(
+            sessionWithDefaultTitle,
+            history, // Non-empty history = subsequent turn
+            userMsg,
+            "t2",
+            new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = {
+                case AgentEvent.Final(_, sessionTitle) =>
+                    capturedTitle = sessionTitle
+                case _ => ()
+            }
+        )
+
+        assert(capturedTitle.isEmpty, "sessionTitle should NOT be generated on subsequent turns")
+    }
+
+    test("AgentEvent.Final does NOT include sessionTitle when title is already custom") {
+        val store = new StubMessageStore()
+        val sessionWithCustomTitle = Session(
+            id        = "s1",
+            title     = "My Custom Session",
+            createdAt = "",
+            updatedAt = "",
+            model     = "test-model",
+            rootPath  = Some("/tmp/workspace")
+        )
+
+        var capturedTitle: Option[String] = None
+        val (loop, _, _, _, _) = makeLoop(
+            llmResponses = List("Final answer"),
+            store        = store
+        )
+
+        loop.run(
+            sessionWithCustomTitle,
+            Nil, // First turn
+            userMsg,
+            "t1",
+            new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = {
+                case AgentEvent.Final(_, sessionTitle) =>
+                    capturedTitle = sessionTitle
+                case _ => ()
+            }
+        )
+
+        assert(capturedTitle.isEmpty, "sessionTitle should NOT be generated when title is custom")
     }
 }

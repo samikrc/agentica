@@ -728,25 +728,30 @@ Rules for scratchpad refs:
 
 Phase 2 deliberately replaces the inline debug pane with a **"Open debug log" button** that opens a dedicated log viewer window. Rationale: a separable window is more useful for a developer-facing debug surface — it can go on a second monitor, supports live filtering across long sessions, and survives navigation of the main chat. The same SSE/log information is exposed; only the rendering surface changes.
 
-#### Backend: `GET /log/stream` SSE endpoint
+#### Backend: `GET /log/stream` WebSocket endpoint
+
+> **Implementation note:** Originally designed as an SSE endpoint. Upgraded to WebSocket (`@cask.websocket`, `WsHandler`/`WsActor`) to enable proper connection lifecycle events — in particular `Ws.ChannelClosed` / `Ws.Close` which allow the background polling thread to shut down cleanly when the browser tab closes. SSE does not expose these lifecycle hooks in the Cask framework.
 
 - `TraceLogger` writes to both stdout and a rolling file at `AppDirs.dataDir/logs/agentica.log`.
 - `GET /log/stream` (authenticated) tails the log file in real time:
-  1. On connect, replay the last 200 lines from `agentica.log`.
-  2. Then stream new lines as they arrive via a background thread reading with `RandomAccessFile` (poll every 100ms).
-  3. Each line is emitted as an SSE `event: log` with the raw log line as data.
+  1. On connect (`Ws.Open`), replay the last 200 lines from `agentica.log`.
+  2. Then stream new lines as they arrive via a background virtual thread reading with `RandomAccessFile` (poll every 100ms).
+  3. Each line is sent as a WebSocket text frame with the raw log line as data.
+  4. On `Ws.ChannelClosed` or `Ws.Close`, the background thread terminates cleanly.
 - Global log (all sessions, all tool calls). Client-side filtering handles narrowing.
 
 #### Frontend: log viewer
 
 - A **"Debug log"** button in the main UI header calls `window.open('/log-viewer.html')`.
 - `log-viewer.html` is a minimal static page served by the backend:
-  - Connects to `GET /log/stream` as an `EventSource`.
+  - Connects to `GET /log/stream` as a `WebSocket` (not `EventSource`).
+  - Shows a connection-status indicator (Connected / Reconnecting / Disconnected).
+  - Reconnects automatically with back-off on unexpected disconnect.
   - Renders lines with level-based colouring: INFO (default), WARN (yellow), ERROR (red).
   - Auto-scrolls to bottom; **"Pause scroll"** toggle.
   - **Filter input**: client-side substring filter on log lines (type `traceId`, `files.read`, `sessionId`, etc.).
   - **"Clear display"** button (clears the viewer display only, not the file).
-- `debug.js` is repurposed or replaced to serve this page; it no longer targets `index.html` DOM elements.
+- The code in `log-viewer.js` targets only `log-viewer.html` DOM elements.
 
 ### 9.2 Structured Tracing
 
@@ -764,6 +769,98 @@ Phase 2 deliberately replaces the inline debug pane with a **"Open debug log" bu
 - `tool` (e.g., `"files.read"`), `input` (raw args as JSON), `output` (rendered response), `status`, `durationMs`
 
 **Decision (Q-15):** Per-call persistence. Each tool run record is written to `RunStore` immediately after execution. Safer for crash recovery and debug replay. (See also §3.5 logging decision.)
+
+### 9.5 Agent Turn Persistence and Step Rendering
+
+To make intermediate agent reasoning and tool calls visible — both during a live run and on session reload — a structured persistence mechanism captures the full trajectory of each agent invocation.
+
+#### Data model
+
+```scala
+case class AgentTurnStep(
+    stepType:   String,   // "thinking" | "tool_call"
+    iteration:  Int,
+    content:    String,   // LLM response text (thinking steps only)
+    command:    String,   // raw tool command (tool_call steps only)
+    result:     String,   // rendered tool output (tool_call steps only)
+    durationMs: Long      // wall-clock dispatch time (tool_call steps only)
+) derives ReadWriter
+
+case class AgentTurn(
+    id:             String,
+    sessionId:      String,
+    userMsgId:      String,   // the user message that triggered this run
+    assistantMsgId: String,   // the persisted assistant message (final answer)
+    steps:          List[AgentTurnStep],
+    traceId:        String,
+    timestamp:      String    // ISO-8601 at run completion
+) derives ReadWriter
+```
+
+#### Persistence (`AgentTurnStore`)
+
+- New SQLite table `agent_turns`; `steps` stored as a JSON-serialised text column (upickle).
+- `init()`, `insert(turn)`, `listForSession(sessionId)` — steps deserialised on read.
+- Foreign key to `sessions(id)` with `ON DELETE CASCADE`.
+- `AgentTurnStore` instantiated in `BackendServer`, passed to `AgentLoop` and `Routes`.
+
+#### `AgentLoop` wiring
+
+- `AgentLoop` gains an `agentTurnStore: AgentTurnStore` constructor parameter.
+- A `ListBuffer[AgentTurnStep]` accumulates during the run:
+  - After each LLM call: append a `thinking` step with the full response text and current iteration.
+  - After each tool dispatch: append a `tool_call` step with command, shell response text, and wall-clock `durationMs`.
+- On `Final`: construct `AgentTurn` and call `agentTurnStore.insert()`. Not called on `Cancelled`.
+
+#### API
+
+`GET /sessions/:id/agent-turns` — returns JSON array of `AgentTurn` objects for the session, ordered by timestamp ascending.
+
+`POST /sessions/:id/title` — accepts `{ "title": "..." }`, updates the session display title, and returns the updated `Session`. The same store method is also used when a first-turn generated title is emitted through the `final` SSE event.
+`POST /sessions/:id/restart` — accepts `{ "fromMessageId": "..." }`, deletes all messages, agent turns, tool runs, and token usage after the specified message, and returns 204 on success. This is used to restart a conversation from a specific user message.
+
+#### Frontend: live run
+
+`chat.js` handles SSE events to build a collapsible steps block above each assistant message bubble:
+- `onIteration` → creates a new iteration row with an expand/collapse header.
+- `onToken` → streams LLM text into the current iteration's `agent-thinking` div.
+- `onToolStart` → appends a tool chip (command row) to the current iteration.
+- `onToolResult` → fills in the chip's result panel.
+- `onFinal` → moves the last iteration's thinking text into the final answer bubble and removes the now-empty iteration row; removes the steps block entirely if no tool calls were made. If the final payload includes `sessionTitle`, the sidebar and chat header are updated immediately.
+
+#### Frontend: session title metadata
+
+The chat header now shows:
+- Session display title (clickable to open rename modal).
+- Working folder, when present.
+- Creation timestamp (`Created: ...`) below the folder line in the same metadata style.
+
+The sidebar list shows the session display title only. A session can be renamed from the chat header or by double-clicking the sidebar row.
+
+#### Frontend: message actions
+
+Each message (user and assistant) has an actions bar below the bubble containing:
+- **Copy icon**: Copies the message content to clipboard
+  - User messages: plain text copy
+  - Assistant messages: rich HTML copy (preserves formatting for Word docs, etc.)
+- **Restart icon** (user messages only): Restarts conversation from that point
+  - Shows confirmation dialog before proceeding
+  - Calls `POST /sessions/:id/restart` with `fromMessageId`
+  - Deletes all messages, agent turns, tool runs, and token usage after the selected message
+  - Reloads conversation history after successful deletion
+- **Token stats icon** (assistant messages only): Toggles an inline stats panel below the actions bar showing:
+  - **Tokens In** — total `promptTokens` summed across all LLM calls in the turn
+  - **Tokens Out** — total `completionTokens` summed across all LLM calls in the turn
+  - **Total Time** — total `latencyMs` (in seconds) summed across all LLM calls in the turn
+  - Stats are fetched from `GET /sessions/:id/token-usage`, grouped and summed by `traceId` (one turn can have multiple LLM calls)
+  - On history reload: fetched in parallel with messages and agent turns
+  - On live run: fetched asynchronously after `onFinal` fires; copy button appears immediately, chart button appears once the fetch resolves
+
+The actions bar is always visible, right-aligned below each message bubble.
+
+#### Frontend: history reload
+
+`loadHistory()` fetches `/messages` and `/agent-turns` in parallel. It builds an `assistantMsgId → AgentTurn` lookup and passes the appropriate `stepsEl` (pre-rendered, collapsed) to `appendMessage()` for each assistant bubble.
 
 ### 9.4 Replay Test Scaffolding
 
@@ -810,7 +907,7 @@ enum AgentEvent:
   case ToolCallStart(tool: String, input: String)
   case ToolCallResult(tool: String, output: String, durationMs: Long)
   case PermissionRequired(tool: String, path: Option[String], options: List[String])  // new
-  case Final(assistantMessageId: String)
+  case Final(assistantMessageId: String, sessionTitle: Option[String])
   case Cancelled
   case AgentError(message: String)
 ```
@@ -874,21 +971,27 @@ Given the dependency graph, the recommended order is:
 - `agent/ContextManager.scala` *(extended)*
 
 ### Modified:
-- `session/Models.scala` — add `MemoryEntry`, extend `ToolRun` fields
-- `BackendServer.scala` — wire `CommandRegistry`, `VirtualShell`, new `AgentLoop` constructor; load `system_prompt.txt`; add `scratchpads: ConcurrentHashMap[sessionId, SessionScratchpad]`; clean up on session delete
-- `server/Routes.scala` — add `cancelFlag` to `agentEngine.run()` call; add `permissionQueues: ConcurrentHashMap[runId, SynchronousQueue[GrantDecision]]`; add `POST /permissions` and `GET /log/stream` endpoints; serve `log-viewer.html` static route
+- `session/Models.scala` — add `MemoryEntry`, extend `ToolRun` fields; **add `AgentTurnStep` and `AgentTurn` case classes** (Phase 2.5)
+- `BackendServer.scala` — wire `CommandRegistry`, `VirtualShell`, new `AgentLoop` constructor; load `system_prompt.txt`; add `scratchpads: ConcurrentHashMap[sessionId, SessionScratchpad]`; clean up on session delete; **instantiate and init `AgentTurnStore`** (Phase 2.5)
+- `server/Routes.scala` — add `cancelFlag` to `agentEngine.run()` call; add `permissionQueues: ConcurrentHashMap[runId, SynchronousQueue[GrantDecision]]`; add `POST /permissions`; **upgrade `GET /log/stream` to WebSocket (`@cask.websocket`, `WsHandler`/`WsActor`)** (Phase 2); **add `GET /sessions/:id/agent-turns`** (Phase 2.5); serve `log-viewer.html` static route
 - `agent/AgentEngine.scala` — add `cancelFlag: AtomicBoolean` parameter to `run()`; add `PermissionRequired` to `AgentEvent` enum
+- `agent/AgentLoop.scala` — **add `agentTurnStore: AgentTurnStore` constructor parameter; accumulate `thinking`/`tool_call` steps in `ListBuffer`; persist `AgentTurn` on `Final`** (Phase 2.5)
 - `settings/SettingsStore.scala` — add `maxIterations: Int = 20` and `contextBudgetTokens: Int = 8000` to `AppSettings`
 - `observability/TraceLogger.scala` — add file output to `AppDirs.dataDir/logs/agentica.log` alongside stdout; expand structured field set
 - `ui/index.html` — add "Debug log" button; add permission modal
-- `ui/js/main.js` (or `chat.js`) — handle `permission_required` SSE event, show modal, POST decision
+- `ui/js/chat.js` — handle `permission_required` SSE event, show modal, POST decision; **Markdown rendering via `marked.js`; live step rendering via `onIteration`/`onToolStart`/`onToolResult`; `loadHistory` with agent-turn interleaving** (Phase 2 / 2.5)
 - `ui/js/settings.js` — expose `maxIterations` and `contextBudgetTokens` in settings modal
+- `ui/css/main.css` — **add agent step styles (`.agent-steps`, `.agent-iter`, `.agent-thinking`, `.agent-tool-chip`)** (Phase 2.5)
 
 ### New resources:
 - `backend/src/main/resources/system_prompt.txt` — hybrid template with `{{TOOL_INDEX}}`, `{{ROOT_PATH}}`, `{{TODAY}}` slots
 - `ui/log-viewer.html` — dedicated log viewer page (opens via `window.open`)
-- `ui/js/log-viewer.js` — connects to `GET /log/stream`, renders/filters log lines
-- `scenarios/*.yaml` — first 5–10 golden scenarios
+- `ui/js/log-viewer.js` — connects to `GET /log/stream` via **WebSocket**, renders/filters log lines, shows connection status, auto-reconnects
+- `ui/js/marked.min.js` — self-hosted Markdown renderer (JavaFX WebView compatible)
+- `scenarios/*.json` — golden scenario response scripts
+
+### New persistence layer (Phase 2.5):
+- `session/AgentTurnStore.scala` — `init()`, `insert()`, `listForSession()`; steps as JSON column
 
 ### New utility:
 - `shell/PathSandbox.scala` *(shared path resolution + escape check)*
@@ -902,6 +1005,8 @@ Given the dependency graph, the recommended order is:
 - `tests/.../RecordingLLMProvider.scala` *(wraps real provider, writes responses to YAML)*
 - `tests/.../ReplayLLMProvider.scala` *(reads YAML, replays; mismatch fails)*
 - `tests/.../GoldenScenarioRunner.scala` *(temp workspace + agent loop + assertions)*
+- `tests/.../AgentTurnStoreTest.scala` *(7 tests: init, insert, round-trip, session scoping, ordering, fields, unicode)* (Phase 2.5)
+- `tests/.../AgentLoopTest.scala` — **trajectory tests added** (6 tests: single-shot, tool call, multi-tool, multi-iteration, result fidelity, cancelled run) (Phase 2.5)
 
 ---
 

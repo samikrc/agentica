@@ -46,6 +46,17 @@ Launch scripts accept additional environment variables:
 | `AGENTICA_PORT` | `8080` | HTTP port the backend listens on |
 | `AGENTICA_UI_ROOT` | `../ui` (relative to jar) | Path to the `ui/` folder |
 
+## UI Features
+
+- **Session management**: Create, rename, and delete sessions from the sidebar
+- **Dynamic session titles**: Sessions are automatically titled based on the first agent response
+- **Message actions**: 
+  - **Copy**: Copy message text to clipboard (plain text for user messages, HTML for agent messages)
+  - **Restart**: Restart conversation from any user message (deletes all subsequent messages and data)
+- **Agent steps**: View detailed step-by-step execution history for each agent response
+- **Settings**: Configure LLM server URL and model (persisted to settings.json)
+- **Theme**: Toggle between light and dark themes
+
 ---
 
 ## Developer Notes
@@ -80,7 +91,11 @@ The backend serves both the REST/SSE API **and** the static UI files:
 - `GET /` → redirects to `/index.html`
 - `GET /index.html`, `/css/*`, `/js/*`, `/fonts/*` → served from `AGENTICA_UI_ROOT`
 - `GET /settings`, `POST /settings` → user-configurable settings
-- All API routes are under `/sessions`, `/runs`, `/health`
+- `GET /log/stream` → WebSocket endpoint; streams `agentica.log` in real time (authenticated)
+- All chat/session API routes are under `/sessions`, `/runs`, `/health`
+- `POST /sessions/:id/title` → rename a session; also used by the UI after first-turn title generation
+- `GET /sessions/:id/agent-turns` → trajectory steps for each agent run
+- `POST /sessions/:id/restart` → restart conversation from a specific user message (deletes all subsequent messages and data)
 
 The bearer token is passed as a `?token=` URL query param, which `api.js` picks up automatically.
 
@@ -106,17 +121,25 @@ agentica/
 │
 ├── ui/                                  # Browser UI served directly by the backend
 │   ├── index.html
+│   ├── log-viewer.html                  # Debug log viewer (WebSocket)
 │   ├── css/
 │   │   └── main.css
 │   ├── fonts/
 │   │   ├── NotoEmoji-Regular.ttf        # Emoji fallback font
 │   │   └── Symbola.ttf                  # Symbol/emoji fallback font
+│   ├── icons/
+│   │   ├── menu.svg                     # Settings menu icon
+│   │   ├── sidebar-toggle.svg           # Sidebar toggle icon
+│   │   ├── copy.svg                     # Copy message icon
+│   │   └── restart.svg                  # Restart conversation icon
 │   └── js/
 │       ├── main.js                      # App entry point, session init
-│       ├── chat.js                      # Chat rendering, SSE client
-│       ├── session.js                   # Session list, create/load/delete
+│       ├── chat.js                      # Chat rendering, SSE client, agent step UI, title metadata display, copy/restart
+│       ├── session.js                   # Session list, create/load/delete/rename
 │       ├── settings.js                  # Settings modal, theme, LLM config
-│       └── api.js                       # HTTP wrapper with bearer-token injection
+│       ├── api.js                       # HTTP wrapper with bearer-token injection
+│       ├── log-viewer.js                # WebSocket log viewer client
+│       └── marked.min.js               # Self-hosted Markdown renderer
 │
 ├── backend/                             # Scala 3 local backend + static UI server (Maven)
 │   ├── pom.xml
@@ -132,10 +155,11 @@ agentica/
 │       │   ├── SessionStore.scala       # ScalaSQL: sessions CRUD
 │       │   ├── MessageStore.scala       # ScalaSQL: messages CRUD
 │       │   ├── RunStore.scala           # ScalaSQL: tool execution log
-│       │   └── Models.scala             # Case classes: Session, Message, ToolRun
+│       │   ├── AgentTurnStore.scala     # Persistence: agent turn trajectory (agent_turns table)
+│       │   └── Models.scala             # Case classes: Session, Message, ToolRun, AgentTurn
 │       ├── agent/
 │       │   ├── AgentEngine.scala        # trait AgentEngine (pluggable)
-│       │   ├── AgentLoop.scala          # Phase 1 single-call streaming loop
+│       │   ├── AgentLoop.scala          # Multi-iteration plan→act→observe loop with turn persistence
 │       │   └── ContextManager.scala     # Sliding window, token budget, summarization
 │       ├── shell/
 │       │   ├── VirtualShell.scala       # run() entry point; dispatches via registry
@@ -186,7 +210,10 @@ agentica/
 - **`backend/server/Routes.scala`** — serves both static browser assets and authenticated REST/SSE APIs.
 - **`backend/shell/`** — virtual shell is a self-contained package: `Tokenizer` → `CommandAst` → `CommandRegistry` dispatch → `Presentation` envelope. Each stage is independently unit-testable.
 - **`backend/tools/`** — one file per tool, grouped by action family. `CommandRegistry` is the only place that enumerates the full tool list.
-- **`backend/agent/`** — `AgentEngine` trait keeps the loop swappable; `ContextManager` evolves independently of loop control flow.
+- **`backend/agent/`** — `AgentEngine` trait keeps the loop swappable; `ContextManager` evolves independently of loop control flow. `AgentLoop` records full reasoning trajectories (`AgentTurnStore`) and emits SSE step events for live UI rendering.
+- **`backend/session/AgentTurnStore`** — each completed agent run persists its `thinking` and `tool_call` steps as a JSON column in `agent_turns`; the frontend fetches these on reload to reconstruct the collapsible step view.
+- **`ui/js/chat.js`** — chat rendering, SSE streaming, live agent step UI (`onIteration`/`onToolStart`/`onToolResult`), history reload with interleaved agent turns, Markdown rendering via `marked.js`.
+- **`GET /log/stream`** — WebSocket endpoint (not SSE); enables clean connection lifecycle events so the background polling thread shuts down when the viewer tab closes.
 - **Desktop mode** — `DesktopLauncher` is a JavaFX WebView thin launcher that loads the same backend-served UI. It requires the backend to be running separately (Phase 1.5A). Automatic backend startup is planned for Phase 1.5B.
 
 ---

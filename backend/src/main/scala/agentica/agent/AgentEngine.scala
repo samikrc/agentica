@@ -70,8 +70,9 @@ enum AgentEvent
     /**
      *  Signals successful completion of the turn; carries the persisted message ID.
      *  @param assistantMessageId  UUID of the assistant [[Message]] written to the DB.
+     *  @param sessionTitle        Optional generated session title for the first completed turn.
      */
-    case Final(assistantMessageId: String)
+    case Final(assistantMessageId: String, sessionTitle: Option[String])
 
     /**
      *  Signals that the turn was cancelled by the user before completion.

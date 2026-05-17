@@ -6,7 +6,7 @@ import agentica.observability.{TokenAccounting, TraceLogger}
 import agentica.permissions.ScopeStoreImpl
 import agentica.platform.AppDirs
 import agentica.server.Routes
-import agentica.session.{MemoryStoreImpl, MessageStore, RunStore, SessionStore}
+import agentica.session.{AgentTurnStore, MemoryStoreImpl, MessageStore, RunStore, SessionStore}
 import agentica.settings.SettingsStore
 import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
 import agentica.tools.files.{FilesList, FilesRead, FilesSearch, FilesStat, FilesWrite}
@@ -49,16 +49,18 @@ object BackendServer extends cask.Main
     val ds   = HikariDataSource(hikariConfig)
     val conn = () => ds.getConnection()
 
-    val sessionStore = SessionStore(conn)
-    val messageStore = MessageStore(conn)
-    val runStore     = RunStore(conn)
-    val settingsStore = SettingsStore(AppDirs.settingsPath)
-    val memoryStore  = MemoryStoreImpl(conn)
-    val scopeStore   = ScopeStoreImpl(conn)
+    val sessionStore   = SessionStore(conn)
+    val messageStore   = MessageStore(conn)
+    val runStore       = RunStore(conn)
+    val agentTurnStore = AgentTurnStore(conn)
+    val settingsStore  = SettingsStore(AppDirs.settingsPath)
+    val memoryStore    = MemoryStoreImpl(conn)
+    val scopeStore     = ScopeStoreImpl(conn)
 
     sessionStore.init()
     messageStore.init()
     runStore.init()
+    agentTurnStore.init()
     memoryStore.init()
     scopeStore.init()
 
@@ -93,7 +95,7 @@ object BackendServer extends cask.Main
     ContextManager.applyToolIndex(commandRegistry.helpIndex)
 
     val virtualShell = VirtualShell(commandRegistry)
-    val agentEngine  = AgentLoop(llm, messageStore, runStore, accounting, virtualShell, settings,
+    val agentEngine  = AgentLoop(llm, messageStore, runStore, agentTurnStore, accounting, virtualShell, settings,
         scopeStore, memoryStore, () => java.util.concurrent.SynchronousQueue[agentica.permissions.GrantDecision]())
 
     // UI root: AGENTICA_UI_ROOT env var, or ../ui relative to the working directory
@@ -112,6 +114,6 @@ object BackendServer extends cask.Main
     System.out.flush()
 
     // --- Start HTTP server ---
-    override val allRoutes = Seq(Routes(sessionStore, messageStore, runStore, settingsStore, memoryStore, scopeStore, commandRegistry, agentEngine, uiRoot))
+    override val allRoutes = Seq(Routes(sessionStore, messageStore, runStore, agentTurnStore, settingsStore, memoryStore, scopeStore, commandRegistry, agentEngine, uiRoot))
     TraceLogger.info("-", "http_server_start", Map("port" -> port.toString))
 }

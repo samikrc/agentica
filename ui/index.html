@@ -12,21 +12,17 @@
       <!-- Sidebar: session list -->
       <aside id="sidebar">
         <div id="sidebar-header">
-          <span class="app-name">Agentica</span>
-          <div class="sidebar-actions">
-            <div id="settings-dropdown" class="dropdown">
-              <button id="btn-settings" title="Menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/>
-                </svg>
-              </button>
-              <div class="dropdown-menu" role="menu" aria-labelledby="btn-settings">
-                <button class="dropdown-item" id="menu-settings" role="menuitem">Settings</button>
-                <button class="dropdown-item" id="menu-debug-log" role="menuitem">Debug Log</button>
-              </div>
+          <div id="settings-dropdown" class="dropdown">
+            <button id="btn-settings" title="Menu" aria-label="Menu" aria-haspopup="true" aria-expanded="false">
+              <img src="icons/menu.svg" alt="" aria-hidden="true" width="20" height="20"/>
+            </button>
+            <div class="dropdown-menu" role="menu" aria-labelledby="btn-settings">
+              <button class="dropdown-item" id="menu-settings" role="menuitem">Settings</button>
+              <button class="dropdown-item" id="menu-debug-log" role="menuitem">Debug Log</button>
             </div>
-            <button id="btn-new-session" title="New session">+</button>
           </div>
+          <span class="app-name">Agentica</span>
+          <button id="btn-new-session" title="New session">+</button>
         </div>
         <ul id="session-list"></ul>
       </aside>
@@ -35,13 +31,12 @@
       <main id="main">
         <div id="chat-header">
           <button id="btn-toggle-sidebar" title="Toggle sidebar" aria-label="Toggle sidebar">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
-            </svg>
+            <img src="icons/sidebar-toggle.svg" alt="" aria-hidden="true" width="20" height="20"/>
           </button>
           <div id="chat-title-group">
-            <span id="chat-title">Select or create a session</span>
+            <button id="chat-title" type="button" title="Rename session">Select or create a session</button>
             <span id="chat-path"></span>
+            <span id="chat-created"></span>
           </div>
         </div>
 
@@ -76,6 +71,20 @@
         </label>
         <div class="modal-actions">
           <button type="button" id="settings-cancel">Cancel</button>
+          <button type="submit">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="rename-session-modal">
+    <div class="modal-box">
+      <h2>Rename Session</h2>
+      <form id="rename-session-form">
+        <label for="rename-session-title">Title</label>
+        <input id="rename-session-title" type="text" required />
+        <div class="modal-actions">
+          <button type="button" id="rename-session-cancel">Cancel</button>
           <button type="submit">Save</button>
         </div>
       </form>

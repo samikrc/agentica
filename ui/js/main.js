@@ -14,6 +14,7 @@
 
   Sessions.onSelect(session => Chat.setSession(session));
 
+  await Settings.load();
   await Sessions.load();
 
   // Sidebar toggle

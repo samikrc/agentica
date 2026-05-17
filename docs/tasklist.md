@@ -159,8 +159,8 @@ Goal: replace the Phase 1 single-call loop with a safe plan→act→observe agen
 
 - [x] Add file output to `TraceLogger`: write to `AppDirs.dataDir/logs/agentica.log` alongside stdout.
 - [x] Standardise `TraceLogger` extra-field names across all call sites: `parseError` renamed from `reason` (done). `callType`, `parentTraceId` (for `llm.*` tools), `decision`/`grantTTL` (permissions) — blocked on Step 5 / UI completion. `messagesDropped`/`budgetTokens` already correct.
-- [x] Add `GET /log/stream` SSE endpoint (authenticated): replay last 200 lines of `agentica.log` on connect, then stream new lines via `RandomAccessFile` poll (100ms interval).
-- [x] Create `ui/log-viewer.html` + `ui/js/log-viewer.js`: connects to `GET /log/stream` as `EventSource`; renders lines with level colouring (WARN yellow, ERROR red); auto-scroll with pause toggle; client-side substring filter input; "Clear display" button.
+- [x] Add `GET /log/stream` endpoint (authenticated): replay last 200 lines of `agentica.log` on connect, then stream new lines via poll. **Upgraded to WebSocket** (`@cask.websocket`, `WsHandler`/`WsActor`) to enable clean lifecycle events (connect, close, channel-closed cleanup).
+- [x] Create `ui/log-viewer.html` + `ui/js/log-viewer.js`: connects to `GET /log/stream` as a WebSocket; renders lines with level colouring (WARN yellow, ERROR red); auto-scroll with pause toggle; client-side substring filter input; "Clear display" button. Includes reconnect logic and connection-status indicator.
 - [x] Add **"Debug log"** button via dropdown menu (converted settings gear to kebab menu): calls `window.open('/log-viewer.html')`.
 - [x] Serve `log-viewer.html` as a static route in `Routes.scala`.
 - [x] Repurpose or replace `debug.js` for the log viewer page (deleted; replaced by `log-viewer.js`).
@@ -169,7 +169,25 @@ Goal: replace the Phase 1 single-call loop with a safe plan→act→observe agen
 - [x] Add agent-loop replay test scaffolding (`GoldenScenarioRunner`: create temp workspace, run loop with mock provider, assert tool call sequence and final answer).
 - [x] Add 8 golden scenarios using `JSONFileLLMProvider` (read_file, list_and_search, multi_tool_single_response, use_memory, search_with_error_recovery, iteration_boundary, deep_list, stat_and_summarize).
 - [x] Add integration tests with a mock `LLMProvider` (GoldenScenarioTest exercises full agent loop end-to-end).
+- [x] Render assistant message content as Markdown in the chat UI using `marked.js` (self-hosted at `ui/js/marked.min.js` for JavaFX WebView compatibility); streaming tokens are re-rendered on every `onToken` event.
 - [ ] Add UI smoke tests for streamed agent events.
+
+### Phase 2.5 — Agent Turn Persistence and Step Rendering
+
+*Adds full trajectory capture for agent runs: intermediate LLM reasoning steps and tool calls are persisted and rendered both during live runs and on session reload.*
+
+- [x] Add `AgentTurnStep` and `AgentTurn` case classes to `session/Models.scala` with `derives ReadWriter`.
+- [x] Create `AgentTurnStore` (`session/AgentTurnStore.scala`): `init()` creates `agent_turns` SQLite table; `insert()` serialises `steps` as a JSON column; `listForSession()` deserialises and returns turns ordered by timestamp.
+- [x] Wire `AgentTurnStore` into `AgentLoop`: accumulate `thinking` steps (one per iteration, from LLM response text) and `tool_call` steps (one per dispatched tool, capturing command, result, and wall-clock `durationMs`) in an in-memory `ListBuffer[AgentTurnStep]`. Persist the completed `AgentTurn` on `Final` (not on `Cancelled`).
+- [x] Wire `AgentTurnStore` into `BackendServer`: instantiate, `init()`, pass to `AgentLoop` and `Routes`.
+- [x] Add `GET /sessions/:id/agent-turns` route in `Routes.scala`: returns JSON array of `AgentTurn` records for the session.
+- [x] Live run UI (`chat.js`): `onIteration` creates a new collapsible iteration block; `onToken` streams into the iteration's "thinking" div; `onToolStart` appends a clickable tool chip; `onToolResult` populates the chip result. Final answer is moved from the last iteration's thinking div into the main bubble on `onFinal`.
+- [x] History reload (`chat.js` `loadHistory`): fetches `/messages` and `/agent-turns` in parallel; builds `assistantMsgId → AgentTurn` map; renders collapsed steps block above each assistant bubble.
+- [x] CSS for agent step UI (`ui/css/main.css`): `.agent-steps` (collapsible outer block), `.agent-iter` (per-iteration section with left border), `.agent-thinking` (faded, gradient-clipped LLM text), `.agent-tool-chip` (monospaced command row + expandable result).
+- [x] Session title UX: generate a concise title from the first completed turn when the session still has a default `Session ...` title; persist it via the `final` SSE event; show the title in the sidebar and chat header; show creation timestamp below working folder metadata.
+- [x] Manual session rename: add `POST /sessions/:id/title`, a rename modal, chat-header click-to-rename, and sidebar double-click-to-rename.
+- [x] Tests: `AgentTurnStoreTest` (7 tests — empty list, round-trip, step serialisation, session scoping, timestamp ordering, fields, unicode); trajectory tests in `AgentLoopTest` (6 tests — single-shot, one tool call, two tool calls, multi-iteration, result content, cancelled run).
+- [x] Token stats panel on assistant messages: chart icon in actions bar toggles a two-line inline panel showing **Tokens In**, **Tokens Out**, and **Total Time** (seconds); stats are aggregated from `GET /sessions/:id/token-usage` grouped by `traceId`; fetched in parallel on history reload, asynchronously after `onFinal` on live runs.
 
 ---
 
@@ -302,6 +320,7 @@ Goal: improve isolation, extensibility, collaboration, and advanced product capa
 
 ## Near-Term Recommended Next Steps
 
-- [ ] Finish Phase 1 cleanup items.
-- [ ] Add configurable `AGENTICA_HOST`.
-- [ ] Begin Phase 2 agent loop implementation.
+- [ ] Implement `llm.summarize`, `llm.extract`, `llm.classify` tool bodies (Phase 2 Step 5 — currently stubs).
+- [ ] Add configurable `AGENTICA_HOST` bind address (Phase 1 cleanup).
+- [ ] Add UI smoke tests for streamed agent events.
+- [ ] Begin Phase 3: browser tools (`browser.open`), cloud LLM providers, document read tools.

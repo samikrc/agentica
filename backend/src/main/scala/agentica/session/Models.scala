@@ -104,6 +104,53 @@ object RunStatus
     given ReadWriter[RunStatus] = summon[ReadWriter[String]].asInstanceOf[ReadWriter[RunStatus]]
 }
 
+/**
+ *  Type-safe wrapper for an agent turn step type.
+ *  Prevents mixing up step type strings with other [[String]] parameters at compile time.
+ *  Runtime representation is a plain [[String]] with zero overhead.
+ */
+opaque type StepType = String
+
+/**
+ *  Companion providing constants, safe/unsafe constructors, and a [[ReadWriter]].
+ */
+object StepType
+{
+    /** Intermediate LLM response before tool calls. */
+    val Thinking: StepType = "thinking"
+
+    /** A dispatched tool invocation. */
+    val ToolCall: StepType = "tool_call"
+
+    /**
+     *  Parses a step type string from an external source.
+     *  @param s  Raw string value.
+     *  @return   `Some(stepType)` for recognised values; `None` otherwise.
+     */
+    def fromString(s: String): Option[StepType] = s match
+    {
+        case "thinking" | "tool_call" => Some(s)
+        case _                         => None
+    }
+
+    /**
+     *  Wraps a string without validation.
+     *  Use only for data from trusted sources (e.g. rows already validated on write).
+     *  @param s  Raw string value to wrap.
+     *  @return   The wrapped [[StepType]].
+     */
+    def unsafe(s: String): StepType = s
+
+    extension (r: StepType)
+    {
+        /** Returns the underlying string value for JDBC writes and JSON serialisation. */
+        def value: String = r
+    }
+
+    /** upickle [[ReadWriter]] — delegates to the underlying [[String]] serialiser. */
+    given ReadWriter[StepType] = summon[ReadWriter[String]].asInstanceOf[ReadWriter[StepType]]
+}
+
 // ─── Domain models ────────────────────────────────────────────────────────────
 
 /** A chat session grouping all messages under a single conversation context.
@@ -172,6 +219,47 @@ case class MemoryEntry(
     key:       String,
     value:     String,
     updatedAt: String
+) derives ReadWriter
+
+/**
+ *  A single step within an agent turn's trajectory.
+ *  @param stepType    [[StepType.Thinking]] — intermediate LLM response before tool calls;
+ *                     [[StepType.ToolCall]] — a dispatched tool invocation.
+ *  @param iteration   1-based iteration number this step belongs to.
+ *  @param content     Intermediate LLM response text (thinking steps only; empty for tool_call).
+ *  @param command     Raw command string (tool_call steps only; empty for thinking).
+ *  @param result      Tool output text (tool_call steps only; empty for thinking).
+ *  @param durationMs  Wall-clock duration in ms (tool_call only; 0 for thinking).
+ */
+case class AgentTurnStep(
+    stepType:   StepType,
+    iteration:  Int,
+    content:    String,
+    command:    String,
+    result:     String,
+    durationMs: Long
+) derives ReadWriter
+
+/**
+ *  Complete trajectory record for one agent turn (user prompt → final answer).
+ *  Stores all intermediate reasoning steps and tool calls so the UI can replay
+ *  the full trajectory on history reload.
+ *  @param id             Unique identifier (UUID).
+ *  @param sessionId      Parent session identifier.
+ *  @param userMsgId      [[Message]] id of the triggering user message.
+ *  @param assistantMsgId [[Message]] id of the final assistant answer (empty if cancelled).
+ *  @param steps          Ordered list of intermediate steps (thinking + tool_call).
+ *  @param traceId        Trace identifier linking this turn to its log entries.
+ *  @param timestamp      ISO-8601 timestamp of when the turn completed.
+ */
+case class AgentTurn(
+    id:             String,
+    sessionId:      String,
+    userMsgId:      String,
+    assistantMsgId: String,
+    steps:          List[AgentTurnStep],
+    traceId:        String,
+    timestamp:      String
 ) derives ReadWriter
 
 /** Token and latency accounting for a single LLM call.

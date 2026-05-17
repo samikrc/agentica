@@ -17,6 +17,10 @@ const Sessions = (() => {
   const btnCancel  = document.getElementById('new-session-cancel');
   const btnBrowse  = document.getElementById('btn-browse-folder');
   const folderPicker = document.getElementById('folder-picker');
+  const renameModal = document.getElementById('rename-session-modal');
+  const renameForm  = document.getElementById('rename-session-form');
+  const renameInput = document.getElementById('rename-session-title');
+  const renameCancel = document.getElementById('rename-session-cancel');
 
   function onSelect(cb) { _onSelect = cb; }
 
@@ -52,8 +56,24 @@ const Sessions = (() => {
       li.appendChild(title);
       li.appendChild(del);
       li.addEventListener('click', () => activate(s.id));
+      li.addEventListener('dblclick', e => {
+        e.stopPropagation();
+        activate(s.id);
+        openRenameModal();
+      });
       listEl.appendChild(li);
     }
+  }
+
+  function setSession(updated, notify = true) {
+    const idx = _sessions.findIndex(s => s.id === updated.id);
+    if (idx >= 0) {
+      _sessions[idx] = updated;
+    } else {
+      _sessions.unshift(updated);
+    }
+    render();
+    if (notify && _activeId === updated.id) _onSelect?.(updated);
   }
 
   function activate(id) {
@@ -61,6 +81,19 @@ const Sessions = (() => {
     render();
     const session = _sessions.find(s => s.id === id);
     _onSelect?.(session ?? null);
+  }
+
+  function openRenameModal() {
+    const session = _sessions.find(s => s.id === _activeId);
+    if (!session) return;
+    renameInput.value = session.title;
+    renameModal.classList.add('open');
+    renameInput.focus();
+    renameInput.select();
+  }
+
+  function closeRenameModal() {
+    renameModal.classList.remove('open');
   }
 
   function openModal() {
@@ -89,6 +122,22 @@ const Sessions = (() => {
     }
   });
 
+  renameForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const session = _sessions.find(s => s.id === _activeId);
+    if (!session) return;
+    const title = renameInput.value.trim();
+    if (!title) return;
+    try {
+      const updated = await Api.post(`/sessions/${session.id}/title`, { title });
+      closeRenameModal();
+      setSession(updated);
+    } catch (err) {
+      console.error('Failed to rename session:', err);
+      alert(`Failed to rename session: ${err.message}`);
+    }
+  });
+
   btnBrowse.addEventListener('click', () => folderPicker.click());
   folderPicker.addEventListener('change', () => {
     const file = folderPicker.files[0];
@@ -105,6 +154,14 @@ const Sessions = (() => {
   btnCancel.addEventListener('click', closeModal);
   modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
   btnNew.addEventListener('click', openModal);
+  renameCancel.addEventListener('click', closeRenameModal);
+  renameModal.addEventListener('click', e => { if (e.target === renameModal) closeRenameModal(); });
 
-  return { load, onSelect, getActive: () => _sessions.find(s => s.id === _activeId) ?? null };
+  return {
+    load,
+    onSelect,
+    setSession,
+    openRenameModal,
+    getActive: () => _sessions.find(s => s.id === _activeId) ?? null
+  };
 })();

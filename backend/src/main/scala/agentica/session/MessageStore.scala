@@ -121,4 +121,22 @@ class MessageStore(conn: () => Connection)
         ps.close()
         c.close()
     }
+
+    /** Deletes all messages in a session that come after the specified message ID.
+     *  This is used for the restart functionality to truncate conversation history.
+     *  @param sessionId      Session identifier.
+     *  @param fromMessageId  The message ID to delete after (this message is kept).
+     */
+    def deleteAfter(sessionId: String, fromMessageId: String): Unit =
+    {
+        val c  = conn()
+        val ps = c.prepareStatement(
+            "DELETE FROM messages WHERE session_id = ? AND timestamp > (SELECT timestamp FROM messages WHERE id = ?)"
+        )
+        ps.setString(1, sessionId)
+        ps.setString(2, fromMessageId)
+        ps.executeUpdate()
+        ps.close()
+        c.close()
+    }
 }

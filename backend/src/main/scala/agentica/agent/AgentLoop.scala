@@ -4,7 +4,7 @@ import agentica.agent.AgentEvent
 import agentica.llm.{LLMProvider, LLMUsage}
 import agentica.observability.{TokenAccounting, TraceLogger}
 import agentica.permissions.{GrantDecision, ScopeStore}
-import agentica.session.{MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, ToolRun}
+import agentica.session.{AgentTurn, AgentTurnStep, AgentTurnStore, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, ToolRun}
 import agentica.settings.AppSettings
 import agentica.shell.{SessionScratchpad, VirtualShell}
 import agentica.tools.ExecutionContext
@@ -32,6 +32,7 @@ class AgentLoop(
     llm:                    LLMProvider,
     messageStore:           MessageStore,
     runStore:               RunStore,
+    agentTurnStore:         AgentTurnStore,
     tokenAccounting:        TokenAccounting,
     virtualShell:           VirtualShell,
     settings:               AppSettings,
@@ -70,6 +71,8 @@ class AgentLoop(
         // These are appended after the budget-windowed history on every buildContext() call
         // so the model always sees the full in-flight tool exchange, regardless of budget.
         val toolResultTurns = scala.collection.mutable.ListBuffer.empty[Message]
+        // Accumulates ordered trajectory steps for AgentTurn persistence.
+        val turnSteps       = scala.collection.mutable.ListBuffer.empty[AgentTurnStep]
         val permLatch          = permissionLatchFactory()
         var iteration = 1
 
@@ -182,6 +185,15 @@ class AgentLoop(
                         }
                         val finalText    = responseText.replace("<done>", "").trim
                         val assistantMsg = messageStore.append(session.id, MessageRole.Assistant, finalText)
+                        agentTurnStore.insert(AgentTurn(
+                            id             = java.util.UUID.randomUUID().toString,
+                            sessionId      = session.id,
+                            userMsgId      = userMsg.id,
+                            assistantMsgId = assistantMsg.id,
+                            steps          = turnSteps.toList,
+                            traceId        = traceId,
+                            timestamp      = Instant.now().toString
+                        ))
                         TraceLogger.info(traceId, "agent_loop_complete", Map(
                             "sessionId"        -> session.id,
                             "assistantMsgId"   -> assistantMsg.id,
@@ -189,7 +201,15 @@ class AgentLoop(
                             "promptTokens"     -> usage.promptTokens.toString,
                             "completionTokens" -> usage.completionTokens.toString
                         ))
-                        emitEvent(AgentEvent.Final(assistantMsg.id))
+                        val generatedTitle = if (history.isEmpty && isDefaultSessionTitle(session.title))
+                            {
+                                Some(generateSessionTitle(userMsg.content, finalText))
+                            }
+                            else
+                            {
+                                None
+                            }
+                        emitEvent(AgentEvent.Final(assistantMsg.id, generatedTitle))
                         running = false
                     }
                     else
@@ -255,7 +275,15 @@ class AgentLoop(
                                             traceId    = traceId,
                                             durationMs = durMs
                                         ))
-                                        TraceLogger.info(traceId, "tool_call", Map(
+                                        turnSteps.append(AgentTurnStep(
+                                            stepType   = agentica.session.StepType.ToolCall,
+                                            iteration  = iteration,
+                                            content    = "",
+                                            command    = tc.rawCommand,
+                                            result     = response.text,
+                                            durationMs = durMs
+                                        ))
+                                        TraceLogger.info(traceId, agentica.session.StepType.ToolCall.value, Map(
                                             "iteration"  -> iteration.toString,
                                             "command"    -> tc.rawCommand,
                                             "durationMs" -> durMs.toString
@@ -266,6 +294,15 @@ class AgentLoop(
 
                         if (!cancelled)
                         {
+                            // Record the thinking step for this iteration before injecting tool results.
+                            turnSteps.append(AgentTurnStep(
+                                stepType   = agentica.session.StepType.Thinking,
+                                iteration  = iteration,
+                                content    = responseText,
+                                command    = "",
+                                result     = "",
+                                durationMs = 0L
+                            ))
                             // Inject the assistant turn and the tool results as a user turn
                             // so the next buildContext() includes them after the budget window.
                             toolResultTurns.append(
@@ -282,6 +319,111 @@ class AgentLoop(
                     }
                 }
             }
+        }
+    }
+
+    /**
+     *  Checks whether a title is still the default generated session label.
+     *  @param title  Current session title.
+     *  @return       True when the title can be replaced by an auto-generated first-turn title.
+     */
+    private def isDefaultSessionTitle(title: String): Boolean =
+    {
+        val normalized = Option(title).getOrElse("").trim
+        normalized == "New Session" || normalized.startsWith("Session ")
+    }
+
+    /**
+     *  Builds a concise display title from the first completed user/assistant turn.
+     *  @param userText       First user message.
+     *  @param assistantText  First assistant answer.
+     *  @return               A concise title suitable for the sidebar and chat header.
+     */
+    private def generateSessionTitle(userText: String, assistantText: String): String =
+    {
+        firstUsefulAssistantHeading(assistantText)
+            .getOrElse(clampTitle(cleanTitleText(userText)))
+    }
+
+    /**
+     *  Extracts the first useful heading-like label from an assistant answer.
+     *  @param text  Assistant response text.
+     *  @return      A useful heading if one is present.
+     */
+    private def firstUsefulAssistantHeading(text: String): Option[String] =
+    {
+        val generic = Set(
+            "summary",
+            "summary of findings",
+            "final answer",
+            "conclusion",
+            "potential drivers",
+            "potential risks to monitor"
+        )
+        text
+            .split("\\R")
+            .iterator
+            .flatMap(extractHeadingLabel)
+            .map(clampTitle)
+            .filterNot(line => generic.contains(line.toLowerCase))
+            .find(line => line.nonEmpty)
+    }
+
+    /**
+     *  Extracts a heading-like label from a raw response line.
+     *  @param rawLine  Raw assistant response line.
+     *  @return         Heading text if the line contains a useful label.
+     */
+    private def extractHeadingLabel(rawLine: String): Option[String] =
+    {
+        val line = Option(rawLine).getOrElse("").trim
+        val markdownHeading = "^#{1,3}\\s+(.+)$".r
+        val boldLabel       = "^-?\\s*\\*\\*([^*]{4,80})\\*\\*:?.*$".r
+        val plainLabel      = "^([A-Z][A-Za-z0-9 &'’/()\\-]{4,80}):.*$".r
+
+        line match
+        {
+            case markdownHeading(label) => Some(cleanTitleText(label))
+            case boldLabel(label)       => Some(cleanTitleText(label))
+            case plainLabel(label)      => Some(cleanTitleText(label))
+            case _                      => None
+        }
+    }
+
+    /**
+     *  Normalises model text into plain single-line title text.
+     *  @param text  Raw text.
+     *  @return      Plain single-line text.
+     */
+    private def cleanTitleText(text: String): String =
+    {
+        Option(text).getOrElse("")
+            .replace("<done>", "")
+            .replaceAll("`[^`]*`", "")
+            .replaceAll("run\\([^)]*\\)", "")
+            .replaceAll("^[\\s#>*\\-]+", "")
+            .replaceAll("\\*\\*", "")
+            .replaceAll("\\s+", " ")
+            .trim
+            .stripSuffix(".")
+            .stripSuffix("?")
+    }
+
+    /**
+     *  Truncates title text to a compact display length.
+     *  @param text  Plain title text.
+     *  @return      Title text no longer than 64 characters.
+     */
+    private def clampTitle(text: String): String =
+    {
+        val cleaned = text.trim
+        if (cleaned.length <= 64)
+        {
+            cleaned
+        }
+        else
+        {
+            cleaned.take(61).trim + "..."
         }
     }
 

@@ -2,7 +2,7 @@ package agentica.testutil
 
 import agentica.agent.{AgentEvent, AgentLoop}
 import agentica.observability.TokenAccounting
-import agentica.session.{Message, MessageRole, MessageStore, RunStore, Session, ToolRun}
+import agentica.session.{AgentTurnStore, Message, MessageRole, MessageStore, RunStore, Session, ToolRun}
 import agentica.settings.AppSettings
 import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
 import agentica.tools.ExecutionContext
@@ -139,6 +139,7 @@ class GoldenScenarioRunner(scenarioPath: Path, workspaceFiles: Map[String, Strin
             llm                    = llm,
             messageStore           = messageStore,
             runStore               = runStore,
+            agentTurnStore         = new AgentTurnStore(null) { override def insert(t: agentica.session.AgentTurn): Unit = () },
             tokenAccounting        = accounting,
             virtualShell           = virtualShell,
             settings               = settings,
@@ -182,7 +183,7 @@ class GoldenScenarioRunner(scenarioPath: Path, workspaceFiles: Map[String, Strin
                 evt match
                 {
                     case AgentEvent.ToolCallStart(cmd, _) => toolCalls.append(cmd)
-                    case AgentEvent.Final(msgId)          => finalMsgId = Some(msgId)
+                    case AgentEvent.Final(msgId, _)       => finalMsgId = Some(msgId)
                     case _                                 => ()
                 }
             }

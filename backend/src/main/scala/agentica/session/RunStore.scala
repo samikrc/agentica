@@ -147,4 +147,58 @@ class RunStore(conn: () => Connection)
         c.close()
         buf.toList
     }
+
+    /**
+     *  Deletes all tool runs in a session that come after the specified message timestamp.
+     *  This is used for the restart functionality to truncate conversation history.
+     *  @param sessionId      Session identifier.
+     *  @param fromMessageId  The message ID to delete after (runs after this message are deleted).
+     */
+    def deleteRunsAfter(sessionId: String, fromMessageId: String): Unit =
+    {
+        val c  = conn()
+        val ps = c.prepareStatement(
+            """DELETE FROM tool_runs
+               WHERE session_id = ?
+               AND rowid > (SELECT rowid FROM messages WHERE id = ? LIMIT 1)"""
+        )
+        try
+        {
+            ps.setString(1, sessionId)
+            ps.setString(2, fromMessageId)
+            ps.executeUpdate()
+        }
+        finally
+        {
+            ps.close()
+            c.close()
+        }
+    }
+
+    /**
+     *  Deletes all token usage records in a session that come after the specified message timestamp.
+     *  This is used for the restart functionality to truncate conversation history.
+     *  @param sessionId      Session identifier.
+     *  @param fromMessageId  The message ID to delete after (usage after this message is deleted).
+     */
+    def deleteTokenUsageAfter(sessionId: String, fromMessageId: String): Unit =
+    {
+        val c  = conn()
+        val ps = c.prepareStatement(
+            """DELETE FROM token_usage
+               WHERE session_id = ?
+               AND rowid > (SELECT rowid FROM messages WHERE id = ? LIMIT 1)"""
+        )
+        try
+        {
+            ps.setString(1, sessionId)
+            ps.setString(2, fromMessageId)
+            ps.executeUpdate()
+        }
+        finally
+        {
+            ps.close()
+            c.close()
+        }
+    }
 }

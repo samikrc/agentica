@@ -3,7 +3,7 @@ package agentica.server
 import agentica.agent.{AgentEngine, AgentEvent, ContextManager}
 import agentica.observability.TraceLogger
 import agentica.permissions.{GrantDecision, GrantTTL, ScopeStore}
-import agentica.session.{MemoryStore, MessageRole, MessageStore, RunStore, Session, SessionStore}
+import agentica.session.{AgentTurn, AgentTurnStore, MemoryStore, MessageRole, MessageStore, RunStore, Session, SessionStore}
 import agentica.settings.{AppSettings, SettingsStore}
 import agentica.shell.CommandRegistry
 import cask.*
@@ -19,6 +19,7 @@ import scala.jdk.CollectionConverters.*
  *  @param sessionStore      Persistence layer for sessions.
  *  @param messageStore      Persistence layer for chat messages.
  *  @param runStore          Persistence layer for tool runs and token usage.
+ *  @param agentTurnStore    Persistence layer for agent turn trajectories.
  *  @param settingsStore     JSON-backed application settings store.
  *  @param memoryStore       Session-scoped key-value memory store.
  *  @param scopeStore        Permission grant store for sensitive tools.
@@ -30,6 +31,7 @@ class Routes(
     sessionStore:    SessionStore,
     messageStore:    MessageStore,
     runStore:        RunStore,
+    agentTurnStore:  AgentTurnStore,
     settingsStore:   SettingsStore,
     memoryStore:     MemoryStore,
     scopeStore:      ScopeStore,
@@ -56,6 +58,7 @@ class Routes(
         case n if n.endsWith(".png")  => "image/png"
         case n if n.endsWith(".ico")  => "image/x-icon"
         case n if n.endsWith(".ttf")  => "font/ttf"
+        case n if n.endsWith(".svg")  => "image/svg+xml"
         case _                        => "application/octet-stream"
     }
 
@@ -99,6 +102,11 @@ class Routes(
     @cask.get("/fonts/:file")
     def fontFile(file: String, request: Request): Response[Response.Data] =
         serveFile(s"fonts/$file")
+
+    /** Serves icon assets from the UI root. */
+    @cask.get("/icons/:file")
+    def iconFile(file: String, request: Request): Response[Response.Data] =
+        serveFile(s"icons/$file")
 
     private val corsHeaders: Seq[(String, String)] = Seq(
         "Access-Control-Allow-Origin"  -> "*",
@@ -222,7 +230,39 @@ class Routes(
         }
     }
 
-    /** 
+    /**
+     *  Renames a session from a JSON body `{title}` and returns the updated session.
+     *  @param id       Session identifier.
+     *  @param request  Authenticated HTTP request containing the JSON title payload.
+     *  @return         Updated session JSON or an error response.
+     */
+    @cask.route("/sessions/:id/title", methods = Seq("post", "options"))
+    def renameSession(id: String, request: Request): Response[Response.Data] =
+    {
+        withAuth(request) {
+            val body  = ujson.read(request.text())
+            val title = body.obj.get("title").map(_.str.trim).getOrElse("")
+            if (title.isEmpty)
+            {
+                Response("""{"error":"title required"}""", statusCode = 400,
+                    headers = Seq("Content-Type" -> "application/json"))
+            }
+            else
+            {
+                sessionStore.updateTitle(id, title)
+                sessionStore.get(id) match
+                {
+                    case Some(s) =>
+                        Response(write(s), headers = Seq("Content-Type" -> "application/json"))
+                    case None =>
+                        Response("""{"error":"not found"}""", statusCode = 404,
+                            headers = Seq("Content-Type" -> "application/json"))
+                }
+            }
+        }
+    }
+
+    /**
      *  Deletes a session and all its messages. Returns 204 on success.
      */
     @cask.route("/sessions/:id", methods = Seq("delete", "options"))
@@ -231,6 +271,25 @@ class Routes(
         withAuth(request) {
             messageStore.deleteForSession(id)
             sessionStore.delete(id)
+            Response("", statusCode = 204)
+        }
+    }
+
+    /**
+     *  Restarts the conversation from a specific user message.
+     *  Deletes all messages, agent turns, tool runs, and token usage after the specified message.
+     *  Returns 204 on success.
+     */
+    @cask.route("/sessions/:id/restart", methods = Seq("post", "options"))
+    def restartSession(id: String, request: Request): Response[Response.Data] =
+    {
+        withAuth(request) {
+            val body       = ujson.read(request.text())
+            val fromMsgId   = body("fromMessageId").str
+            messageStore.deleteAfter(id, fromMsgId)
+            agentTurnStore.deleteAfter(id, fromMsgId)
+            runStore.deleteRunsAfter(id, fromMsgId)
+            runStore.deleteTokenUsageAfter(id, fromMsgId)
             Response("", statusCode = 204)
         }
     }
@@ -306,8 +365,13 @@ class Routes(
                                                 val tJson   = ujson.Str(t).render()
                                                 val outJson = ujson.Str(out).render()
                                                 sseEvent("tool_result", s"""{"tool":$tJson,"output":$outJson,"durationMs":$ms}""")
-                                            case AgentEvent.Final(msgId) =>
-                                                sseEvent("final", s"""{"messageId":"$msgId"}""")
+                                            case AgentEvent.Final(msgId, sessionTitle) =>
+                                                val obj = ujson.Obj("messageId" -> msgId)
+                                                sessionTitle.map(_.trim).filter(_.nonEmpty).foreach { title =>
+                                                    sessionStore.updateTitle(id, title)
+                                                    obj("sessionTitle") = title
+                                                }
+                                                sseEvent("final", obj.render())
                                             case AgentEvent.Cancelled =>
                                                 sseEvent("cancelled", "{}")
                                             case AgentEvent.AgentError(msg) =>
@@ -322,7 +386,7 @@ class Routes(
                                         queue.offer(eventStr)
                                         ev match
                                         {
-                                            case AgentEvent.Final(_) | AgentEvent.Cancelled | AgentEvent.AgentError(_) =>
+                                            case AgentEvent.Final(_, _) | AgentEvent.Cancelled | AgentEvent.AgentError(_) =>
                                                 queue.offer(sseEvent("done", "{}"))
                                             case AgentEvent.PermissionRequired(_, _, _) => ()
                                             case _ => ()
@@ -468,6 +532,25 @@ class Routes(
                 permissionQueues.remove(runId)
                 Response("", statusCode = 204)
             }
+        }
+    }
+
+    // --- Agent turns ---
+
+    /**
+     *  Returns all [[AgentTurn]] trajectory records for session `id`, ordered by timestamp.
+     *  Each turn includes the ordered list of intermediate steps (thinking + tool calls)
+     *  that the UI renders as collapsible steps above the final assistant message.
+     *  @param id      Session identifier.
+     *  @param request Incoming HTTP request (used for auth).
+     *  @return        JSON array of [[AgentTurn]] objects.
+     */
+    @cask.route("/sessions/:id/agent-turns", methods = Seq("get", "options"))
+    def agentTurns(id: String, request: Request): Response[Response.Data] =
+    {
+        withAuth(request) {
+            val turns = agentTurnStore.listForSession(id)
+            Response(write(turns), headers = Seq("Content-Type" -> "application/json"))
         }
     }
 
