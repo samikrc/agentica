@@ -1,7 +1,7 @@
 package agentica.tools.files
 
 import agentica.shell.{PathSandbox, Presentation}
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolBody, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolBody, ToolResult, ToolStatus, FilesError}
 import agentica.tools.Tool
 import java.nio.file.{Files, NoSuchFileException, Path}
 import java.nio.file.attribute.BasicFileAttributes
@@ -37,7 +37,7 @@ case class FilesListOutput(
     entries: Int,
     dirs:    Int,
     files:   Int,
-    error:   Option[String]
+    error:   Option[FilesError] = None
 )
 
 /**
@@ -105,7 +105,7 @@ object FilesList extends Tool[FilesListInput, FilesListOutput]
         PathSandbox.resolve(rootStr, input.rawPath) match
         {
             case Left(_) =>
-                FilesListOutput(Nil, 0, 0, 0, Some("path_escaped"))
+                FilesListOutput(Nil, 0, 0, 0, Some(FilesError.PathEscaped))
             case Right(startPath) =>
                 try
                 {
@@ -160,9 +160,9 @@ object FilesList extends Tool[FilesListInput, FilesListOutput]
                 catch
                 {
                     case _: NoSuchFileException =>
-                        FilesListOutput(Nil, 0, 0, 0, Some("not_found"))
+                        FilesListOutput(Nil, 0, 0, 0, Some(FilesError.NotFound))
                     case ex: Exception =>
-                        FilesListOutput(Nil, 0, 0, 0, Some(ex.getMessage))
+                        FilesListOutput(Nil, 0, 0, 0, Some(FilesError.IoError(ex.getMessage)))
                 }
         }
     }
@@ -172,23 +172,23 @@ object FilesList extends Tool[FilesListInput, FilesListOutput]
      *  @param output  Raw output from [[execute]].
      *  @return        Typed [[ToolResult]] ready for [[agentica.shell.Presentation]].
      */
-    def render(output: FilesListOutput): ToolResult =
+    def render(output: FilesListOutput, ctx: ExecutionContext): ToolResult =
     {
         output.error match
         {
-            case Some("path_escaped") =>
+            case Some(FilesError.PathEscaped) =>
                 ToolResult(status = ToolStatus.Err(
-                    code    = "path_escaped",
+                    code    = FilesError.PathEscaped.toErrorCode,
                     message = "Path escapes workspace",
                     hints   = List("Use a path within the workspace root.")
                 ))
-            case Some("not_found") =>
+            case Some(FilesError.NotFound) =>
                 ToolResult(status = ToolStatus.Err(
-                    code    = "not_found",
+                    code    = FilesError.NotFound.toErrorCode,
                     message = "Directory not found",
                     hints   = List("Check the path is correct and within the workspace.")
                 ))
-            case Some(msg) =>
+            case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
             case None =>
                 val text     = output.lines.mkString("\n")

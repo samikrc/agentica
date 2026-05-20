@@ -148,25 +148,8 @@ class GoldenScenarioRunner(scenarioPath: Path, workspaceFiles: Map[String, Strin
             permissionLatchFactory = () => new SynchronousQueue()
         )
         {
-            // Override buildCtx to inject our test dependencies
-            override protected def buildCtx(
-                session: Session,
-                traceId: String,
-                onEvent: AgentEvent => Unit,
-                latch:   SynchronousQueue[GrantDecision]
-            ): ExecutionContext =
-            {
-                val scratchpad = new SessionScratchpad()
-                ExecutionContext(
-                    session         = session,
-                    traceId         = traceId,
-                    scopeStore      = new AutoGrantScopeStore(),
-                    scratchpad      = scratchpad,
-                    memoryStore     = null.asInstanceOf[agentica.session.MemoryStore],
-                    onEvent         = onEvent,
-                    permissionLatch = latch
-                )
-            }
+            // Note: buildCtx override removed since AgentLoop now uses shared context
+            // Test dependencies are injected through the constructor parameters
         }
 
         // Run the loop and capture events

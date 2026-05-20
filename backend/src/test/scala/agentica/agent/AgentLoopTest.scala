@@ -121,21 +121,8 @@ class AgentLoopTest extends AnyFunSuite
         () => new SynchronousQueue()
     )
     {
-        override protected def buildCtx(
-            session: Session,
-            traceId: String,
-            onEvent: AgentEvent => Unit,
-            latch:   SynchronousQueue[GrantDecision]
-        ): ExecutionContext =
-            ExecutionContext(
-                session         = session,
-                traceId         = traceId,
-                scopeStore      = null.asInstanceOf[ScopeStore],
-                scratchpad      = new SessionScratchpad(),
-                memoryStore     = null.asInstanceOf[MemoryStore],
-                onEvent         = onEvent,
-                permissionLatch = latch
-            )
+        // Note: buildCtx override removed since AgentLoop now uses shared context
+        // Test dependencies are injected through the constructor parameters
     }
 
     private def makeLoop(
@@ -650,16 +637,9 @@ class AgentLoopTest extends AnyFunSuite
     )
     // Intentionally no buildCtx override — exercises the real implementation.
 
-    test("BUG #2 — AgentLoop: all tool calls in one run must share the same SessionScratchpad") {
-        // AgentLoop.buildCtx() currently allocates new SessionScratchpad() on every dispatch.
-        // This means a $scratch/ ref stored during tool call N is invisible in tool call N+1,
-        // because N+1 receives a fresh, empty scratchpad.
-        //
-        // Fix: create one SessionScratchpad at the top of AgentLoop.run() and capture it in
-        // the buildCtx closure, so every dispatch within the same run shares it.
-        //
-        // This test FAILS until AgentLoop.buildCtx() is fixed.
-
+    test("AgentLoop shares same SessionScratchpad across tool calls") {
+        // Tests that all tool calls within a single run share the same scratchpad instance
+        
         val capturedScratchpads = mutable.ListBuffer.empty[SessionScratchpad]
 
         val capturingShell = new EchoVirtualShell()
@@ -689,13 +669,10 @@ class AgentLoopTest extends AnyFunSuite
         assert(capturedScratchpads.size == 2,
             "two tool dispatches must each capture a scratchpad reference")
 
-        // BUG #2: buildCtx() creates new SessionScratchpad() on every call,
-        // so the two references point to different objects.
-        // After the fix they must be the same instance (reference equality).
+        // Verify both tool calls received the same scratchpad instance (reference equality)
         assert(
             capturedScratchpads(0) eq capturedScratchpads(1),
-            "all tool calls in one run() must receive the same SessionScratchpad instance; " +
-            "currently AgentLoop.buildCtx() creates a new one on each dispatch"
+            "all tool calls in one run must receive the same SessionScratchpad instance"
         )
     }
 
@@ -735,23 +712,8 @@ class AgentLoopTest extends AnyFunSuite
             null.asInstanceOf[MemoryStore],
             () => new SynchronousQueue()
         ) {
-            override protected def buildCtx(
-                session: Session,
-                traceId: String,
-                onEvent: AgentEvent => Unit,
-                latch:   SynchronousQueue[GrantDecision]
-            ): ExecutionContext =
-            {
-                ExecutionContext(
-                    session         = session,
-                    traceId         = traceId,
-                    scopeStore      = null.asInstanceOf[ScopeStore],
-                    scratchpad      = new SessionScratchpad(),
-                    memoryStore     = null.asInstanceOf[MemoryStore],
-                    onEvent         = onEvent,
-                    permissionLatch = latch
-                )
-            }
+            // Note: buildCtx override removed since AgentLoop now uses shared context
+            // Test dependencies are injected through the constructor parameters
         }
         (loop, store, turnStore, shell)
     }

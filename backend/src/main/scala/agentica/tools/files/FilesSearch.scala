@@ -1,29 +1,12 @@
 package agentica.tools.files
 
-import agentica.shell.{PathSandbox, Presentation}
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolBody, ToolResult, ToolStatus}
+import agentica.shell.{PathSandbox, Presentation, ScratchEntry}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolBody, ToolResult, ToolStatus, FilesError}
 import agentica.tools.Tool
 import java.nio.file.{Files, NoSuchFileException, Path}
 import scala.jdk.CollectionConverters.*
 import scala.util.matching.Regex
 
-/**
- *  Possible failure modes for [[FilesSearch.execute]].
- */
-enum FilesSearchError
-{
-    /** The resolved path escapes the session workspace root. */
-    case PathEscaped
-
-    /** The search root path does not exist. */
-    case NotFound
-
-    /**
-     *  An I/O exception occurred during the search.
-     *  @param message  Exception message from the underlying I/O layer.
-     */
-    case IoError(message: String)
-}
 
 /**
  *  Validated input for [[FilesSearch]].
@@ -61,7 +44,7 @@ case class FilesSearchOutput(
     matches:   Int,
     files:     Int,
     truncated: Boolean,
-    error:     Option[FilesSearchError] = None
+    error:     Option[FilesError] = None
 )
 
 /**
@@ -135,7 +118,7 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
         PathSandbox.resolve(rootStr, input.rawPath) match
         {
             case Left(_) =>
-                FilesSearchOutput(Nil, 0, 0, false, Some(FilesSearchError.PathEscaped))
+                FilesSearchOutput(Nil, 0, 0, false, Some(FilesError.PathEscaped))
             case Right(startPath) =>
                 try
                 {
@@ -225,35 +208,36 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                 catch
                 {
                     case _: NoSuchFileException =>
-                        FilesSearchOutput(Nil, 0, 0, false, Some(FilesSearchError.NotFound))
+                        FilesSearchOutput(Nil, 0, 0, false, Some(FilesError.NotFound))
                     case ex: Exception =>
-                        FilesSearchOutput(Nil, 0, 0, false, Some(FilesSearchError.IoError(ex.getMessage)))
+                        FilesSearchOutput(Nil, 0, 0, false, Some(FilesError.IoError(ex.getMessage)))
                 }
         }
     }
 
     /**
-     *  Converts raw search output to a [[ToolResult]].
+     *  Formats raw output for LLM consumption, routing large bodies to the scratchpad.
      *  @param output  Raw output from [[execute]].
+     *  @param ctx     Runtime execution context for scratchpad storage.
      *  @return        Typed [[ToolResult]] ready for [[agentica.shell.Presentation]].
      */
-    def render(output: FilesSearchOutput): ToolResult =
+    def render(output: FilesSearchOutput, ctx: ExecutionContext): ToolResult =
     {
         output.error match
         {
-            case Some(FilesSearchError.PathEscaped) =>
+            case Some(FilesError.PathEscaped) =>
                 ToolResult(status = ToolStatus.Err(
-                    code    = "path_escaped",
+                    code    = FilesError.PathEscaped.toErrorCode,
                     message = "Path escapes workspace",
                     hints   = List("Use a path within the workspace root.")
                 ))
-            case Some(FilesSearchError.NotFound) =>
+            case Some(FilesError.NotFound) =>
                 ToolResult(status = ToolStatus.Err(
-                    code    = "not_found",
+                    code    = FilesError.NotFound.toErrorCode,
                     message = "Search path not found",
                     hints   = List("Check the path is correct and within the workspace.")
                 ))
-            case Some(FilesSearchError.IoError(msg)) =>
+            case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
             case None =>
                 val text     = output.blocks.mkString("\n")
@@ -268,9 +252,21 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                 }
                 else
                 {
+                    val ref = "$scratch/__search_result__"
+                    val sourcePath = "__search_result__"
+                    // Store the content in scratchpad so the ref resolves
+                    val entry = ScratchEntry(
+                        content      = text,
+                        sizeBytes    = text.length.toLong,
+                        lineCount    = output.blocks.length,
+                        sourcePath   = sourcePath,
+                        lastModified = System.currentTimeMillis(),
+                        storedAt     = System.currentTimeMillis()
+                    )
+                    ctx.scratchpad.store(sourcePath, entry)
                     ToolBody.ScratchRef(
-                        ref        = "$scratch/__search_result__",
-                        sourcePath = "__search_result__",
+                        ref        = ref,
+                        sourcePath = sourcePath,
                         sizeBytes  = text.length.toLong,
                         lineCount  = output.blocks.length
                     )

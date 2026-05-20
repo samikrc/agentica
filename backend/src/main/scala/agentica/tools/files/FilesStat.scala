@@ -1,7 +1,7 @@
 package agentica.tools.files
 
 import agentica.shell.PathSandbox
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolResult, ToolStatus, FilesError}
 import agentica.tools.Tool
 import java.nio.file.{Files, NoSuchFileException}
 import java.nio.file.attribute.BasicFileAttributes
@@ -26,7 +26,7 @@ case class FilesStatOutput(
     sizeBytes:    Long,
     lastModified: String,
     fileType:     String,
-    error:        Option[String]
+    error:        Option[FilesError] = None
 )
 
 /**
@@ -79,7 +79,7 @@ object FilesStat extends Tool[FilesStatInput, FilesStatOutput]
         PathSandbox.resolve(rootStr, input.rawPath) match
         {
             case Left(_) =>
-                FilesStatOutput(input.rawPath, 0, "", "", Some("path_escaped"))
+                FilesStatOutput(input.rawPath, 0, "", "", Some(FilesError.PathEscaped))
             case Right(resolved) =>
                 val rootPath   = java.nio.file.Paths.get(rootStr).toAbsolutePath.normalize()
                 val sourcePath = rootPath.relativize(resolved).toString
@@ -100,9 +100,9 @@ object FilesStat extends Tool[FilesStatInput, FilesStatOutput]
                 catch
                 {
                     case _: NoSuchFileException =>
-                        FilesStatOutput(sourcePath, 0, "", "", Some("not_found"))
+                        FilesStatOutput(sourcePath, 0, "", "", Some(FilesError.NotFound))
                     case ex: Exception =>
-                        FilesStatOutput(sourcePath, 0, "", "", Some(ex.getMessage))
+                        FilesStatOutput(sourcePath, 0, "", "", Some(FilesError.IoError(ex.getMessage)))
                 }
         }
     }
@@ -112,23 +112,23 @@ object FilesStat extends Tool[FilesStatInput, FilesStatOutput]
      *  @param output  Raw output from [[execute]].
      *  @return        Typed [[ToolResult]] ready for [[agentica.shell.Presentation]].
      */
-    def render(output: FilesStatOutput): ToolResult =
+    def render(output: FilesStatOutput, ctx: ExecutionContext): ToolResult =
     {
         output.error match
         {
-            case Some("path_escaped") =>
+            case Some(FilesError.PathEscaped) =>
                 ToolResult(status = ToolStatus.Err(
-                    code    = "path_escaped",
+                    code    = FilesError.PathEscaped.toErrorCode,
                     message = s"Path escapes workspace: ${output.sourcePath}",
                     hints   = List("Use a path within the workspace root.")
                 ))
-            case Some("not_found") =>
+            case Some(FilesError.NotFound) =>
                 ToolResult(status = ToolStatus.Err(
-                    code    = "not_found",
+                    code    = FilesError.NotFound.toErrorCode,
                     message = s"Not found: ${output.sourcePath}",
                     hints   = List("Check the path is correct and within the workspace.")
                 ))
-            case Some(msg) =>
+            case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
             case None =>
                 ToolResult(

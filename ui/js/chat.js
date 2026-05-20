@@ -194,7 +194,8 @@ const Chat = (() => {
     statsEl.innerHTML =
       `<div class="msg-token-stat"><span class="msg-token-stat-label">Tokens In</span><span class="msg-token-stat-value">${stats.inputTokens.toLocaleString()}</span></div>` +
       `<div class="msg-token-stat"><span class="msg-token-stat-label">Tokens Out</span><span class="msg-token-stat-value">${stats.outputTokens.toLocaleString()}</span></div>` +
-      `<div class="msg-token-stat"><span class="msg-token-stat-label">Total Time</span><span class="msg-token-stat-value">${latencySec}</span></div>`;
+      `<div class="msg-token-stat"><span class="msg-token-stat-label">Total Time</span><span class="msg-token-stat-value">${latencySec}</span></div>` +
+      `<div class="msg-token-stat"><span class="msg-token-stat-label">Turns</span><span class="msg-token-stat-value">${stats.turns}</span></div>`;
 
     chartBtn.addEventListener('click', () => statsEl.classList.toggle('visible'));
     return [chartBtn, statsEl];
@@ -270,10 +271,11 @@ const Chat = (() => {
     // Sum token usage per traceId (a turn can have multiple LLM calls)
     const tokensByTraceId = {};
     for (const u of usageList) {
-      if (!tokensByTraceId[u.traceId]) tokensByTraceId[u.traceId] = { inputTokens: 0, outputTokens: 0, latencyMs: 0 };
+      if (!tokensByTraceId[u.traceId]) tokensByTraceId[u.traceId] = { inputTokens: 0, outputTokens: 0, latencyMs: 0, turns: 0 };
       tokensByTraceId[u.traceId].inputTokens  += u.promptTokens;
       tokensByTraceId[u.traceId].outputTokens += u.completionTokens;
       tokensByTraceId[u.traceId].latencyMs    += u.latencyMs;
+      tokensByTraceId[u.traceId].turns        += 1;
     }
 
     // Build lookup: assistantMsgId → AgentTurn
@@ -435,12 +437,13 @@ const Chat = (() => {
         setIdle();
         // Async: fetch token usage and append chart button once available
         Api.get(`/sessions/${_sessionId}/token-usage`).then(usageList => {
-          const stats = { inputTokens: 0, outputTokens: 0, latencyMs: 0 };
+          const stats = { inputTokens: 0, outputTokens: 0, latencyMs: 0, turns: 0 };
           for (const u of usageList) {
             if (u.traceId === result.traceId) {
               stats.inputTokens  += u.promptTokens;
               stats.outputTokens += u.completionTokens;
               stats.latencyMs    += u.latencyMs;
+              stats.turns        += 1;
             }
           }
           if (stats.inputTokens > 0 || stats.outputTokens > 0) {

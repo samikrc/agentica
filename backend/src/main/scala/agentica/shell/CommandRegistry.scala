@@ -65,7 +65,7 @@ class CommandRegistry
                 )
             case Right(input) =>
                 val output = tool.execute(input, ctx)
-                tool.render(output)
+                tool.render(output, ctx)
         }
     }
 

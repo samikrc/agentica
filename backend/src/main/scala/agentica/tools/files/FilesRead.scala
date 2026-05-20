@@ -1,29 +1,12 @@
 package agentica.tools.files
 
 import agentica.shell.{PathSandbox, ScratchEntry}
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolBody, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolBody, ToolResult, ToolStatus, FilesError}
 import agentica.tools.Tool
 import agentica.shell.Presentation
 import java.nio.file.{Files, NoSuchFileException}
 import java.nio.file.attribute.BasicFileAttributes
 
-/**
- *  Possible failure modes for [[FilesRead.execute]].
- */
-enum FilesReadError
-{
-    /** The resolved path escapes the session workspace root. */
-    case PathEscaped
-
-    /** The file does not exist at the resolved path. */
-    case NotFound
-
-    /**
-     *  An I/O exception occurred during the read.
-     *  @param message  Exception message from the underlying I/O layer.
-     */
-    case IoError(message: String)
-}
 
 /**
  *  Validated input for [[FilesRead]].
@@ -49,7 +32,7 @@ case class FilesReadOutput(
     truncated:    Boolean,
     sourcePath:   String,
     lastModified: Long,
-    error:        Option[FilesReadError] = None
+    error:        Option[FilesError] = None
 )
 
 /**
@@ -127,7 +110,7 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
         PathSandbox.resolve(rootStr, input.path.toString) match
         {
             case Left(_) =>
-                FilesReadOutput("", 0, 0, false, input.path.toString, 0, Some(FilesReadError.PathEscaped))
+                FilesReadOutput("", 0, 0, false, input.path.toString, 0, Some(FilesError.PathEscaped))
             case Right(resolved) =>
                 val sourcePath = rootPath.relativize(resolved).toString
                 readFromDisk(input, ctx, resolved, sourcePath)
@@ -205,37 +188,35 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
         catch
         {
             case _: NoSuchFileException =>
-                FilesReadOutput("", 0, 0, false, sourcePath, 0, Some(FilesReadError.NotFound))
+                FilesReadOutput("", 0, 0, false, sourcePath, 0, Some(FilesError.NotFound))
             case ex: Exception =>
-                FilesReadOutput("", 0, 0, false, sourcePath, 0, Some(FilesReadError.IoError(ex.getMessage)))
+                FilesReadOutput("", 0, 0, false, sourcePath, 0, Some(FilesError.IoError(ex.getMessage)))
         }
     }
 
     /**
      *  Converts raw output to a [[ToolResult]], routing large bodies to the scratchpad.
-     *  Must be called with the [[ExecutionContext]] available — for scratchpad routing
-     *  the caller (`CommandRegistry`) passes the output through; scratchpad storage
-     *  is handled here via a post-render check in `VirtualShell`.
      *  @param output  Raw output from [[execute]].
+     *  @param ctx     Runtime execution context for scratchpad storage.
      *  @return        Typed [[ToolResult]] ready for [[agentica.shell.Presentation]].
      */
-    def render(output: FilesReadOutput): ToolResult =
+    def render(output: FilesReadOutput, ctx: ExecutionContext): ToolResult =
     {
         output.error match
         {
-            case Some(FilesReadError.PathEscaped) =>
+            case Some(FilesError.PathEscaped) =>
                 ToolResult(status = ToolStatus.Err(
-                    code    = "path_escaped",
+                    code    = FilesError.PathEscaped.toErrorCode,
                     message = s"Path escapes workspace: ${output.sourcePath}",
                     hints   = List("Use a path within the workspace root.")
                 ))
-            case Some(FilesReadError.NotFound) =>
+            case Some(FilesError.NotFound) =>
                 ToolResult(status = ToolStatus.Err(
-                    code    = "not_found",
+                    code    = FilesError.NotFound.toErrorCode,
                     message = s"File not found: ${output.sourcePath}",
                     hints   = List("Check the path is correct and within the workspace.")
                 ))
-            case Some(FilesReadError.IoError(msg)) =>
+            case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
             case None =>
                 val rangeNote = if (output.truncated) " · partial" else ""
@@ -249,8 +230,19 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
                 }
                 else
                 {
+                    val ref = s"$$scratch/${output.sourcePath}"
+                    // Store the content in scratchpad so the ref resolves
+                    val entry = ScratchEntry(
+                        content      = output.content,
+                        sizeBytes    = output.sizeBytes,
+                        lineCount    = output.totalLines,
+                        sourcePath   = output.sourcePath,
+                        lastModified = output.lastModified,
+                        storedAt     = System.currentTimeMillis()
+                    )
+                    ctx.scratchpad.store(output.sourcePath, entry)
                     ToolBody.ScratchRef(
-                        ref        = s"$$scratch/${output.sourcePath}",
+                        ref        = ref,
                         sourcePath = output.sourcePath,
                         sizeBytes  = output.sizeBytes,
                         lineCount  = output.totalLines

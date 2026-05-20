@@ -165,6 +165,46 @@ trait Tool[I, O]
     /**
      *  Converts the raw execution output to a typed [[ToolResult]] ready for [[agentica.shell.Presentation]].
      *  @param output  Raw output produced by `execute`.
+     *  @param ctx     Runtime execution context for scratchpad storage.
      */
-    def render(output: O): ToolResult
+    def render(output: O, ctx: ExecutionContext): ToolResult
+}
+
+// ─── Common Error Types ─────────────────────────────────────────────────────────
+
+/**
+ *  Common failure modes for file system operations.
+ *  Used across all files.* tools for consistent error handling.
+ */
+enum FilesError
+{
+    /** The resolved path escapes the session workspace root. */
+    case PathEscaped
+
+    /** The file or directory does not exist at the resolved path. */
+    case NotFound
+
+    /** The user denied the permission request, or the 60 s prompt timeout elapsed. */
+    case PermissionDenied
+
+    /**
+     *  An I/O exception occurred during the operation.
+     *  @param message  Exception message from the underlying I/O layer.
+     */
+    case IoError(message: String)
+
+    /**
+     *  Converts the enum case to snake_case error code string.
+     *  @return Error code in snake_case format.
+     */
+    def toErrorCode: String =
+    {
+        this match
+        {
+            case PathEscaped     => "path_escaped"
+            case NotFound        => "not_found"
+            case PermissionDenied => "permission_denied"
+            case IoError(_)      => "internal_error"
+        }
+    }
 }

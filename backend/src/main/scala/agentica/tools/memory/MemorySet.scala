@@ -81,7 +81,7 @@ object MemorySet extends Tool[MemorySetInput, MemorySetOutput]
      *  @param output  Raw output from [[execute]].
      *  @return        Typed [[ToolResult]] ready for [[agentica.shell.Presentation]].
      */
-    def render(output: MemorySetOutput): ToolResult =
+    def render(output: MemorySetOutput, ctx: ExecutionContext): ToolResult =
     {
         output.error match
         {

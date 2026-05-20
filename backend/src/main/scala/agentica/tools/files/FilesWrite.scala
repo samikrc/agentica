@@ -3,29 +3,12 @@ package agentica.tools.files
 import agentica.agent.AgentEvent
 import agentica.permissions.GrantDecision
 import agentica.shell.PathSandbox
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolResult, ToolStatus, FilesError}
 import agentica.tools.Tool
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, NoSuchFileException, StandardOpenOption}
 import java.util.concurrent.TimeUnit
 
-/**
- *  Possible failure modes for [[FilesWrite.execute]].
- */
-enum FilesWriteError
-{
-    /** The resolved path escapes the session workspace root. */
-    case PathEscaped
-
-    /** The user denied the permission request, or the 60 s prompt timeout elapsed. */
-    case PermissionDenied
-
-    /**
-     *  An I/O exception occurred during the write.
-     *  @param message  Exception message from the underlying I/O layer.
-     */
-    case IoError(message: String)
-}
 
 /**
  *  Validated input for [[FilesWrite]].
@@ -43,7 +26,7 @@ case class FilesWriteInput(rawPath: String, content: String)
 case class FilesWriteOutput(
     sourcePath:   String,
     bytesWritten: Long,
-    error:        Option[FilesWriteError] = None
+    error:        Option[FilesError] = None
 )
 
 /**
@@ -104,7 +87,7 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
         PathSandbox.resolve(rootStr, input.rawPath) match
         {
             case Left(_) =>
-                FilesWriteOutput(input.rawPath, 0, Some(FilesWriteError.PathEscaped))
+                FilesWriteOutput(input.rawPath, 0, Some(FilesError.PathEscaped))
             case Right(resolved) =>
                 val rootPath   = java.nio.file.Paths.get(rootStr).toAbsolutePath.normalize()
                 val sourcePath = rootPath.relativize(resolved).toString
@@ -142,9 +125,9 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
             Option(ctx.permissionLatch.poll(60, TimeUnit.SECONDS)) match
             {
                 case None =>
-                    FilesWriteOutput(sourcePath, 0, Some(FilesWriteError.PermissionDenied))
+                    FilesWriteOutput(sourcePath, 0, Some(FilesError.PermissionDenied))
                 case Some(GrantDecision.Denied) =>
-                    FilesWriteOutput(sourcePath, 0, Some(FilesWriteError.PermissionDenied))
+                    FilesWriteOutput(sourcePath, 0, Some(FilesError.PermissionDenied))
                 case Some(granted: GrantDecision.Granted) =>
                     ctx.scopeStore.addGrant(ctx.session.id, name, granted)
                     writeFile(input, ctx, resolved, sourcePath)
@@ -158,7 +141,7 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
      *  @param ctx        Runtime execution context.
      *  @param resolved   Resolved absolute path within the sandbox.
      *  @param sourcePath Path relative to the workspace root.
-     *  @return           Write output with byte count, or [[FilesWriteError.IoError]] on failure.
+     *  @return           Write output with byte count, or [[FilesError.IoError]] on failure.
      */
     private def writeFile(
         input:      FilesWriteInput,
@@ -186,7 +169,7 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
         catch
         {
             case ex: Exception =>
-                FilesWriteOutput(sourcePath, 0, Some(FilesWriteError.IoError(ex.getMessage)))
+                FilesWriteOutput(sourcePath, 0, Some(FilesError.IoError(ex.getMessage)))
         }
     }
 
@@ -195,23 +178,23 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
      *  @param output  Raw output from [[execute]].
      *  @return        Typed [[ToolResult]] ready for [[agentica.shell.Presentation]].
      */
-    def render(output: FilesWriteOutput): ToolResult =
+    def render(output: FilesWriteOutput, ctx: ExecutionContext): ToolResult =
     {
         output.error match
         {
-            case Some(FilesWriteError.PathEscaped) =>
+            case Some(FilesError.PathEscaped) =>
                 ToolResult(status = ToolStatus.Err(
-                    code    = "path_escaped",
+                    code    = FilesError.PathEscaped.toErrorCode,
                     message = s"Path escapes workspace: ${output.sourcePath}",
                     hints   = List("Use a path within the workspace root.")
                 ))
-            case Some(FilesWriteError.PermissionDenied) =>
+            case Some(FilesError.PermissionDenied) =>
                 ToolResult(status = ToolStatus.Err(
-                    code    = "permission_denied",
+                    code    = FilesError.PermissionDenied.toErrorCode,
                     message = s"User denied write permission for: ${output.sourcePath}",
                     hints   = List("files.write requires user approval before executing.")
                 ))
-            case Some(FilesWriteError.IoError(msg)) =>
+            case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
             case None =>
                 ToolResult(

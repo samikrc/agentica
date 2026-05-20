@@ -79,7 +79,7 @@ object MemoryGet extends Tool[MemoryGetInput, MemoryGetOutput]
      *  @param output  Raw output from [[execute]].
      *  @return        Typed [[ToolResult]] ready for [[agentica.shell.Presentation]].
      */
-    def render(output: MemoryGetOutput): ToolResult =
+    def render(output: MemoryGetOutput, ctx: ExecutionContext): ToolResult =
     {
         output.error match
         {

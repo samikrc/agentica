@@ -73,7 +73,7 @@ object MemoryList extends Tool[MemoryListInput, MemoryListOutput]
      *  @param output  Raw output from [[execute]].
      *  @return        Typed [[ToolResult]] ready for [[agentica.shell.Presentation]].
      */
-    def render(output: MemoryListOutput): ToolResult =
+    def render(output: MemoryListOutput, ctx: ExecutionContext): ToolResult =
     {
         output.error match
         {

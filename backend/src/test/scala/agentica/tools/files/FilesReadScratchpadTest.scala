@@ -10,19 +10,11 @@ import java.nio.file.{Files, Paths}
 import java.util.concurrent.SynchronousQueue
 
 /**
- *  Proves that FilesRead (and FilesSearch) do NOT store large content in the scratchpad.
+ *  Test suite for FilesRead and FilesSearch scratchpad functionality.
  *
- *  Bug #1: render() returns ToolBody.ScratchRef for files that exceed BODY_BUDGET_CHARS,
- *  but execute() never calls ctx.scratchpad.store(). The ref is dead — when
- *  VirtualShell.resolveRefs() later sees $scratch/... it finds Nothing and falls back
- *  to passing the literal ref string to the next tool.
- *
- *  Root cause: Tool.render() has signature render(output: O): ToolResult — no
- *  ExecutionContext parameter — so only execute() can reach ctx.scratchpad.store().
- *  The fix belongs in execute(): store content there when it exceeds the budget,
- *  then communicate to render() via a flag in the output type.
- *
- *  These tests FAIL with the current implementation and PASS after the fix.
+ *  Verifies that large file content and search results are properly stored
+ *  in the SessionScratchpad when they exceed the body budget, and that
+ *  small files correctly bypass scratchpad storage.
  */
 class FilesReadScratchpadTest extends AnyFunSuite
 {
@@ -51,14 +43,10 @@ class FilesReadScratchpadTest extends AnyFunSuite
             .sorted(java.util.Comparator.reverseOrder())
             .forEach(Files.delete(_))
 
-    // ── Bug #1: FilesRead ─────────────────────────────────────────────────────
-
-    test("BUG #1 — FilesRead: execute() must store large file content in scratchpad") {
-        // When a file exceeds BODY_BUDGET_CHARS (8000 chars), render() correctly classifies
-        // it as a ScratchRef. But execute() never calls ctx.scratchpad.store(), so the ref
-        // is dead: VirtualShell.resolveRefs() returns None and logs scratch_ref_not_found.
-        // This test FAILS until execute() is fixed to call ctx.scratchpad.store().
-
+    
+    test("FilesRead stores large file content in scratchpad") {
+        // Tests that FilesRead properly stores content in scratchpad when file exceeds body budget
+        
         val tmpDir = Files.createTempDirectory("agentica-scratchpad-bug1-read")
         try
         {
@@ -72,15 +60,15 @@ class FilesReadScratchpadTest extends AnyFunSuite
             val input  = FilesReadInput(Paths.get("report.txt"), None)
             val output = FilesRead.execute(input, ctx)
 
-            // Confirm prerequisite: file was read and is large enough
+            // Verify file was read successfully and exceeds body budget
             assert(output.error.isEmpty, "file read must succeed")
             assert(
                 output.content.length > Presentation.BODY_BUDGET_CHARS,
-                "test prerequisite: content must exceed BODY_BUDGET_CHARS to exercise the scratchpad path"
+                "content must exceed BODY_BUDGET_CHARS to trigger scratchpad storage"
             )
 
-            // Confirm render() classifies it as a ScratchRef (this part works)
-            val result = FilesRead.render(output)
+            // Verify render() returns ScratchRef for oversized content
+            val result = FilesRead.render(output, ctx)
             val body   = result.body
             assert(body.isDefined && body.get.isInstanceOf[ToolBody.ScratchRef],
                 "render() must return a ScratchRef for oversized content")
@@ -88,15 +76,13 @@ class FilesReadScratchpadTest extends AnyFunSuite
             val ref = body.get.asInstanceOf[ToolBody.ScratchRef].ref
             assert(ref == "$scratch/report.txt")
 
-            // BUG: execute() read the file content but never called ctx.scratchpad.store().
-            // VirtualShell.resolveRefs() will find None for this ref and pass the literal
-            // "$scratch/report.txt" string to the next tool instead of the file content.
+            // Verify content was actually stored in scratchpad and is accessible
             val stored = scratchpad.get(ref)
             assert(
                 stored.isDefined,
-                "execute() must call ctx.scratchpad.store() so the returned $scratch ref resolves"
+                "scratchpad must contain the stored content for the ref to resolve"
             )
-            assert(stored.get.content == bigContent, "stored content must match the original file")
+            assert(stored.get.content == bigContent, "stored content must match original file content")
         }
         finally
         {
@@ -104,10 +90,9 @@ class FilesReadScratchpadTest extends AnyFunSuite
         }
     }
 
-    test("BUG #1 — FilesRead: small file is NOT stored in scratchpad (happy path should still pass)") {
-        // Small files go inline and must never touch the scratchpad.
-        // This test must pass both before and after the fix.
-
+    test("FilesRead small files bypass scratchpad storage") {
+        // Tests that small files are returned inline and not stored in scratchpad
+        
         val tmpDir = Files.createTempDirectory("agentica-scratchpad-bug1-small")
         try
         {
@@ -120,7 +105,7 @@ class FilesReadScratchpadTest extends AnyFunSuite
 
             val input  = FilesReadInput(Paths.get("small.txt"), None)
             val output = FilesRead.execute(input, ctx)
-            val result = FilesRead.render(output)
+            val result = FilesRead.render(output, ctx)
 
             assert(result.body.exists(_.isInstanceOf[ToolBody.Inline]),
                 "small file must produce an Inline body, not a ScratchRef")
@@ -132,18 +117,14 @@ class FilesReadScratchpadTest extends AnyFunSuite
         }
     }
 
-    // ── Bug #1: FilesSearch (same structural issue) ────────────────────────────
-
-    test("BUG #1 — FilesSearch: execute() must store large search results in scratchpad") {
-        // FilesSearch.render() also returns ScratchRef("$scratch/__search_result__", ...)
-        // when matches exceed the body budget. Same bug: content never stored.
-
+    
+    test("FilesSearch stores large results in scratchpad") {
+        // Tests that FilesSearch properly stores large search results in scratchpad
+        
         val tmpDir = Files.createTempDirectory("agentica-scratchpad-bug1-search")
         try
         {
-            // Write enough matching files to push the result past BODY_BUDGET_CHARS.
-            // Each line "needle line NNN — padding..." is ~50 chars; 200 files * 2 matching
-            // lines = ~20 KB of results, well above the 8000-char budget.
+            // Create enough matching files to exceed the body budget
             for (i <- 1 to 50)
             {
                 val content = (1 to 20).map(j => s"needle line $j in file $i with extra padding").mkString("\n")
@@ -164,9 +145,9 @@ class FilesReadScratchpadTest extends AnyFunSuite
                 useRegex     = false
             )
             val output = FilesSearch.execute(input, ctx)
-            val result = FilesSearch.render(output)
+            val result = FilesSearch.render(output, ctx)
 
-            // Only assert the scratchpad behaviour if results were large enough
+            // Verify scratchpad behavior based on result size
             result.body match
             {
                 case Some(ref: ToolBody.ScratchRef) =>
@@ -176,7 +157,7 @@ class FilesReadScratchpadTest extends AnyFunSuite
                         "FilesSearch must store large results in scratchpad so the ref resolves"
                     )
                 case Some(ToolBody.Inline(_)) =>
-                    // Results fit inline — scratchpad path not triggered; nothing to assert
+                    // Results fit inline - scratchpad not used, which is valid
                     ()
                 case None =>
                     fail("FilesSearch result must have a body")

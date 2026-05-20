@@ -73,7 +73,18 @@ class AgentLoop(
         val toolResultTurns = scala.collection.mutable.ListBuffer.empty[Message]
         // Accumulates ordered trajectory steps for AgentTurn persistence.
         val turnSteps       = scala.collection.mutable.ListBuffer.empty[AgentTurnStep]
+        // Shared context for all tool calls within this run
+        val sharedScratchpad = SessionScratchpad()
         val permLatch          = permissionLatchFactory()
+        val sharedCtx = ExecutionContext(
+            session         = session,
+            traceId         = traceId,
+            scopeStore      = scopeStore,
+            scratchpad      = sharedScratchpad,
+            memoryStore     = memoryStore,
+            onEvent         = emitEvent,
+            permissionLatch = permLatch
+        )
         var iteration = 1
 
         // Rebuilds the full message list for the next LLM call on every iteration.
@@ -256,7 +267,7 @@ class AgentLoop(
                                         emitEvent(AgentEvent.ToolCallStart(tc.rawCommand, ""))
                                         val t0       = System.currentTimeMillis()
                                         // Dispatch through VirtualShell: Tokenizer → CommandRegistry → Presentation.
-                                        val response = virtualShell.execute(tc.rawCommand, buildCtx(session, traceId, emitEvent, permLatch))
+                                        val response = virtualShell.execute(tc.rawCommand, sharedCtx)
                                         val durMs    = System.currentTimeMillis() - t0
                                         emitEvent(AgentEvent.ToolCallResult(tc.rawCommand, response.text, durMs))
                                         resultLines.append(response.text)
@@ -425,31 +436,5 @@ class AgentLoop(
         {
             cleaned.take(61).trim + "..."
         }
-    }
-
-    /**
-     *  Builds an [[ExecutionContext]] for tool dispatch within a single agent run.
-     *  @param session   Active session.
-     *  @param traceId   Current trace ID.
-     *  @param onEvent   SSE event emitter callback.
-     *  @param latch     Per-run permission handoff queue.
-     *  @return          Fully wired execution context.
-     */
-    protected def buildCtx(
-        session: Session,
-        traceId: String,
-        onEvent: AgentEvent => Unit,
-        latch:   SynchronousQueue[GrantDecision]
-    ): ExecutionContext =
-    {
-        ExecutionContext(
-            session          = session,
-            traceId          = traceId,
-            scopeStore       = scopeStore,
-            scratchpad       = SessionScratchpad(),
-            memoryStore      = memoryStore,
-            onEvent          = onEvent,
-            permissionLatch  = latch
-        )
     }
 }

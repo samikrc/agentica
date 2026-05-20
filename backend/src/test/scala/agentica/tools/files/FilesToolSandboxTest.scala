@@ -4,7 +4,7 @@ import agentica.agent.AgentEvent
 import agentica.permissions.{GrantDecision, ScopeStore}
 import agentica.session.{MemoryStore, Session}
 import agentica.shell.{PathSandbox, SessionScratchpad}
-import agentica.tools.{ExecutionContext, ToolResult, ToolStatus}
+import agentica.tools.{ExecutionContext, ToolResult, ToolStatus, FilesError}
 import org.scalatest.funsuite.AnyFunSuite
 import java.util.concurrent.SynchronousQueue
 
@@ -53,18 +53,18 @@ class FilesToolSandboxTest extends AnyFunSuite
     test("files.stat: traversal via ../ yields path_escaped error") {
         val input  = FilesStatInput("../../etc/passwd")
         val output = FilesStat.execute(input, ctx(root))
-        assert(output.error.contains("path_escaped"))
+        assert(output.error.contains(FilesError.PathEscaped))
     }
 
     test("files.stat: absolute path outside root yields path_escaped error") {
         val input  = FilesStatInput("/etc/shadow")
         val output = FilesStat.execute(input, ctx(root))
-        assert(output.error.contains("path_escaped"))
+        assert(output.error.contains(FilesError.PathEscaped))
     }
 
     test("files.stat: render converts path_escaped output to Err ToolResult") {
-        val output = FilesStatOutput("../../etc/passwd", 0, "", "", Some("path_escaped"))
-        val result = FilesStat.render(output)
+        val output = FilesStatOutput("../../etc/passwd", 0, "", "", Some(FilesError.PathEscaped))
+        val result = FilesStat.render(output, ctx(root))
         assert(result.status.isInstanceOf[ToolStatus.Err])
         val err = result.status.asInstanceOf[ToolStatus.Err]
         assert(err.code == "path_escaped")
@@ -73,7 +73,7 @@ class FilesToolSandboxTest extends AnyFunSuite
     test("files.stat: sibling workspace directory is rejected") {
         val input  = FilesStatInput("../other-workspace/secret.txt")
         val output = FilesStat.execute(input, ctx(root))
-        assert(output.error.contains("path_escaped"))
+        assert(output.error.contains(FilesError.PathEscaped))
     }
 
     // ── files.read ────────────────────────────────────────────────────────────
@@ -81,18 +81,18 @@ class FilesToolSandboxTest extends AnyFunSuite
     test("files.read: traversal via ../ yields path_escaped in content sentinel") {
         val input  = FilesReadInput(java.nio.file.Paths.get("../../etc/passwd"), None)
         val output = FilesRead.execute(input, ctx(root))
-        assert(output.error.contains(FilesReadError.PathEscaped))
+        assert(output.error.contains(FilesError.PathEscaped))
     }
 
     test("files.read: absolute path outside root yields path_escaped in content sentinel") {
         val input  = FilesReadInput(java.nio.file.Paths.get("/etc/shadow"), None)
         val output = FilesRead.execute(input, ctx(root))
-        assert(output.error.contains(FilesReadError.PathEscaped))
+        assert(output.error.contains(FilesError.PathEscaped))
     }
 
     test("files.read: render converts path_escaped sentinel to Err ToolResult") {
-        val output = FilesReadOutput("", 0, 0, false, "../../etc/passwd", 0, Some(FilesReadError.PathEscaped))
-        val result = FilesRead.render(output)
+        val output = FilesReadOutput("", 0, 0, false, "../../etc/passwd", 0, Some(FilesError.PathEscaped))
+        val result = FilesRead.render(output, ctx(root))
         assert(result.status.isInstanceOf[ToolStatus.Err])
     }
 
@@ -102,18 +102,18 @@ class FilesToolSandboxTest extends AnyFunSuite
         val input  = FilesWriteInput("../../tmp/injected.txt", "malicious content")
         val output = FilesWrite.execute(input, ctx(root))
         // Must short-circuit at sandbox — never reach permission latch
-        assert(output.error.contains(FilesWriteError.PathEscaped))
+        assert(output.error.contains(FilesError.PathEscaped))
     }
 
     test("files.write: absolute path outside root yields path_escaped") {
         val input  = FilesWriteInput("/tmp/injected.txt", "content")
         val output = FilesWrite.execute(input, ctx(root))
-        assert(output.error.contains(FilesWriteError.PathEscaped))
+        assert(output.error.contains(FilesError.PathEscaped))
     }
 
     test("files.write: render converts path_escaped output to Err ToolResult") {
-        val output = FilesWriteOutput("../../tmp/injected.txt", 0, Some(FilesWriteError.PathEscaped))
-        val result = FilesWrite.render(output)
+        val output = FilesWriteOutput("../../tmp/injected.txt", 0, Some(FilesError.PathEscaped))
+        val result = FilesWrite.render(output, ctx(root))
         assert(result.status.isInstanceOf[ToolStatus.Err])
         val err = result.status.asInstanceOf[ToolStatus.Err]
         assert(err.code == "path_escaped")
@@ -124,13 +124,13 @@ class FilesToolSandboxTest extends AnyFunSuite
     test("files.list: traversal via ../ yields path_escaped error") {
         val input  = FilesListInput("../../etc", recursive = false, all = false, depth = 1, pattern = None)
         val output = FilesList.execute(input, ctx(root))
-        assert(output.error.contains("path_escaped"))
+        assert(output.error.contains(FilesError.PathEscaped))
     }
 
     test("files.list: absolute path outside root yields path_escaped error") {
         val input  = FilesListInput("/etc", recursive = false, all = false, depth = 1, pattern = None)
         val output = FilesList.execute(input, ctx(root))
-        assert(output.error.contains("path_escaped"))
+        assert(output.error.contains(FilesError.PathEscaped))
     }
 
     // ── files.search ──────────────────────────────────────────────────────────
@@ -147,7 +147,7 @@ class FilesToolSandboxTest extends AnyFunSuite
             useRegex     = false
         )
         val output = FilesSearch.execute(input, ctx(root))
-        assert(output.error.contains(FilesSearchError.PathEscaped))
+        assert(output.error.contains(FilesError.PathEscaped))
     }
 
     test("files.search: absolute path outside root yields path_escaped error") {
@@ -157,12 +157,12 @@ class FilesToolSandboxTest extends AnyFunSuite
             recursive    = true,
             ignoreCase   = false,
             linesContext = 0,
-            maxMatches   = 10,
+            maxMatches   = 100,
             include      = None,
             useRegex     = false
         )
         val output = FilesSearch.execute(input, ctx(root))
-        assert(output.error.contains(FilesSearchError.PathEscaped))
+        assert(output.error.contains(FilesError.PathEscaped))
     }
 
     // ── PathSandbox: normalised-path edge cases ───────────────────────────────

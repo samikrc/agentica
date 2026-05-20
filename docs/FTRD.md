@@ -262,7 +262,7 @@ The system uses a **custom Scala agent loop** rather than a third-party framewor
 - Avoids pulling in heavy transitive dependencies (gRPC, Guava, Protobuf) that Google ADK would introduce.
 - Keeps the project aligned with the local-first, dependency-light design ethos.
 
-> **Status:** Phase 1 implements a single streaming LLM turn so the UI, persistence, observability, and SSE pipeline are exercised. Phase 2 replaces/extends this with the full plan→act→observe loop and virtual shell dispatch.
+> **Status:** Phase 1 implements a single streaming LLM turn so the UI, persistence, observability, and SSE pipeline are exercised. **Phase 2 is fully implemented** — multi-iteration plan→act→observe loop, virtual shell dispatch, `files.*` / `memory.*` tools, permission model, context management, system prompt, and debug log viewer. See `agent_loop_runtime.md` for the complete technical spec. **Phase 2.5** adds agent turn trajectory persistence, collapsible step rendering in the UI, session title auto-generation, message action buttons (copy, restart, token stats), and the per-turn token stats panel.
 
 ### Responsibilities of the Agent Loop
 
@@ -370,29 +370,24 @@ files.write path=out.txt content="..."
 
 Rationale: piping between tools forces a common intermediate representation (text vs structured values), which causes lossy conversions (e.g., Apache POI cell objects stringified into a `summarize` stage). Requiring explicit steps keeps each tool's I/O type clean and defers the pipeline/typed-value design to a later revision.
 
-**Output-capture variables (`$last`, `$1`, `$2`, ...) are deferred to Phase 2.** Design notes for when this is implemented:
+**Output-capture variables (`$last`, `$1`, `$2`, ...) remain deferred beyond Phase 2.** Phase 2 implemented a more focused solution for the primary use case — large-output handling — via the **`$scratch/<path>` ref system** (`SessionScratchpad`):
 
-- Every `run()` stores its raw typed result in a **run context** — a short-lived in-memory map scoped to the current agent turn.
-- `$last` is always overwritten by the most recent `run()`. Named slots (`$1`, `$2`, ...) are bound explicitly via an `as=` argument.
-- The executor performs a **substitution pass** between tokenizing and dispatching: `value=$1` is resolved to the typed value in the run context before the target tool receives it. The agent emits the literal token `$1`; the file contents never travel through the conversation.
-- The receiving tool gets the **typed value directly** (e.g., `llm.summarize` receives `text: String` from `FileContent.text`) — no stringify/re-parse, which is what typed pipes would give without the pipeline syntax.
+- When a tool output exceeds the 8000-char body budget, the full content is stored in an in-memory session-scoped cache keyed by source path, and the presentation layer returns a `$scratch/<path>` reference instead of the content.
+- The executor performs a **substitution pass** between tokenising and dispatching: any arg value containing a `$scratch/<path>` ref is resolved to the full content before the tool executes. The agent emits the literal ref token; the file contents never travel through the conversation.
+- Entries are path-keyed and stable within a session. Staleness is checked via `lastModifiedTime` comparison; the LRU cache holds up to 20 entries.
+- Token savings are automatic — the agent does not need to learn any new syntax beyond referencing the `$scratch/` path it received in a prior tool result.
 
-Example agent turn with output-capture:
+Example with scratchpad:
 
 ```text
-run(command="files.read path=foo.txt as=$1")
-   → $1 = FileContent(text="...", lines=47)   [stored in run context]
+run(command="files.read path=big_report.txt")
+   → ─ stored: $scratch/big_report.txt   [content in SessionScratchpad, not in context]
 
-run(command="llm.summarize text=$1")
-   → $last = SummaryResult(text="...")         [$1 substituted by executor, not agent]
-
-run(command="files.write path=out.txt content=$last")
-   → done
+run(command="llm.summarize text=$scratch/big_report.txt")
+   → [$scratch/... resolved by substitution pass; full content passed directly to LLM]
 ```
 
-Primary motivation: **token savings**. Without capture variables the agent must echo full file content back in its next message to pass it to `summarize`; for large files this consumes context budget and risks truncation. With `$last` the AgentResponse shows only a truncated preview; the full value lives in executor memory and is referenced by name.
-
-Implementation cost: ~50–80 extra LOC (substitution pass in the tokenizer, variable store threaded through the agent loop, error handling for unset/type-mismatch). Not in v1 because the LLM has no awareness of `$last` until it is trained into the system prompt; the token savings only materialise once golden scenarios confirm the benefit is real.
+General-purpose `$last`/`$1` named output-capture slots remain deferred. They would add value for chaining structured typed values across tool calls but the scratchpad covers the dominant real-world case (large file content). See `agent_loop_runtime.md` §4.6 for the full scratchpad specification.
 
 ### Action Families
 
@@ -749,13 +744,16 @@ All tool implementations follow the two-layer model from §10 (clean execution l
 ## 15a. Observability
 
 - **Structured logs** (JSON lines) with a shared `traceId` propagated across UI → backend → LLM calls → tool invocations, enabling end-to-end reconstruction of a single user turn.
-- **Debug log viewer**: a dedicated log viewer window (opened via a "Debug log" button in the main UI header) that tails `agentica.log` in real time via a `GET /log/stream` SSE endpoint. Replays the last 200 lines on connect, then streams live. Supports client-side substring filtering and pause-scroll. Replaces the original inline debug pane concept — a separable window is more useful for developer/user debugging of multi-step agent runs. *(Phase 2 decision — see `agent_loop_runtime.md` §9.1 for rationale.)*
+- **Debug log viewer**: a dedicated log viewer window (opened via a "Debug log" button in the main UI header) that tails `agentica.log` in real time via a `GET /log/stream` **WebSocket** endpoint. Replays the last 200 lines on connect, then streams live. Supports client-side substring filtering and pause-scroll. *(Upgraded from SSE to WebSocket in Phase 2 to enable clean connection lifecycle events — see `agent_loop_runtime.md` §9.1.)*
+- **Agent turn trajectory capture** *(Phase 2.5)*: every agent run's full reasoning trace — intermediate LLM thinking steps and tool call steps — is persisted to SQLite (`agent_turns` table, `steps` column as JSON). Exposed via `GET /sessions/:id/agent-turns`. Rendered in the UI as a collapsible **Steps** block above each assistant bubble: expandable per-iteration sections showing thinking text and clickable tool chips with result panels. Available on history reload and during live runs.
+- **Message action buttons** *(Phase 2.5)*: each message has a right-aligned actions bar — copy icon (user: plain text; assistant: both HTML and plain text written simultaneously to the clipboard so Word pastes formatted and Notepad pastes plain), restart icon on user messages (truncates history from that point), chart icon on assistant messages (toggles per-turn token stats — see §15b).
 - Log output paths follow the OS data-directory conventions (§4.1) and rotate on size.
 
 ## 15b. Token & Cost Accounting
 
-- Every LLM call records: provider, model, prompt tokens, completion tokens, latency, and (for cloud providers) computed cost using a maintained price table.
-- Aggregates are exposed per session and globally, surfaced in the UI.
+- Every LLM call records: provider, model, prompt tokens, completion tokens, latency, and (for cloud providers) computed cost using a maintained price table. Stored in the `token_usage` SQLite table; exposed via `GET /sessions/:id/token-usage`.
+- **Per-turn stats panel** *(Phase 2.5)*: each assistant message has a chart icon button that toggles an inline stats panel showing **Tokens In**, **Tokens Out**, **Total Time** (seconds), and **Turns** (number of LLM calls in the run). Stats are aggregated from `token_usage` records grouped by `traceId`. On history reload, fetched in parallel with messages and agent turns. On live runs, fetched asynchronously after `onFinal` fires.
+- Aggregates per session are available via `GET /sessions/:id/token-usage`.
 - Rationale: cost/token visibility is essential once cloud providers arrive; instrumenting it from v1 avoids retrofitting.
 
 ## 15c. Testing Strategy
@@ -800,17 +798,18 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 | Backend | Scala 3 local JVM app, Cask HTTP server |
 | Concurrency | Direct-style + JDK 21 virtual threads (Loom) |
 | Communication | HTTP + SSE on localhost, bearer-token auth |
-| Agent Engine | Custom Scala loop: Phase 1 single-call streaming; Phase 2 plan→act→observe; ADK dropped |
-| Execution Model | Virtual shell, two-layer (execution + presentation), action families, AgentResponse envelope; no pipelines in v1; `commit()` deferred |
+| Agent Engine | Custom Scala loop: Phase 1 single-call streaming; **Phase 2 plan→act→observe fully implemented**; ADK dropped |
+| Execution Model | Virtual shell, two-layer (execution + presentation), action families, AgentResponse envelope; no pipelines; `commit()` deferred; `$scratch/<path>` scratchpad replaces `$last`/`$1` capture vars for large-output handling |
 | DSL Parser | Hand-written tokenizer |
-| Storage | SQLite via ScalaSQL; manual schema management for now |
+| Storage | SQLite via JDBC; `sessions`, `messages`, `token_usage`, `tool_runs`, `agent_turns`, `memory_entries`, `permission_grants` tables |
 | LLM Support | Local: LM Studio/OpenAI-compatible primary + Ollama supported; llama.cpp/cloud later |
 | Office Handling | Apache POI (Word, PowerPoint); **Excel deferred** |
-| Security | Multi-layer sandboxing + scoped permissions + OS keychain |
+| Security | Multi-layer sandboxing + scoped permission grants (`Once`/`ForSession`/`Always`) + OS keychain (cloud phase) |
 | Build | Maven |
 | Packaging | Shaded fat-jar now; JavaFX WebView launcher next; `jlink`/`jpackage` deferred |
 | Updates | Deferred until packaged mode stabilizes |
-| Observability | Structured logs, trace IDs, token/cost accounting, log viewer window (`GET /log/stream` SSE + `log-viewer.html`) |
+| Observability | Structured logs, trace IDs, token/cost accounting; **debug log viewer** (`GET /log/stream` WebSocket + `log-viewer.html`); **agent turn trajectory** (steps persisted to SQLite, rendered as collapsible steps block); **per-turn token stats panel** (chart icon, Tokens In/Out, Total Time, Turns) |
+| Clipboard | Assistant messages write both `text/html` and `text/plain` to the clipboard simultaneously — rich-text apps (Word) use HTML; plain-text apps (Notepad) use plain text |
 
 ---
 
@@ -824,47 +823,55 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 
 ## 19. Implementation Phases
 
-### Phase 1 (MVP)
+### Phase 1 *(Complete)*
 - Basic chat UI (vanilla HTML/CSS/JS, SSE)
 - Scala backend serving browser UI + API with bearer-token auth
-- SQLite session storage via ScalaSQL
+- SQLite session storage
 - Local LLM integration (LM Studio / OpenAI-compatible API; Ollama also supported)
 - Shaded fat-jar and launch scripts (`launch.bat`, `launch.sh`)
 - Structured logging + token/cost accounting scaffolding
 
-### Phase 1.5
+### Phase 1.5 *(Complete)*
 - JavaFX WebView thin launcher that loads the existing backend-served UI
-- Validate WebView compatibility with chat, SSE, modals, scrolling, and log viewer window
+- Validated WebView compatibility with chat, SSE, modals, scrolling, and log viewer window
 - Optional native folder-picker bridge for packaged mode
-- Per-OS packaging exploration after launcher compatibility is proven
+- Per-OS packaging exploration deferred until Phase 5
 
-### Phase 2
-- Custom agent loop (§9) — the ~300 LOC plan→act→observe implementation
-- Context management (sliding window; summarization TBD)
-- Virtual shell runtime with tokenizer-based DSL, two-layer execution/presentation model, AgentResponse envelope
-- Action families: `files`, `memory`, `llm` (read/search/list + summarize/extract/classify)
-- On-demand `help` command + central command registry (drives dispatch, help, replay schemas)
-- Scoped permission model + UI prompts
-- Debug log viewer: `GET /log/stream` SSE endpoint + `log-viewer.html` + "Debug log" button in main UI header (replaces original inline debug pane)
-- Golden scenarios catalog scaffolded with first 5–10 scenarios
+### Phase 2 *(Complete)*
+- Full plan→act→observe agent loop with `ToolCallParser`, cancellation, and `maxIterations` cap — see `agent_loop_runtime.md` §3
+- Context management: token-budget-aware sliding window, newest-first truncation, system prompt with `{{TOOL_INDEX}}` / `{{ROOT_PATH}}` / `{{TODAY}}` substitution
+- Virtual shell runtime: `Tokenizer`, `CommandRegistry`, `VirtualShell`, `Presentation` layer (8000-char body budget, `$scratch/<path>` scratchpad for overflow)
+- Action families implemented: `files.*` (`read`, `write`, `list`, `search`, `stat`), `memory.*` (`get`, `set`, `list`). `llm.*` (`summarize`, `extract`, `classify`) remain stubs — Phase 2 Step 5 incomplete
+- Scoped permission model (`Once`/`ForSession`/`Always`) + UI modal for `files.write`
+- Debug log viewer: `GET /log/stream` WebSocket endpoint + `log-viewer.html` + "Debug log" button
+- Golden scenarios catalog: 8 scenarios with `JSONFileLLMProvider` replay; full integration test suite
+
+### Phase 2.5 *(Complete)*
+- Agent turn trajectory persistence: `AgentTurnStore`, `agent_turns` SQLite table, `thinking` + `tool_call` steps serialised as JSON column
+- Collapsible **Steps** block in the UI above each assistant bubble, rendered live and on history reload
+- Session title auto-generation from the first completed turn; manual rename via header click and sidebar double-click
+- Message action buttons: **copy** (HTML + plain text simultaneously to clipboard), **restart** (truncates conversation from a user message), **token stats** chart icon (toggles per-turn **Tokens In / Tokens Out / Total Time / Turns** panel)
+- SVG icon set with proper `xmlns` attribute, served via `/icons/:file` route with `image/svg+xml` MIME type
 
 ### Phase 3
-- Office document tools (Word, PowerPoint via POI; LibreOffice sealed wrapper)
+- Office document tools (Word, PowerPoint via POI; Pandoc markdown-first approach; LibreOffice sealed wrapper)
 - llama.cpp provider as power-user option
 - Cloud LLM providers (OpenAI, Anthropic) + OS-keychain secrets
+- Browser tools (`browser.open`, `browser.select` via Playwright)
 - Native packaging + signing/notarization exploration after JavaFX launcher stabilizes
 
 ### Phase 4
+- Vision tools (`vision.describe`, `vision.extract_text` via multimodal LLM)
+- Audio transcription (`audio.transcribe` via Whisper CLI)
 - RAG (file indexing + retrieval)
-- Excel tool surface (properly designed — see §11.1)
-- Advanced workflows
-- Streaming and cancellation refinements
 
 ### Phase 5
+- Excel tool surface (properly designed — see §11.1)
+- Advanced workflows, context summarization on truncation
 - OS-level sandboxing
 - Plugin ecosystem
 - Multi-agent orchestration
-- Linux packaging
+- Full packaging (`jlink`/`jpackage`), Linux/Windows/macOS installers
 
 ---
 
