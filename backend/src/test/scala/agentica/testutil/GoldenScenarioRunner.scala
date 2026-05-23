@@ -83,7 +83,7 @@ class GoldenScenarioRunner(scenarioPath: Path, workspaceFiles: Map[String, Strin
     private class StubTokenAccounting extends TokenAccounting(null.asInstanceOf[RunStore])
     {
         var recordCount = 0
-        override def record(traceId: String, sessionId: String, usage: agentica.llm.LLMUsage): Unit =
+        override def record(traceId: String, sessionId: String, llmResponse: agentica.llm.LLMResponse): Unit =
         {
             recordCount += 1
         }
@@ -145,6 +145,7 @@ class GoldenScenarioRunner(scenarioPath: Path, workspaceFiles: Map[String, Strin
             settings               = settings,
             scopeStore             = null.asInstanceOf[ScopeStore],
             memoryStore            = null.asInstanceOf[agentica.session.MemoryStore],
+            sessionStore           = null.asInstanceOf[agentica.session.SessionStore],
             permissionLatchFactory = () => new SynchronousQueue()
         )
         {

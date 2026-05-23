@@ -17,6 +17,7 @@ const LogViewer = (() => {
   let isPaused = false;
   let shouldAutoScroll = true;
   let lineCount = 0;
+  let isReplay = true;
 
   /**
    * Initialize the log viewer.
@@ -54,6 +55,7 @@ const LogViewer = (() => {
       ws.onopen = () => {
         connectionStatus.textContent = 'Connected';
         connectionStatus.className = 'connected';
+        isReplay = true;
       };
 
       ws.onmessage = (event) => {
@@ -86,8 +88,18 @@ const LogViewer = (() => {
       data = { ts: new Date().toISOString(), level: 'INFO', msg: rawLine };
     }
 
+    if (data.__replay_end) {
+      isReplay = false;
+      const sep = document.createElement('div');
+      sep.className = 'log-replay-sep';
+      sep.textContent = '── live ──';
+      logLines.appendChild(sep);
+      if (shouldAutoScroll) scrollToBottom();
+      return;
+    }
+
     const line = document.createElement('div');
-    line.className = `log-line ${data.level?.toLowerCase() || 'info'}`;
+    line.className = `log-line ${data.level?.toLowerCase() || 'info'}${isReplay ? ' replayed' : ''}`;
     line.dataset.level = data.level || 'INFO';
     line.dataset.msg = data.msg || '';
     line.dataset.traceId = data.traceId || '';

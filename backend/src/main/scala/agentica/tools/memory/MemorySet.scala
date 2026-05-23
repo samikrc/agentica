@@ -1,6 +1,6 @@
 package agentica.tools.memory
 
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, ToolResult, ToolStatus}
 import agentica.tools.Tool
 
 /**
@@ -86,7 +86,7 @@ object MemorySet extends Tool[MemorySetInput, MemorySetOutput]
         output.error match
         {
             case Some(msg) =>
-                ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
+                ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case None =>
                 ToolResult(
                     status   = ToolStatus.Ok,

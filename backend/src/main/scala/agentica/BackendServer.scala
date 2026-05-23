@@ -96,7 +96,7 @@ object BackendServer extends cask.Main
 
     val virtualShell = VirtualShell(commandRegistry)
     val agentEngine  = AgentLoop(llm, messageStore, runStore, agentTurnStore, accounting, virtualShell, settings,
-        scopeStore, memoryStore, () => java.util.concurrent.SynchronousQueue[agentica.permissions.GrantDecision]())
+        scopeStore, memoryStore, sessionStore, () => java.util.concurrent.SynchronousQueue[agentica.permissions.GrantDecision]())
 
     // UI root: AGENTICA_UI_ROOT env var, or ../ui relative to the working directory
     val uiRoot: Path  = Paths.get(sys.env.getOrElse("AGENTICA_UI_ROOT", "../ui")).toAbsolutePath.normalize()

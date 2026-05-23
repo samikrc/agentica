@@ -1,10 +1,10 @@
 package agentica.agent
 
 import agentica.agent.AgentEvent
-import agentica.llm.{LLMProvider, LLMUsage}
+import agentica.llm.{LLMProvider, LLMResponse}
 import agentica.observability.{TokenAccounting, TraceLogger}
 import agentica.permissions.{GrantDecision, ScopeStore}
-import agentica.session.{AgentTurn, AgentTurnStep, AgentTurnStore, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, ToolRun}
+import agentica.session.{AgentTurn, AgentTurnStep, AgentTurnStore, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, SessionStore, ToolRun}
 import agentica.settings.AppSettings
 import agentica.shell.{SessionScratchpad, VirtualShell}
 import agentica.tools.ExecutionContext
@@ -18,7 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  Iterates up to `settings.maxIterations` times, dispatching all `run(command="...")` calls
  *  found in each LLM response through [[VirtualShell]], injecting results as `user`-role
  *  `[TOOL RESULT]` turns, until the model emits `<done>` or no further tool calls.
- *  @param llm                     LLM provider for streaming and completion.
+ *  @param llm                     LLM provider for streaming.
  *  @param messageStore             Persistence layer for chat messages.
  *  @param runStore                 Persistence layer for tool runs.
  *  @param tokenAccounting          Records LLM token usage per call.
@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  @param settings                 Application settings (maxIterations, etc.).
  *  @param scopeStore               Permission grant store for sensitive tools.
  *  @param memoryStore              Session-scoped key-value memory store.
+ *  @param sessionStore             Persistence layer for session records; used to persist response IDs.
  *  @param permissionLatchFactory   Produces the per-run [[SynchronousQueue]] for permission handoff.
  */
 class AgentLoop(
@@ -38,6 +39,7 @@ class AgentLoop(
     settings:               AppSettings,
     scopeStore:             ScopeStore,
     memoryStore:            MemoryStore,
+    sessionStore:           SessionStore,
     permissionLatchFactory: () => SynchronousQueue[GrantDecision]
 ) extends AgentEngine
 {
@@ -86,6 +88,9 @@ class AgentLoop(
             permissionLatch = permLatch
         )
         var iteration = 1
+        // Tracks the last Responses API response ID across all iterations in this run.
+        // Loaded from the session at the start of the run; updated after every LLM call.
+        var lastResponseId: Option[String] = session.lastResponseId
 
         // Rebuilds the full message list for the next LLM call on every iteration.
         // ContextManager applies the token-budget window to the persistent history,
@@ -144,9 +149,36 @@ class AgentLoop(
                     ).mkString("\n---\n")
                 ))
 
-                val usageOpt: Option[LLMUsage] = try
+                // Select the input messages to send to the Responses API:
+                //  - Cold start (no lastResponseId): send the full context so the server
+                //    has the system prompt, history, and new user message.
+                //  - Warm continuation, first iteration: the server already has all prior
+                //    state — send only the new user message.
+                //  - Warm continuation, subsequent iterations: the server retains the prior
+                //    response — send only the tool result block as a new user message.
+                val llmInput: List[Message] = lastResponseId match
                 {
-                    Some(llm.stream(context, wrappedEmitToken))
+                    case None    => context
+                    case Some(_) =>
+                        if (iteration == 1)
+                        {
+                            List(userMsg)
+                        }
+                        else
+                        {
+                            List(Message(
+                                id        = "",
+                                sessionId = session.id,
+                                role      = MessageRole.User,
+                                content   = toolResultTurns.last.content,
+                                timestamp = ""
+                            ))
+                        }
+                }
+
+                val llmResponseOpt: Option[LLMResponse] = try
+                {
+                    Some(llm.streamResponses(llmInput, wrappedEmitToken, lastResponseId))
                 }
                 catch
                 {
@@ -158,8 +190,13 @@ class AgentLoop(
                         None
                 }
 
-                usageOpt.foreach { usage =>
-                    tokenAccounting.record(traceId, session.id, usage)
+                llmResponseOpt.foreach { llmResponse =>
+                    // Persist the new response ID so the next iteration (and next run) can use it.
+                    llmResponse.responseId.foreach { rid =>
+                        lastResponseId = Some(rid)
+                        sessionStore.updateLastResponseId(session.id, rid)
+                    }
+                    tokenAccounting.record(traceId, session.id, llmResponse)
 
                     val responseText = buf.toString
 
@@ -169,22 +206,27 @@ class AgentLoop(
                     ))
 
                     // --- ACT: scan the full response for tool calls ---
-                    val toolCallResults = ToolCallParser.parse(responseText, traceId)
+                    // Deduplicate by rawCommand to guard against models repeating the same call.
+                    val toolCalls = ToolCallParser.parse(responseText, traceId)
+                        .distinctBy {
+                            case ToolCallResult.Success(tc) => tc.rawCommand
+                            case ToolCallResult.Failure(e)  => e.reason
+                        }
 
-                    if (toolCallResults.nonEmpty)
+                    if (toolCalls.nonEmpty)
                     {
-                        val calls = toolCallResults.collect {
+                        val calls = toolCalls.collect {
                             case ToolCallResult.Success(tc) => tc.rawCommand
                             case ToolCallResult.Failure(e)  => s"[parse_failed: ${e.reason}]"
                         }.mkString(" | ")
                         TraceLogger.info(traceId, "tool_calls_parsed", Map(
                             "iteration" -> iteration.toString,
-                            "count"     -> toolCallResults.length.toString,
+                            "count"     -> toolCalls.length.toString,
                             "calls"     -> calls
                         ))
                     }
 
-                    if (toolCallResults.isEmpty)
+                    if (toolCalls.isEmpty)
                     {
                         // No run() calls → the model is done. Look for the <done> marker;
                         // accept the response regardless (soft fallback if marker is absent).
@@ -209,8 +251,8 @@ class AgentLoop(
                             "sessionId"        -> session.id,
                             "assistantMsgId"   -> assistantMsg.id,
                             "iterations"       -> iteration.toString,
-                            "promptTokens"     -> usage.promptTokens.toString,
-                            "completionTokens" -> usage.completionTokens.toString
+                            "promptTokens"     -> llmResponse.promptTokens.toString,
+                            "completionTokens" -> llmResponse.completionTokens.toString
                         ))
                         val generatedTitle = if (history.isEmpty && isDefaultSessionTitle(session.title))
                             {
@@ -233,7 +275,7 @@ class AgentLoop(
                         resultLines.append("[TOOL RESULT]\n")
 
                         var cancelled = false
-                        val callIter  = toolCallResults.iterator
+                        val callIter  = toolCalls.iterator
                         while (callIter.hasNext && !cancelled)
                         {
                             callIter.next() match

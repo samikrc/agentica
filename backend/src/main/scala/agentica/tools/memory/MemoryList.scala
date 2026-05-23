@@ -1,7 +1,7 @@
 package agentica.tools.memory
 
 import agentica.session.MemoryEntry
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolBody, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, ToolBody, ToolResult, ToolStatus}
 import agentica.tools.Tool
 
 /**
@@ -78,7 +78,7 @@ object MemoryList extends Tool[MemoryListInput, MemoryListOutput]
         output.error match
         {
             case Some(msg) =>
-                ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
+                ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case None =>
                 val lines = if (output.entries.isEmpty)
                 {

@@ -1,6 +1,6 @@
 package agentica.tools.memory
 
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolBody, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, ToolBody, ToolResult, ToolStatus}
 import agentica.tools.Tool
 
 /**
@@ -84,13 +84,13 @@ object MemoryGet extends Tool[MemoryGetInput, MemoryGetOutput]
         output.error match
         {
             case Some(msg) =>
-                ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
+                ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case None =>
                 output.value match
                 {
                     case None =>
                         ToolResult(status = ToolStatus.Err(
-                            code    = "not_found",
+                            code    = ErrorCode.NotFound,
                             message = s"Key not found in session memory: ${output.key}",
                             hints   = List("""Use memory.set key=<key> value=<value> to store a value.""")
                         ))

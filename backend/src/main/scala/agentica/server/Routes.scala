@@ -610,6 +610,8 @@ class Routes(
                     replayLines.foreach { line =>
                         channel.send(cask.Ws.Text(line))
                     }
+                    // Synthetic marker so the viewer can render a visual boundary
+                    channel.send(cask.Ws.Text("""{"__replay_end":true}"""))
 
                     // Tail the log file on a daemon thread until the channel closes
                     val tailThread = new Thread(() =>

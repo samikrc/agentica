@@ -331,6 +331,47 @@ class SessionScratchpad:
 
 **Scope**: `ExecutionContext` carries a reference to the session's `SessionScratchpad`.
 
+### 4.8 Explicit Scratchpad Chaining (`store=true`)
+
+**Problem:** The automatic scratchpad overflow (§4.6) only fires when a tool body exceeds `BODY_BUDGET_CHARS` (8000 chars). Small and medium outputs are returned inline — the model receives the content as plain text in the `[TOOL RESULT]` block with no stable `$scratch/` ref to reference in a subsequent call. The only way to chain such output into a later tool is to copy-paste the text into an arg value, which is fragile for anything beyond trivial content and bloats the conversation history.
+
+**Solution:** `files.read` and `files.search` accept an optional `store=true` argument. When present, the tool forces its body into the `SessionScratchpad` regardless of size, and returns a `$scratch/<path>` ref in the result — the same shape the model already sees for large files. The substitution pass in `VirtualShell.resolveRefs` (§4.4) handles ref resolution in subsequent calls transparently; no other infrastructure change is needed.
+
+**Example — read a small config file, then summarise it:**
+```
+run(command="files.read path=src/config.py store=true")
+→ [TOOL RESULT]
+  $ files.read path=src/config.py
+  ok
+  ─ size: 2.1 KB · lines: 67 · stored: $scratch/src/config.py
+
+run(command="llm.summarize text=$scratch/src/config.py")
+→ [TOOL RESULT]
+  $ llm.summarize text=$scratch/src/config.py
+  ok
+  ─────
+  This config file defines...
+```
+
+**Example — search results fed into a summarise step:**
+```
+run(command="files.search query="revenue,growth" path=reports/ store=true")
+→ [TOOL RESULT]
+  $ files.search query="revenue,growth" path=reports/
+  ok
+  ─ matches: 12 · files: 3 · stored: $scratch/__search_result__
+
+run(command="llm.summarize text=$scratch/__search_result__")
+```
+
+**Implementation changes:**
+- `FilesReadInput` gains `store: Boolean`; `FilesRead.validate()` reads `store=true/false` (default `false`); `FilesRead.render()` bypasses the `BODY_BUDGET_CHARS` check when `store == true` and always routes to `ScratchRef`.
+- `FilesSearchInput` gains `store: Boolean`; same pattern in `FilesSearch.validate()` and `FilesSearch.render()`.
+- `store` added to `schema.args` for both tools (optional, `required = false`).
+- `system_prompt.txt` gains a `[CHAINING]` section (see §8) teaching the model to use `store=true` + `$scratch/` refs as the explicit inter-tool chaining pattern. The existing `[SCRATCHPAD]` section is updated to clarify that `$scratch/` refs are passable to any tool accepting a compatible argument, not only `llm.summarize`.
+
+**Non-changes:** `VirtualShell.resolveRefs`, `SessionScratchpad`, `Tokenizer`, `ToolCallParser`, `AgentLoop` — all unchanged.
+
 ### 4.7 `AgentResponse` and `ToolResult`
 
 ```scala
@@ -694,9 +735,26 @@ automatically and a reference is returned instead:
 
 Rules for scratchpad refs:
 - $scratch/path refs are stable within this session.
-- Pass a $scratch ref as the text= argument to any llm.* tool; the full
-  content will be used without appearing in the conversation.
+- Pass a $scratch ref as the value of any tool argument that accepts text
+  (e.g. text=, content=). The full content is substituted before the tool
+  runs — it never appears in the conversation history.
 - Re-reading the same file returns the same ref if the file has not changed.
+
+[CHAINING]
+Use store=true to explicitly store a small or medium tool output in the
+scratchpad so you can reference it by token in a later call:
+
+  run(command="files.read path=src/config.py store=true")
+  → ─ stored: $scratch/src/config.py
+
+  run(command="llm.summarize text=$scratch/src/config.py")
+
+Use this pattern whenever you intend to process the output of one tool
+as the input to another — regardless of file size. It avoids repeating
+large text in argument values and keeps the conversation history clean.
+
+store=true is supported on: files.read, files.search.
+The $scratch/ ref persists for the duration of the session.
 
 [PERMISSIONS]
 - files.write requires user approval. If you receive permission_denied, the
@@ -962,7 +1020,7 @@ Given the dependency graph, the recommended order is:
 - `shell/VirtualShell.scala`
 - `shell/Presentation.scala`
 - `tools/Tool.scala`
-- `tools/files/FilesRead.scala`, `FilesWrite.scala`, `FilesList.scala`, `FilesSearch.scala`, `FilesStat.scala`
+- `tools/files/FilesRead.scala`, `FilesWrite.scala`, `FilesList.scala`, `FilesSearch.scala`, `FilesStat.scala` — **`FilesRead` and `FilesSearch` gain `store=true` arg (§4.8)**
 - `tools/memory/MemoryGet.scala`, `MemorySet.scala`, `MemoryList.scala`
 - `tools/memory/MemoryStore.scala` *(new)*
 - `tools/llm/LlmSummarize.scala`, `LlmExtract.scala`, `LlmClassify.scala`
@@ -984,7 +1042,7 @@ Given the dependency graph, the recommended order is:
 - `ui/css/main.css` — **add agent step styles (`.agent-steps`, `.agent-iter`, `.agent-thinking`, `.agent-tool-chip`)** (Phase 2.5)
 
 ### New resources:
-- `backend/src/main/resources/system_prompt.txt` — hybrid template with `{{TOOL_INDEX}}`, `{{ROOT_PATH}}`, `{{TODAY}}` slots
+- `backend/src/main/resources/system_prompt.txt` — hybrid template with `{{TOOL_INDEX}}`, `{{ROOT_PATH}}`, `{{TODAY}}` slots; **gains `[CHAINING]` section and updated `[SCRATCHPAD]` section (§4.8)**
 - `ui/log-viewer.html` — dedicated log viewer page (opens via `window.open`)
 - `ui/js/log-viewer.js` — connects to `GET /log/stream` via **WebSocket**, renders/filters log lines, shows connection status, auto-reconnects
 - `ui/js/marked.min.js` — self-hosted Markdown renderer (JavaFX WebView compatible)
@@ -1158,7 +1216,7 @@ The original `web.fetch` using Jsoup is superseded by `browser.open`. Jsoup cann
 Noted explicitly to avoid scope creep:
 
 - **Progress events** for long-running tools (`─ progress: N% · ...` per FTRD §10 envelope spec) — no Phase 2 tool is long-running.
-- **`$last`/`$1`/`$2` general-purpose output-capture variables** (FTRD §10) — the `$scratch/<path>` ref system covers the actual use case (large-output handling) more naturally.
+- **`$last`/`$1`/`$2` general-purpose output-capture variables** (FTRD §10) — the `store=true` + `$scratch/<path>` pattern (§4.8) covers the primary chaining use case without new syntax. General-purpose named slots remain deferred.
 - **`commit()` tool** (FTRD §10) — sensitive operations remain inline in `run()` with permission checks.
 - **Cross-session memory** — `MemoryStore` trait is ready for it but Phase 6.
 - **Context summarization on truncation** — Phase 5.

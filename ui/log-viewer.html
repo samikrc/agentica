@@ -52,6 +52,17 @@
       word-break: break-all;
     }
     .log-line.hidden { display: none; }
+    .log-line.replayed { opacity: 0.45; }
+    .log-replay-sep {
+      text-align: center;
+      color: var(--text-dim, #999);
+      font-size: 11px;
+      padding: 6px 0;
+      border-top: 1px dashed var(--border, #ccc);
+      border-bottom: 1px dashed var(--border, #ccc);
+      margin: 6px 0;
+      letter-spacing: 0.05em;
+    }
     .log-line.info { color: var(--text); }
     .log-line.warn { color: #d97706; }
     .log-line.error { color: #dc2626; }

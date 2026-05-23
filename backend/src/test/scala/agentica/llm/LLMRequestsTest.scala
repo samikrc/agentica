@@ -33,7 +33,7 @@ object LLMRequestsTest extends App
     val msgs     = List(agentica.session.Message(id = "test-1", sessionId = "test-session", role = agentica.session.MessageRole.User, content = "say hi in one word", timestamp = "2024-01-01T00:00:00Z"))
     try
     {
-        val usage = provider.stream(msgs, tok => System.err.println(s"TOKEN: $tok"))
+        val usage = provider.streamChatCompletions(msgs, tok => System.err.println(s"TOKEN: $tok"))
         System.err.println(s"SUCCESS in ${System.currentTimeMillis() - t0}ms — $usage")
     }
     catch { case e: Exception => System.err.println(s"FAILED: ${e.getClass.getSimpleName}: ${e.getMessage}") }

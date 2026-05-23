@@ -1,6 +1,6 @@
 package agentica.testutil
 
-import agentica.llm.{LLMProvider, LLMUsage}
+import agentica.llm.{LLMProvider, LLMResponse}
 import agentica.session.Message
 import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
@@ -40,7 +40,7 @@ class JSONFileLLMProvider(path: Path) extends LLMProvider
      *  @return
      *    The usage of the streamed response.
      */
-    def stream(messages: List[Message], onToken: String => Unit): LLMUsage =
+    def streamChatCompletions(messages: List[Message], onToken: String => Unit): LLMResponse =
     {
         if (queue.isEmpty)
         {
@@ -49,28 +49,22 @@ class JSONFileLLMProvider(path: Path) extends LLMProvider
         val response = queue.dequeue()
         // Split on newlines to simulate token streaming while preserving line breaks
         response.split("(?<=\\n)|(?=\\n)").foreach(onToken)
-        LLMUsage(model = modelName, promptTokens = 0, completionTokens = response.length / 4, latencyMs = 0)
+        LLMResponse(model = modelName, promptTokens = 0, completionTokens = response.length / 4, latencyMs = 0)
     }
 
     /**
-     *  Returns the next scripted response and its usage.
-     *  Throws if no more responses are available.
-     *
-     *  @param messages
-     *    The messages to complete (ignored — responses are scripted).
-     *  @return
-     *    The response and its usage.
+     *  Delegates to [[streamChatCompletions]], ignoring input messages and response ID.
+     *  @param input               Ignored.
+     *  @param onToken             Called for each token fragment.
+     *  @param previousResponseId  Ignored.
+     *  @return                    Stub [[LLMResponse]] with zero token counts.
      */
-    def complete(messages: List[Message]): (String, LLMUsage) =
-    {
-        if (queue.isEmpty)
-        {
-            throw IllegalStateException(s"JSONFileLLMProvider($path): no more scripted responses")
-        }
-        val response = queue.dequeue()
-        val usage    = LLMUsage(model = modelName, promptTokens = 0, completionTokens = response.length / 4, latencyMs = 0)
-        (response, usage)
-    }
+    override def streamResponses(
+        input:              List[Message],
+        onToken:            String => Unit,
+        previousResponseId: Option[String] = None
+    ): LLMResponse =
+        streamChatCompletions(Nil, onToken)
 
     /**
      *  Returns the number of remaining scripted responses.

@@ -1,15 +1,13 @@
 package agentica.testutil
 
-import agentica.llm.{LLMProvider, LLMUsage}
+import agentica.llm.{LLMProvider, LLMResponse}
 import agentica.session.Message
 
 /**
- *  Test double for LLMProvider. Returns one pre-scripted response string per
- *  stream() call in order. Throws if more calls are made than scripts provided.
+ *  Test double for [[LLMProvider]]. Returns one pre-scripted response string per
+ *  `streamChatCompletions` call in order. Throws if more calls are made than scripts provided.
  *  Use for all Phase 2 golden scenarios while the system prompt is still evolving.
- * 
- *  @param responses
- *    The pre-scripted response strings to return in order.
+ *  @param responses  The pre-scripted response strings to return in order.
  */
 class ScriptedLLMProvider(responses: List[String]) extends LLMProvider
 {
@@ -19,17 +17,13 @@ class ScriptedLLMProvider(responses: List[String]) extends LLMProvider
     val modelName: String = "scripted-test-model"
 
     /**
-     *  Streams tokens from the next scripted response.
+     *  Streams tokens from the next scripted response, splitting on newline boundaries.
      *  Throws if no more responses are available.
-     * 
-     *  @param messages
-     *    The messages to stream.
-     *  @param onToken
-     *    The function to call for each token.
-     *  @return
-     *    The usage of the streamed response.
+     *  @param messages  Ignored — responses are pre-scripted.
+     *  @param onToken   Called for each token fragment.
+     *  @return          Stub [[LLMResponse]] with zero token counts.
      */
-    def stream(messages: List[Message], onToken: String => Unit): LLMUsage =
+    def streamChatCompletions(messages: List[Message], onToken: String => Unit): LLMResponse =
     {
         if (queue.isEmpty)
         {
@@ -37,28 +31,23 @@ class ScriptedLLMProvider(responses: List[String]) extends LLMProvider
         }
         val response = queue.dequeue()
         response.split("(?<=\\n)|(?=\\n)").foreach(onToken)
-        LLMUsage(model = modelName, promptTokens = 0, completionTokens = response.length / 4, latencyMs = 0)
+        LLMResponse(model = modelName, promptTokens = 0, completionTokens = response.length / 4, latencyMs = 0)
     }
 
     /**
-     *  Returns the next scripted response and its usage.
-     *  Throws if no more responses are available.
-     * 
-     *  @param messages
-     *    The messages to complete.
-     *  @return
-     *    The response and its usage.
+     *  Delegates to [[streamChatCompletions]], ignoring the input messages and response ID.
+     *  Satisfies the [[LLMProvider]] trait for test scenarios that call `streamResponses`.
+     *  @param input               Ignored.
+     *  @param onToken             Called for each token fragment.
+     *  @param previousResponseId  Ignored.
+     *  @return                    Stub [[LLMResponse]] with zero token counts.
      */
-    def complete(messages: List[Message]): (String, LLMUsage) =
-    {
-        if (queue.isEmpty)
-        {
-            throw IllegalStateException("ScriptedLLMProvider: no more scripted responses")
-        }
-        val response = queue.dequeue()
-        val usage    = LLMUsage(model = modelName, promptTokens = 0, completionTokens = response.length / 4, latencyMs = 0)
-        (response, usage)
-    }
+    override def streamResponses(
+        input:              List[Message],
+        onToken:            String => Unit,
+        previousResponseId: Option[String] = None
+    ): LLMResponse =
+        streamChatCompletions(Nil, onToken)
 
     /**
      *  Returns the number of remaining scripted responses.

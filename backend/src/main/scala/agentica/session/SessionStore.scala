@@ -19,15 +19,24 @@ class SessionStore(conn: () => Connection)
         val st = c.createStatement()
         st.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
-                id         TEXT PRIMARY KEY,
-                title      TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                model      TEXT NOT NULL,
-                root_path  TEXT
+                id               TEXT PRIMARY KEY,
+                title            TEXT NOT NULL,
+                created_at       TEXT NOT NULL,
+                updated_at       TEXT NOT NULL,
+                model            TEXT NOT NULL,
+                root_path        TEXT,
+                last_response_id TEXT
             )
         """)
         st.close()
+        // Add last_response_id column to existing DBs that predate this field.
+        try
+        {
+            val alt = c.createStatement()
+            alt.execute("ALTER TABLE sessions ADD COLUMN last_response_id TEXT")
+            alt.close()
+        }
+        catch { case _: Exception => () }
         } finally { c.close() }
     }
 
@@ -71,12 +80,13 @@ class SessionStore(conn: () => Connection)
         while rs.next() do
         {
             buf += Session(
-                id        = rs.getString("id"),
-                title     = rs.getString("title"),
-                createdAt = rs.getString("created_at"),
-                updatedAt = rs.getString("updated_at"),
-                model     = rs.getString("model"),
-                rootPath  = Option(rs.getString("root_path"))
+                id             = rs.getString("id"),
+                title          = rs.getString("title"),
+                createdAt      = rs.getString("created_at"),
+                updatedAt      = rs.getString("updated_at"),
+                model          = rs.getString("model"),
+                rootPath       = Option(rs.getString("root_path")),
+                lastResponseId = Option(rs.getString("last_response_id"))
             )
         }
         rs.close()
@@ -97,12 +107,13 @@ class SessionStore(conn: () => Connection)
         val result = if rs.next() then
         {
             Some(Session(
-                id        = rs.getString("id"),
-                title     = rs.getString("title"),
-                createdAt = rs.getString("created_at"),
-                updatedAt = rs.getString("updated_at"),
-                model     = rs.getString("model"),
-                rootPath  = Option(rs.getString("root_path"))
+                id             = rs.getString("id"),
+                title          = rs.getString("title"),
+                createdAt      = rs.getString("created_at"),
+                updatedAt      = rs.getString("updated_at"),
+                model          = rs.getString("model"),
+                rootPath       = Option(rs.getString("root_path")),
+                lastResponseId = Option(rs.getString("last_response_id"))
             ))
         } else None
         rs.close()
@@ -120,6 +131,26 @@ class SessionStore(conn: () => Connection)
         val c  = conn()
         val ps = c.prepareStatement("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
         ps.setString(1, title)
+        ps.setString(2, Instant.now().toString)
+        ps.setString(3, id)
+        ps.executeUpdate()
+        ps.close()
+        c.close()
+    }
+
+    /** Updates the last Responses API response ID for a session.
+     *  Called after every successful [[agentica.llm.LLMProvider.streamResponses]] call
+     *  so the next agent run can continue the stateful conversation thread.
+     *  @param id          Session identifier.
+     *  @param responseId  Response ID returned by the Responses API.
+     */
+    def updateLastResponseId(id: String, responseId: String): Unit =
+    {
+        val c  = conn()
+        val ps = c.prepareStatement(
+            "UPDATE sessions SET last_response_id = ?, updated_at = ? WHERE id = ?"
+        )
+        ps.setString(1, responseId)
         ps.setString(2, Instant.now().toString)
         ps.setString(3, id)
         ps.executeUpdate()

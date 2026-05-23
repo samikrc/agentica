@@ -1,19 +1,24 @@
 package agentica.llm
 
-import agentica.session.{Message, MessageRole}
+import agentica.session.Message
 import ujson.*
 
-/** LlmProvider backed by a locally running Ollama instance.
- *  Communicates with the Ollama /api/chat endpoint.
- *  Streams NDJSON response lines, calling onToken for each content delta.
+/**
+ *  [[LLMProvider]] backed by a locally running Ollama instance.
+ *  Communicates with the Ollama `/api/chat` endpoint using NDJSON streaming.
+ *  @param baseUrl    Base URL of the Ollama server.
+ *  @param modelName  Model identifier to send in requests.
  */
 class OllamaProvider(
-    baseUrl: String = "http://localhost:11434",
-    val modelName: String = "llama3.2"
+    baseUrl:         String = "http://localhost:11434",
+    val modelName:   String = "llama3.2"
 ) extends LLMProvider
 {
-
-    /** Converts a list of [[Message]] objects to the JSON array format expected by the Ollama API. */
+    /**
+     *  Converts a [[Message]] list to the JSON array expected by the Ollama API.
+     *  @param messages  Conversation history.
+     *  @return          JSON array of `{role, content}` objects.
+     */
     private def toOllamaMessages(messages: List[Message]): ujson.Arr =
     {
         ujson.Arr(messages.map { m =>
@@ -21,13 +26,13 @@ class OllamaProvider(
         }*)
     }
 
-    /** Streams a chat completion from Ollama, calling `onToken` for each text delta.
-     *  Buffers the full NDJSON response body and parses it line by line.
+    /**
+     *  Calls the Ollama Chat API, streaming NDJSON lines and calling `onToken` per delta.
      *  @param messages  Full conversation history to send as context.
-     *  @param onToken   Callback invoked with each streamed text token.
-     *  @return          [[LLMUsage]] capturing token counts and total latency.
+     *  @param onToken   Callback invoked with each streamed text delta.
+     *  @return          [[LLMResponse]] capturing token counts and total latency.
      */
-    def stream(messages: List[Message], onToken: String => Unit): LLMUsage =
+    def streamChatCompletions(messages: List[Message], onToken: String => Unit): LLMResponse =
     {
         val t0               = System.currentTimeMillis()
         var promptTokens     = 0
@@ -67,22 +72,11 @@ class OllamaProvider(
             line = reader.readLine()
         }
 
-        LLMUsage(
+        LLMResponse(
             model            = modelName,
             promptTokens     = promptTokens,
             completionTokens = completionTokens,
             latencyMs        = System.currentTimeMillis() - t0
         )
-    }
-
-    /** Non-streaming completion: accumulates all tokens and returns the full response.
-     *  @param messages  Full conversation history to send as context.
-     *  @return          Tuple of (full response text, [[LLMUsage]]).
-     */
-    def complete(messages: List[Message]): (String, LLMUsage) =
-    {
-        val buf   = StringBuilder()
-        val usage = stream(messages, tok => buf.append(tok))
-        (buf.toString, usage)
     }
 }

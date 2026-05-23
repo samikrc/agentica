@@ -1,6 +1,6 @@
 package agentica.shell
 
-import agentica.tools.{ArgError, CommandSchema, ExecutionContext, Tool, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, CommandSchema, ErrorCode, ExecutionContext, Tool, ToolResult, ToolStatus}
 
 /**
  *  Central registry mapping `(family, verb)` → [[Tool]] instances.
@@ -41,7 +41,7 @@ class CommandRegistry
             case None =>
                 ToolResult(
                     status = ToolStatus.Err(
-                        code    = "not_found",
+                        code    = ErrorCode.NotFound,
                         message = s"Unknown command: ${cmd.fullName}",
                         hints   = List(s"Run 'help ${cmd.family}' to see available verbs for this family.")
                     )
@@ -59,7 +59,7 @@ class CommandRegistry
                 val argHint = arg.map(a => s"Offending argument: '$a'.").getOrElse("")
                 ToolResult(
                     status = ToolStatus.Err(
-                        code    = "invalid_args",
+                        code    = ErrorCode.InvalidArgs,
                         message = s"$msg $argHint".trim
                     )
                 )

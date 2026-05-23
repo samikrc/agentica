@@ -3,7 +3,7 @@ package agentica.tools.files
 import agentica.agent.AgentEvent
 import agentica.permissions.GrantDecision
 import agentica.shell.PathSandbox
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolResult, ToolStatus, FilesError}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, ToolResult, ToolStatus}
 import agentica.tools.Tool
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, NoSuchFileException, StandardOpenOption}
@@ -195,7 +195,7 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
                     hints   = List("files.write requires user approval before executing.")
                 ))
             case Some(FilesError.IoError(msg)) =>
-                ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
+                ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case None =>
                 ToolResult(
                     status   = ToolStatus.Ok,

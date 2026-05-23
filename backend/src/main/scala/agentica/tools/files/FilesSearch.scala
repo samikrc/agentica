@@ -1,7 +1,7 @@
 package agentica.tools.files
 
 import agentica.shell.{PathSandbox, Presentation, ScratchEntry}
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolBody, ToolResult, ToolStatus, FilesError}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, ToolBody, ToolResult, ToolStatus}
 import agentica.tools.Tool
 import java.nio.file.{Files, NoSuchFileException, Path}
 import scala.jdk.CollectionConverters.*
@@ -238,7 +238,7 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                     hints   = List("Check the path is correct and within the workspace.")
                 ))
             case Some(FilesError.IoError(msg)) =>
-                ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
+                ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case None =>
                 val text     = output.blocks.mkString("\n")
                 val metadata = Map(

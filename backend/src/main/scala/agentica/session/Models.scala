@@ -154,20 +154,23 @@ object StepType
 // ─── Domain models ────────────────────────────────────────────────────────────
 
 /** A chat session grouping all messages under a single conversation context.
- *  @param id       Unique session identifier (UUID).
- *  @param title     Human-readable session title.
- *  @param createdAt ISO-8601 creation timestamp.
- *  @param updatedAt ISO-8601 last-updated timestamp.
- *  @param model     LLM model name used for this session (e.g. "llama3.2").
- *  @param rootPath  Optional filesystem path set as the session working directory.
+ *  @param id               Unique session identifier (UUID).
+ *  @param title            Human-readable session title.
+ *  @param createdAt        ISO-8601 creation timestamp.
+ *  @param updatedAt        ISO-8601 last-updated timestamp.
+ *  @param model            LLM model name used for this session (e.g. "llama3.2").
+ *  @param rootPath         Optional filesystem path set as the session working directory.
+ *  @param lastResponseId   ID of the last Responses API response; used to thread stateful
+ *                          multi-turn conversations across agent runs within the same session.
  */
 case class Session(
-    id: String,
-    title: String,
-    createdAt: String,
-    updatedAt: String,
-    model: String,
-    rootPath: Option[String]
+    id:             String,
+    title:          String,
+    createdAt:      String,
+    updatedAt:      String,
+    model:          String,
+    rootPath:       Option[String],
+    lastResponseId: Option[String] = None
 ) derives ReadWriter
 
 /** A single message in a session's conversation history.

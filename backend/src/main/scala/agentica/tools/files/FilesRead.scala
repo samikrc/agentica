@@ -1,7 +1,7 @@
 package agentica.tools.files
 
 import agentica.shell.{PathSandbox, ScratchEntry}
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolBody, ToolResult, ToolStatus, FilesError}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, ToolBody, ToolResult, ToolStatus}
 import agentica.tools.Tool
 import agentica.shell.Presentation
 import java.nio.file.{Files, NoSuchFileException}
@@ -217,7 +217,7 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
                     hints   = List("Check the path is correct and within the workspace.")
                 ))
             case Some(FilesError.IoError(msg)) =>
-                ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
+                ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case None =>
                 val rangeNote = if (output.truncated) " · partial" else ""
                 val metadata  = Map(

@@ -1,6 +1,6 @@
 package agentica.agent
 
-import agentica.llm.LLMUsage
+import agentica.llm.LLMResponse
 import agentica.observability.TokenAccounting
 import agentica.permissions.{GrantDecision, ScopeStore}
 import agentica.session.{AgentTurn, AgentTurnStore, MemoryEntry, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, ToolRun}
@@ -58,12 +58,24 @@ class AgentLoopTest extends AnyFunSuite
     }
 
     /**
+     *  SessionStore stub that accepts `updateLastResponseId` calls without touching a database.
+     */
+    private class StubSessionStore extends agentica.session.SessionStore(() => null)
+    {
+        val lastResponseIds: mutable.ListBuffer[(String, String)] = mutable.ListBuffer.empty
+        override def updateLastResponseId(id: String, responseId: String): Unit =
+        {
+            lastResponseIds += ((id, responseId))
+        }
+    }
+
+    /**
      *  TokenAccounting stub that counts calls without touching a database.
      */
     private class StubTokenAccounting extends TokenAccounting(null.asInstanceOf[RunStore])
     {
         var recordCount = 0
-        override def record(traceId: String, sessionId: String, usage: LLMUsage): Unit =
+        override def record(traceId: String, sessionId: String, llmResponse: LLMResponse): Unit =
         {
             recordCount += 1
         }
@@ -118,6 +130,7 @@ class AgentLoopTest extends AnyFunSuite
         accounting, shell, settings,
         null.asInstanceOf[ScopeStore],
         null.asInstanceOf[MemoryStore],
+        null.asInstanceOf[agentica.session.SessionStore],
         () => new SynchronousQueue()
     )
     {
@@ -417,22 +430,22 @@ class AgentLoopTest extends AnyFunSuite
         {
             private var calls = 0
             val modelName = "error-on-2nd"
-            def stream(messages: List[agentica.session.Message], onToken: String => Unit): agentica.llm.LLMUsage =
+            def streamChatCompletions(messages: List[agentica.session.Message], onToken: String => Unit): agentica.llm.LLMResponse =
+                throw UnsupportedOperationException()
+            override def streamResponses(input: List[agentica.session.Message], onToken: String => Unit, previousResponseId: Option[String] = None): agentica.llm.LLMResponse =
             {
                 calls += 1
                 if (calls == 1)
                 {
                     val r = """run(command="files.stat path=x")"""
                     r.foreach(c => onToken(c.toString))
-                    agentica.llm.LLMUsage(modelName, 0, 0, 0)
+                    agentica.llm.LLMResponse(modelName, 0, 0, 0)
                 }
                 else
                 {
                     throw RuntimeException("simulated LLM failure on iteration 2")
                 }
             }
-            def complete(messages: List[agentica.session.Message]): (String, agentica.llm.LLMUsage) =
-                throw UnsupportedOperationException()
         }
         val loop = new TestableAgentLoop(llm, store, new StubRunStore(), new StubTokenAccounting(), shell, defaultSettings)
 
@@ -595,6 +608,118 @@ class AgentLoopTest extends AnyFunSuite
         assert(rs.runs.isEmpty, "parse failures must not produce ToolRun records")
     }
 
+    // ── Duplicate tool call deduplication ────────────────────────────────────
+
+    test("duplicate successful tool calls in one response are dispatched only once - v1") {
+        // The model emits the same run() call twice in one response.
+        // Only one dispatch must occur and only one RunStore record must be created.
+        val rs    = new StubRunStore()
+        val shell = new EchoVirtualShell()
+        val (loop, _, _, _, _) = makeLoop(
+            llmResponses = List(
+                """run(command="files.stat path=x") run(command="files.stat path=x")""",
+                "Done.\n<done>"
+            ),
+            runStore = rs,
+            shell    = shell
+        )
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(shell.dispatchCount == 1, "duplicate tool call must be dispatched only once")
+        assert(rs.runs.size == 1,        "duplicate tool call must produce only one RunStore record")
+    }
+
+    test("duplicate successful tool calls in one response are dispatched only once - v2") {
+        // The model emits the same run() call twice in one response.
+        // Only one dispatch must occur and only one RunStore record must be created.
+        val rs    = new StubRunStore()
+        val shell = new EchoVirtualShell()
+        val (loop, _, _, _, _) = makeLoop(
+            llmResponses = List(
+                """<thinking>Let me think</thinking> run(command="files.stat path=a") <thinking>Let me think again</thinking> run(command="files.stat path=a")""",
+                "Done.\n<done>"
+            ),
+            runStore = rs,
+            shell    = shell
+        )
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(shell.dispatchCount == 1, "duplicate tool call must be dispatched only once")
+        assert(rs.runs.size == 1,        "duplicate tool call must produce only one RunStore record")
+    }
+
+    test("distinct tool calls in one response are all dispatched") {
+        // Two different commands must both be dispatched even though deduplication is active.
+        val rs    = new StubRunStore()
+        val shell = new EchoVirtualShell()
+        val (loop, _, _, _, _) = makeLoop(
+            llmResponses = List(
+                """run(command="files.stat path=a") run(command="files.stat path=b")""",
+                "Done.\n<done>"
+            ),
+            runStore = rs,
+            shell    = shell
+        )
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(shell.dispatchCount == 2, "two distinct tool calls must each be dispatched")
+        assert(rs.runs.size == 2,        "two distinct tool calls must each produce a RunStore record")
+    }
+
+    test("duplicate malformed tool calls in one response inject only one parse error") {
+        // The model emits the same malformed call twice.
+        // Only one parse_failed error must be injected into the tool result block,
+        // which the loop injects as context for the next LLM call.
+        // We verify via the second call's input: parse_failed appears exactly once.
+        val provider = CapturingResponsesProvider(
+            responses = List("run(command=BAD) run(command=BAD)", "Recovered.\n<done>")
+        )
+        val loop = makeLoopWithCapturing(provider)
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(provider.capturedInputs.size == 2, "two LLM calls expected")
+        val secondMsgs   = provider.capturedInputs(1)
+        val secondContent = secondMsgs.map(_.content).mkString
+        val occurrences  = secondContent.split("parse_failed", -1).length - 1
+        assert(occurrences == 1, s"parse_failed must appear exactly once in second call input, found $occurrences")
+    }
+
+    test("same tool call repeated across multiple iterations is dispatched each time") {
+        // Deduplication is per-iteration only — the same command in a later iteration is valid.
+        val rs = new StubRunStore()
+        val (loop, _, _, _, _) = makeLoop(
+            llmResponses = List(
+                """run(command="files.stat path=x")""",
+                """run(command="files.stat path=x")""",
+                "Done.\n<done>"
+            ),
+            runStore = rs
+        )
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(rs.runs.size == 2, "same command in different iterations must each be dispatched")
+    }
+
     // ── Scratchpad lifecycle (Bug #2) ─────────────────────────────────────────
 
     // Stubs needed for RealBuildCtxLoop (must allow all operations without a DB).
@@ -633,6 +758,7 @@ class AgentLoopTest extends AnyFunSuite
         acct, shell, settings,
         allGrantsScopeStore,
         noopMemoryStore,
+        null.asInstanceOf[agentica.session.SessionStore],
         () => new SynchronousQueue()
     )
     // Intentionally no buildCtx override — exercises the real implementation.
@@ -710,6 +836,7 @@ class AgentLoopTest extends AnyFunSuite
             llm, store, runStore, turnStore, accounting, shell, settings,
             null.asInstanceOf[ScopeStore],
             null.asInstanceOf[MemoryStore],
+            null.asInstanceOf[agentica.session.SessionStore],
             () => new SynchronousQueue()
         ) {
             // Note: buildCtx override removed since AgentLoop now uses shared context
@@ -901,6 +1028,7 @@ class AgentLoopTest extends AnyFunSuite
             defaultSettings,
             null.asInstanceOf[ScopeStore],
             null.asInstanceOf[MemoryStore],
+            null.asInstanceOf[agentica.session.SessionStore],
             () => new SynchronousQueue()
         )
 
@@ -928,6 +1056,7 @@ class AgentLoopTest extends AnyFunSuite
             defaultSettings,
             null.asInstanceOf[ScopeStore],
             null.asInstanceOf[MemoryStore],
+            null.asInstanceOf[agentica.session.SessionStore],
             () => new SynchronousQueue()
         )
 
@@ -1053,5 +1182,209 @@ class AgentLoopTest extends AnyFunSuite
         )
 
         assert(capturedTitle.isEmpty, "sessionTitle should NOT be generated when title is custom")
+    }
+
+    // ── streamResponses input serialisation ───────────────────────────────────
+
+    /**
+     *  [[agentica.llm.LLMProvider]] stub that captures every `streamResponses` call
+     *  so tests can assert on the `input` messages and `previousResponseId` passed by
+     *  [[AgentLoop]].  Each call dequeues the next scripted response.
+     *  @param responses          Pre-scripted assistant response strings, in order.
+     *  @param responseIdToReturn Optional response ID to include in every [[LLMResponse]],
+     *                            simulating a stateful Responses API server.
+     */
+    private class CapturingResponsesProvider(
+        responses:          List[String],
+        responseIdToReturn: Option[String] = None
+    ) extends agentica.llm.LLMProvider
+    {
+        val modelName: String = "capturing-responses-model"
+
+        val capturedInputs:  mutable.ListBuffer[List[Message]]      = mutable.ListBuffer.empty
+        val capturedPrevIds: mutable.ListBuffer[Option[String]]      = mutable.ListBuffer.empty
+
+        private val queue = mutable.Queue(responses*)
+
+        /**
+         *  Not used by [[AgentLoop]] when `streamResponses` is available.
+         *  @param messages  Ignored.
+         *  @param onToken   Ignored.
+         *  @return          Stub [[LLMResponse]].
+         */
+        def streamChatCompletions(messages: List[Message], onToken: String => Unit): LLMResponse =
+            throw UnsupportedOperationException("CapturingResponsesProvider only supports streamResponses")
+
+        /**
+         *  Records `input` messages and `previousResponseId`, then emits the next scripted response.
+         *  @param input               The message list passed by [[AgentLoop]].
+         *  @param onToken             Callback invoked per token.
+         *  @param previousResponseId  The response ID from the prior turn, if any.
+         *  @return                    [[LLMResponse]] with [[responseIdToReturn]] when set.
+         */
+        override def streamResponses(
+            input:              List[Message],
+            onToken:            String => Unit,
+            previousResponseId: Option[String] = None
+        ): LLMResponse =
+        {
+            capturedInputs  += input
+            capturedPrevIds += previousResponseId
+            val response = if queue.nonEmpty then queue.dequeue() else ""
+            response.split("(?<=\\n)|(?=\\n)").foreach(onToken)
+            LLMResponse(
+                model            = modelName,
+                promptTokens     = 0,
+                completionTokens = response.length / 4,
+                latencyMs        = 0,
+                responseId       = responseIdToReturn
+            )
+        }
+    }
+
+    /**
+     *  Builds an [[AgentLoop]] wired with a [[CapturingResponsesProvider]].
+     *  @param provider  The capturing provider to use.
+     *  @param store     Optional message store (defaults to a fresh [[StubMessageStore]]).
+     *  @return          The constructed loop.
+     */
+    private def makeLoopWithCapturing(
+        provider:     CapturingResponsesProvider,
+        store:        StubMessageStore  = new StubMessageStore(),
+        sessionStore: StubSessionStore  = new StubSessionStore()
+    ): AgentLoop =
+    {
+        new AgentLoop(
+            provider,
+            store,
+            new StubRunStore(),
+            new AgentTurnStore(null) { override def insert(t: AgentTurn): Unit = () },
+            new StubTokenAccounting(),
+            new EchoVirtualShell(),
+            defaultSettings,
+            null.asInstanceOf[ScopeStore],
+            null.asInstanceOf[agentica.session.MemoryStore],
+            sessionStore,
+            () => new SynchronousQueue()
+        )
+    }
+
+    test("streamResponses: cold start sends full context as message list") {
+        val provider = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val loop     = makeLoopWithCapturing(provider)
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(provider.capturedInputs.size == 1, "exactly one LLM call")
+        val msgs = provider.capturedInputs.head
+        assert(msgs.exists(_.role == MessageRole.System), "cold start must include system message")
+        assert(msgs.exists(_.role == MessageRole.User),   "cold start must include user message")
+        assert(msgs.last.content == userMsg.content,      "last message must be the user message")
+    }
+
+    test("streamResponses: cold start includes full history in message list") {
+        val provider    = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val loop        = makeLoopWithCapturing(provider)
+        val priorAssist = Message("prior-1", session.id, MessageRole.Assistant, "Prior answer.", "")
+
+        loop.run(session, List(priorAssist), userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        val msgs = provider.capturedInputs.head
+        assert(msgs.exists(m => m.role == MessageRole.Assistant && m.content == "Prior answer."),
+            "cold start must include prior assistant message from history")
+    }
+
+    test("streamResponses: subsequent iteration in same run sends single tool-result message") {
+        // Two iterations: first response has a tool call, second is the final answer.
+        // On the second call the server retains state — only the tool result block is sent.
+        val provider = CapturingResponsesProvider(
+            responses          = List(
+                """run(command="files.stat path=x")""",
+                "Done.\n<done>"
+            ),
+            responseIdToReturn = Some("resp-001")
+        )
+        val loop = makeLoopWithCapturing(provider)
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(provider.capturedInputs.size == 2, "two LLM calls expected")
+        val secondMsgs = provider.capturedInputs(1)
+        assert(secondMsgs.size == 1,                          "second call must send exactly one message")
+        assert(secondMsgs.head.role == MessageRole.User,      "second call message must be user role")
+        assert(secondMsgs.head.content.contains("[TOOL RESULT]"), "second call must contain tool result block")
+    }
+
+    test("streamResponses: previousResponseId is None on cold start") {
+        val provider = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val loop     = makeLoopWithCapturing(provider)
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(provider.capturedPrevIds.head.isEmpty, "previousResponseId must be None on cold start")
+    }
+
+    test("streamResponses: responseId from first call is threaded as previousResponseId on second call") {
+        val provider = CapturingResponsesProvider(
+            responses          = List(
+                """run(command="files.stat path=x")""",
+                "Done.\n<done>"
+            ),
+            responseIdToReturn = Some("resp-abc")
+        )
+        val loop = makeLoopWithCapturing(provider)
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(provider.capturedPrevIds.size == 2,               "two LLM calls expected")
+        assert(provider.capturedPrevIds(0).isEmpty,              "first call: previousResponseId must be None")
+        assert(provider.capturedPrevIds(1) == Some("resp-abc"),  "second call: previousResponseId must be the ID from first response")
+    }
+
+    test("streamResponses: session with existing lastResponseId threads it into first call") {
+        val sessionWithPriorId = session.copy(lastResponseId = Some("prior-resp-xyz"))
+        val provider           = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val loop               = makeLoopWithCapturing(provider)
+
+        loop.run(sessionWithPriorId, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(provider.capturedPrevIds.head == Some("prior-resp-xyz"),
+            "existing session lastResponseId must be passed as previousResponseId on the first call")
+    }
+
+    test("streamResponses: warm continuation first call sends only user message") {
+        // When a prior response ID exists, the server already has context.
+        // Only the new user message should be sent as a single-element list.
+        val sessionWithPriorId = session.copy(lastResponseId = Some("prior-resp-xyz"))
+        val provider           = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val loop               = makeLoopWithCapturing(provider)
+
+        loop.run(sessionWithPriorId, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        val msgs = provider.capturedInputs.head
+        assert(msgs.size == 1,                       "warm continuation must send exactly one message")
+        assert(msgs.head.role == MessageRole.User,   "warm continuation message must be user role")
+        assert(msgs.head.content == userMsg.content, "warm continuation message must be the user message content")
     }
 }

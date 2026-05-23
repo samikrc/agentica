@@ -1,7 +1,7 @@
 package agentica.tools.files
 
 import agentica.shell.PathSandbox
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolResult, ToolStatus, FilesError}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, ToolResult, ToolStatus}
 import agentica.tools.Tool
 import java.nio.file.{Files, NoSuchFileException}
 import java.nio.file.attribute.BasicFileAttributes
@@ -129,7 +129,7 @@ object FilesStat extends Tool[FilesStatInput, FilesStatOutput]
                     hints   = List("Check the path is correct and within the workspace.")
                 ))
             case Some(FilesError.IoError(msg)) =>
-                ToolResult(status = ToolStatus.Err(code = "internal_error", message = msg))
+                ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case None =>
                 ToolResult(
                     status   = ToolStatus.Ok,

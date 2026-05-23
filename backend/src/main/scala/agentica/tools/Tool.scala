@@ -170,6 +170,26 @@ trait Tool[I, O]
     def render(output: O, ctx: ExecutionContext): ToolResult
 }
 
+// ─── Common Error Codes ─────────────────────────────────────────────────────────
+
+/**
+ *  Universal machine-readable error codes used in [[ToolStatus.Err]] across all tools.
+ *  Centralised here so callers never hardcode string literals.
+ */
+object ErrorCode
+{
+    /** Generic catch-all for unexpected I/O or runtime exceptions. */
+    val InternalError: String  = "internal_error"
+    /** The requested resource does not exist. */
+    val NotFound: String       = "not_found"
+    /** The supplied arguments fail validation. */
+    val InvalidArgs: String    = "invalid_args"
+    /** The resolved path escapes the workspace sandbox. */
+    val PathEscaped: String    = "path_escaped"
+    /** The user explicitly denied a permission request. */
+    val PermissionDenied: String = "permission_denied"
+}
+
 // ─── Common Error Types ─────────────────────────────────────────────────────────
 
 /**
@@ -201,10 +221,10 @@ enum FilesError
     {
         this match
         {
-            case PathEscaped     => "path_escaped"
-            case NotFound        => "not_found"
-            case PermissionDenied => "permission_denied"
-            case IoError(_)      => "internal_error"
+            case PathEscaped      => ErrorCode.PathEscaped
+            case NotFound         => ErrorCode.NotFound
+            case PermissionDenied => ErrorCode.PermissionDenied
+            case IoError(_)       => ErrorCode.InternalError
         }
     }
 }

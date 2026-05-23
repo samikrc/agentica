@@ -28,12 +28,13 @@ class SessionStoreTest extends AnyFunSuite with BeforeAndAfterEach
         val st = realConn.createStatement()
         st.execute("""
             CREATE TABLE sessions (
-                id         TEXT PRIMARY KEY,
-                title      TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL DEFAULT '',
-                model      TEXT NOT NULL DEFAULT '',
-                root_path  TEXT
+                id               TEXT PRIMARY KEY,
+                title            TEXT NOT NULL DEFAULT '',
+                created_at       TEXT NOT NULL DEFAULT '',
+                updated_at       TEXT NOT NULL DEFAULT '',
+                model            TEXT NOT NULL DEFAULT '',
+                root_path        TEXT,
+                last_response_id TEXT
             )
         """)
         st.close()

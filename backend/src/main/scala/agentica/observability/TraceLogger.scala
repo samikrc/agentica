@@ -5,6 +5,7 @@ import java.io.{FileWriter, PrintWriter}
 import java.nio.file.{Files, Path}
 import java.time.Instant
 import java.util.concurrent.locks.ReentrantLock
+import ujson.Obj
 
 /**
  *  Structured JSON-lines logger.
@@ -52,15 +53,14 @@ object TraceLogger
         try
         {
             if AppDirs.logFile.toFile.exists() && AppDirs.logFile.toFile.length() > maxBytes then rotate()
-            val fields = (Map(
+            val obj = ujson.Obj(
                 "ts"      -> Instant.now().toString,
                 "level"   -> level,
                 "traceId" -> traceId,
                 "msg"     -> msg
-            ) ++ extra).map { case (k, v) =>
-                s""""$k":"${v.replace("\"", "\\\"").replace("\n", "\\n")}""""
-            }.mkString("{", ",", "}")
-            writer.println(fields)
+            )
+            extra.foreach { case (k, v) => obj(k) = v }
+            writer.println(obj.render())
         }
         finally
         {
