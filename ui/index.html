@@ -65,6 +65,11 @@
         <input type="text" id="settings-server-url" placeholder="http://172.23.64.1:1234" />
         <label for="settings-model-name" style="margin-top:12px">Model</label>
         <input type="text" id="settings-model-name" placeholder="mistralai/ministral-3-14b-reasoning" />
+        <label for="settings-api-mode" style="margin-top:12px">API Mode</label>
+        <select id="settings-api-mode">
+          <option value="chatcompletions">Chat Completions API (default)</option>
+          <option value="responses">Responses API</option>
+        </select>
         <label for="settings-show-status-line" style="margin-top:12px">
           <input type="checkbox" id="settings-show-status-line" />
           Show status line

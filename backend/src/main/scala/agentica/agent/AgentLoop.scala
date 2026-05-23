@@ -5,7 +5,7 @@ import agentica.llm.{LLMProvider, LLMResponse}
 import agentica.observability.{TokenAccounting, TraceLogger}
 import agentica.permissions.{GrantDecision, ScopeStore}
 import agentica.session.{AgentTurn, AgentTurnStep, AgentTurnStore, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, SessionStore, ToolRun}
-import agentica.settings.AppSettings
+import agentica.settings.{APIMode, AppSettings}
 import agentica.shell.{SessionScratchpad, VirtualShell}
 import agentica.tools.ExecutionContext
 import java.time.Instant
@@ -178,7 +178,12 @@ class AgentLoop(
 
                 val llmResponseOpt: Option[LLMResponse] = try
                 {
-                    Some(llm.streamResponses(llmInput, wrappedEmitToken, lastResponseId))
+                    val response = settings.apiMode match
+                        case APIMode.Responses =>
+                            llm.streamResponses(llmInput, wrappedEmitToken, lastResponseId)
+                        case APIMode.ChatCompletions =>
+                            llm.streamChatCompletions(context, wrappedEmitToken)
+                    Some(response)
                 }
                 catch
                 {

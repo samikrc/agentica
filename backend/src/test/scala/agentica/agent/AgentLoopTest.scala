@@ -4,7 +4,7 @@ import agentica.llm.LLMResponse
 import agentica.observability.TokenAccounting
 import agentica.permissions.{GrantDecision, ScopeStore}
 import agentica.session.{AgentTurn, AgentTurnStore, MemoryEntry, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, ToolRun}
-import agentica.settings.AppSettings
+import agentica.settings.{APIMode, AppSettings}
 import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
 import agentica.testutil.ScriptedLLMProvider
 import agentica.tools.ExecutionContext
@@ -447,7 +447,7 @@ class AgentLoopTest extends AnyFunSuite
                 }
             }
         }
-        val loop = new TestableAgentLoop(llm, store, new StubRunStore(), new StubTokenAccounting(), shell, defaultSettings)
+        val loop = new TestableAgentLoop(llm, store, new StubRunStore(), new StubTokenAccounting(), shell, responsesSettings)
 
         var errorEmitted = false
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
@@ -1248,6 +1248,8 @@ class AgentLoopTest extends AnyFunSuite
      *  @param store     Optional message store (defaults to a fresh [[StubMessageStore]]).
      *  @return          The constructed loop.
      */
+    private val responsesSettings = defaultSettings.copy(apiMode = APIMode.Responses)
+
     private def makeLoopWithCapturing(
         provider:     CapturingResponsesProvider,
         store:        StubMessageStore  = new StubMessageStore(),
@@ -1261,7 +1263,7 @@ class AgentLoopTest extends AnyFunSuite
             new AgentTurnStore(null) { override def insert(t: AgentTurn): Unit = () },
             new StubTokenAccounting(),
             new EchoVirtualShell(),
-            defaultSettings,
+            responsesSettings,
             null.asInstanceOf[ScopeStore],
             null.asInstanceOf[agentica.session.MemoryStore],
             sessionStore,
@@ -1386,5 +1388,67 @@ class AgentLoopTest extends AnyFunSuite
         assert(msgs.size == 1,                       "warm continuation must send exactly one message")
         assert(msgs.head.role == MessageRole.User,   "warm continuation message must be user role")
         assert(msgs.head.content == userMsg.content, "warm continuation message must be the user message content")
+    }
+
+    // ── apiMode routing ───────────────────────────────────────────────────────
+
+    test("apiMode=Responses routes to streamResponses") {
+        val responsesSettings = defaultSettings.copy(apiMode = APIMode.Responses)
+        val provider          = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val loop = new AgentLoop(
+            provider,
+            new StubMessageStore(),
+            new StubRunStore(),
+            new AgentTurnStore(null) { override def insert(t: AgentTurn): Unit = () },
+            new StubTokenAccounting(),
+            new EchoVirtualShell(),
+            responsesSettings,
+            null.asInstanceOf[ScopeStore],
+            null.asInstanceOf[agentica.session.MemoryStore],
+            new StubSessionStore(),
+            () => new SynchronousQueue()
+        )
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(provider.capturedInputs.nonEmpty, "streamResponses must have been called")
+    }
+
+    test("apiMode=ChatCompletions routes to streamChatCompletions and not streamResponses") {
+        val chatSettings  = defaultSettings.copy(apiMode = APIMode.ChatCompletions)
+        var chatCallCount = 0
+        val trackingLLM   = new agentica.llm.LLMProvider
+        {
+            val modelName = "tracking-model"
+            override def streamChatCompletions(messages: List[Message], onToken: String => Unit): LLMResponse =
+            {
+                chatCallCount += 1
+                onToken("Answer.\n<done>")
+                LLMResponse(model = modelName, promptTokens = 0, completionTokens = 0, latencyMs = 0)
+            }
+        }
+        val loop = new AgentLoop(
+            trackingLLM,
+            new StubMessageStore(),
+            new StubRunStore(),
+            new AgentTurnStore(null) { override def insert(t: AgentTurn): Unit = () },
+            new StubTokenAccounting(),
+            new EchoVirtualShell(),
+            chatSettings,
+            null.asInstanceOf[ScopeStore],
+            null.asInstanceOf[agentica.session.MemoryStore],
+            new StubSessionStore(),
+            () => new SynchronousQueue()
+        )
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false),
+            emitToken = _ => (),
+            emitEvent = _ => ()
+        )
+
+        assert(chatCallCount == 1, "streamChatCompletions must have been called exactly once")
     }
 }

@@ -15,6 +15,7 @@ const Settings = (() => {
   const themeSelect = document.getElementById('settings-theme');
   const serverUrlInput = document.getElementById('settings-server-url');
   const modelNameInput = document.getElementById('settings-model-name');
+  const apiModeSelect = document.getElementById('settings-api-mode');
   const showStatusLineCheckbox = document.getElementById('settings-show-status-line');
   const btnCancel   = document.getElementById('settings-cancel');
 
@@ -23,12 +24,14 @@ const Settings = (() => {
       theme: settings?.theme === 'dark' ? 'dark' : 'light',
       showStatusLine: !!settings?.showStatusLine,
       serverUrl: settings?.serverUrl ?? _settings.serverUrl,
-      modelName: settings?.modelName ?? _settings.modelName
+      modelName: settings?.modelName ?? _settings.modelName,
+      apiMode: settings?.apiMode === 'responses' ? 'responses' : 'chatcompletions'
     };
     document.documentElement.dataset.theme = _settings.theme;
     if (themeSelect) themeSelect.value = _settings.theme;
     if (serverUrlInput) serverUrlInput.value = _settings.serverUrl;
     if (modelNameInput) modelNameInput.value = _settings.modelName;
+    if (apiModeSelect) apiModeSelect.value = _settings.apiMode;
     if (showStatusLineCheckbox) showStatusLineCheckbox.checked = _settings.showStatusLine;
     // Apply status line visibility
     const statusLine = document.getElementById('status-line');
@@ -59,6 +62,7 @@ const Settings = (() => {
     themeSelect.value = _settings.theme;
     serverUrlInput.value = _settings.serverUrl;
     modelNameInput.value = _settings.modelName;
+    apiModeSelect.value = _settings.apiMode;
     showStatusLineCheckbox.checked = _settings.showStatusLine;
     modal.classList.add('open');
     themeSelect.focus();
@@ -75,6 +79,7 @@ const Settings = (() => {
         theme: themeSelect.value,
         serverUrl: serverUrlInput.value.trim(),
         modelName: modelNameInput.value.trim(),
+        apiMode: apiModeSelect.value,
         showStatusLine: showStatusLineCheckbox.checked
       });
       closeModal();

@@ -59,7 +59,7 @@ object TraceLogger
                 "traceId" -> traceId,
                 "msg"     -> msg
             )
-            extra.foreach { case (k, v) => obj(k) = v }
+            extra.foreach { case (k, v) => obj(k) = Option(v).getOrElse("null") }
             writer.println(obj.render())
         }
         finally

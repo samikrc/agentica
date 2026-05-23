@@ -16,6 +16,28 @@ import java.time.Duration
  *  @param modelName  Model identifier to send in requests.
  *  @param apiKey     Bearer token for the Authorization header.
  */
+object OpenAIProvider:
+    /**
+     *  Extracts token usage counts, supporting both Chat Completions
+     *  (`prompt_tokens`/`completion_tokens`) and Responses API
+     *  (`input_tokens`/`output_tokens`) field names.
+     *  @param json  Parsed JSON response root.
+     *  @return      Tuple of (promptTokens, completionTokens).
+     */
+    private[llm] def extractUsage(json: ujson.Value): (Int, Int) =
+        json.obj.get("usage") match
+        {
+            case None    => (0, 0)
+            case Some(u) =>
+                val prompt     = u.obj.get("prompt_tokens")
+                                   .orElse(u.obj.get("input_tokens"))
+                                   .map(_.num.toInt).getOrElse(0)
+                val completion = u.obj.get("completion_tokens")
+                                   .orElse(u.obj.get("output_tokens"))
+                                   .map(_.num.toInt).getOrElse(0)
+                (prompt, completion)
+        }
+
 class OpenAIProvider(
     baseUrl:         String = "http://localhost:1234",
     val modelName:   String = "local-model",
@@ -64,21 +86,7 @@ class OpenAIProvider(
      *  @param json  Parsed JSON response root.
      *  @return      Tuple of (promptTokens, completionTokens).
      */
-    private def extractUsage(json: ujson.Value): (Int, Int) =
-    {
-        json.obj.get("usage") match
-        {
-            case None    => (0, 0)
-            case Some(u) =>
-                val prompt     = u.obj.get("prompt_tokens")
-                                   .orElse(u.obj.get("input_tokens"))
-                                   .map(_.num.toInt).getOrElse(0)
-                val completion = u.obj.get("completion_tokens")
-                                   .orElse(u.obj.get("output_tokens"))
-                                   .map(_.num.toInt).getOrElse(0)
-                (prompt, completion)
-        }
-    }
+    private def extractUsage(json: ujson.Value): (Int, Int) = OpenAIProvider.extractUsage(json)
 
     /**
      *  Converts a list of [[Message]] values to the JSON array expected by the Chat Completions API.

@@ -4,6 +4,19 @@ import upickle.default.*
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, StandardOpenOption}
 
+/** LLM API endpoint to use for inference calls. */
+enum APIMode:
+    case ChatCompletions // Chat Completions — stateless, full context sent each turn (default)
+    case Responses       // Responses API   — stateful, server retains context via response ID
+
+object APIMode:
+    given ReadWriter[APIMode] = readwriter[String].bimap(
+        mode => mode.toString.toLowerCase,
+        str  => str.toLowerCase match
+            case "responses" => Responses
+            case _           => ChatCompletions
+    )
+
 /**
  *  User-configurable application settings persisted outside the SQLite database.
  *  @param theme                UI theme identifier, currently `"light"` or `"dark"`.
@@ -12,6 +25,7 @@ import java.nio.file.{Files, Path, StandardOpenOption}
  *  @param modelName            Model identifier sent to the LLM server.
  *  @param maxIterations        Maximum number of plan→act→observe loop iterations per agent run.
  *  @param contextBudgetTokens  Approximate token budget for the sliding context window.
+ *  @param apiMode              LLM API to use: [[APIMode.ChatCompletions]] (default) or [[APIMode.Responses]].
  */
 case class AppSettings(
     theme:                String  = "light",
@@ -19,8 +33,16 @@ case class AppSettings(
     serverUrl:            String  = "http://172.23.64.1:1234",
     modelName:            String  = "mistralai/ministral-3-14b-reasoning",
     maxIterations:        Int     = 20,
-    contextBudgetTokens:  Int     = 8000
-) derives ReadWriter
+    contextBudgetTokens:  Int     = 8000,
+    apiMode:              APIMode = APIMode.ChatCompletions
+)
+
+object AppSettings:
+    given ReadWriter[AppSettings] =
+    {
+        import APIMode.given
+        macroRW[AppSettings]
+    }
 
 /** 
  *  JSON-backed store for Agentica application settings.
@@ -60,8 +82,11 @@ class SettingsStore(path: Path)
         }
     }
     
-    /** 
+    /**
      *  Persists settings to disk after normalizing supported values.
+     *  Writes every field explicitly via ujson.Obj so the file is always
+     *  self-documenting — upickle 4.x macroRW omits fields that equal their
+     *  default value, which would produce an opaque {} for a default AppSettings.
      *  @param settings  Settings submitted by the caller.
      *  @return          The normalized settings that were written.
      */
@@ -69,10 +94,19 @@ class SettingsStore(path: Path)
     {
         this.synchronized {
             val normalized = normalize(settings)
+            val json = ujson.Obj(
+                "theme"               -> ujson.Str(normalized.theme),
+                "showStatusLine"      -> ujson.Bool(normalized.showStatusLine),
+                "serverUrl"           -> ujson.Str(normalized.serverUrl),
+                "modelName"           -> ujson.Str(normalized.modelName),
+                "maxIterations"       -> ujson.Num(normalized.maxIterations),
+                "contextBudgetTokens" -> ujson.Num(normalized.contextBudgetTokens),
+                "apiMode"             -> ujson.Str(normalized.apiMode.toString.toLowerCase)
+            )
             Files.createDirectories(path.getParent)
             Files.writeString(
                 path,
-                write[AppSettings](normalized, indent = 2),
+                ujson.write(json, 2),
                 StandardCharsets.UTF_8,
                 StandardOpenOption.CREATE,
                 StandardOpenOption.TRUNCATE_EXISTING,
