@@ -240,38 +240,40 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
             case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case None =>
-                val text     = output.blocks.mkString("\n")
-                val metadata = Map(
+                val text        = output.blocks.mkString("\n")
+                val computedKey = ctx.scratchpad.nextComputedKey()
+                val now         = System.currentTimeMillis()
+                val entry = ScratchEntry(
+                    content      = text,
+                    sizeBytes    = text.length.toLong,
+                    lineCount    = output.blocks.length,
+                    sourcePath   = computedKey,
+                    lastModified = now,
+                    storedAt     = now
+                )
+                val ref          = ctx.scratchpad.store(computedKey, entry)
+                val baseMetadata = Map(
                     "matches"   -> output.matches.toString,
                     "files"     -> output.files.toString,
                     "truncated" -> output.truncated.toString
                 )
-                val body = if (text.length <= Presentation.BODY_BUDGET_CHARS)
-                {
-                    ToolBody.Inline(text)
-                }
+                if (text.length <= Presentation.BODY_BUDGET_CHARS)
+                    ToolResult(
+                        status   = ToolStatus.Ok,
+                        metadata = baseMetadata + ("stored" -> ref),
+                        body     = Some(ToolBody.Inline(text))
+                    )
                 else
-                {
-                    val ref = "$scratch/__search_result__"
-                    val sourcePath = "__search_result__"
-                    // Store the content in scratchpad so the ref resolves
-                    val entry = ScratchEntry(
-                        content      = text,
-                        sizeBytes    = text.length.toLong,
-                        lineCount    = output.blocks.length,
-                        sourcePath   = sourcePath,
-                        lastModified = System.currentTimeMillis(),
-                        storedAt     = System.currentTimeMillis()
+                    ToolResult(
+                        status   = ToolStatus.Ok,
+                        metadata = baseMetadata,
+                        body     = Some(ToolBody.ScratchRef(
+                            ref        = ref,
+                            sourcePath = computedKey,
+                            sizeBytes  = text.length.toLong,
+                            lineCount  = output.blocks.length
+                        ))
                     )
-                    ctx.scratchpad.store(sourcePath, entry)
-                    ToolBody.ScratchRef(
-                        ref        = ref,
-                        sourcePath = sourcePath,
-                        sizeBytes  = text.length.toLong,
-                        lineCount  = output.blocks.length
-                    )
-                }
-                ToolResult(status = ToolStatus.Ok, metadata = metadata, body = Some(body))
         }
     }
 }

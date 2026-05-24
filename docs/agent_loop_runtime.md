@@ -316,10 +316,12 @@ case class ScratchEntry(
 class SessionScratchpad:
   private val MAX_ENTRIES = 20
   private val entries = mutable.LinkedHashMap[String, ScratchEntry]()
+  private val computedCounter = AtomicInteger(0)
 
   def store(path: String, entry: ScratchEntry): String  // returns "$scratch/<path>"
   def get(ref: String): Option[ScratchEntry]            // resolves "$scratch/<path>"
   def isStale(path: String, currentModified: Long): Boolean
+  def nextComputedKey(): String                         // returns "__result_N__"; N increments per call
   private def evictOldestIfFull(): Unit
 ```
 
@@ -331,48 +333,72 @@ class SessionScratchpad:
 
 **Scope**: `ExecutionContext` carries a reference to the session's `SessionScratchpad`.
 
-### 4.8 Explicit Scratchpad Chaining (`store=true`)
+### 4.7 Automatic Scratchpad Chaining
 
-**Problem:** The automatic scratchpad overflow (§4.6) only fires when a tool body exceeds `BODY_BUDGET_CHARS` (8000 chars). Small and medium outputs are returned inline — the model receives the content as plain text in the `[TOOL RESULT]` block with no stable `$scratch/` ref to reference in a subsequent call. The only way to chain such output into a later tool is to copy-paste the text into an arg value, which is fragile for anything beyond trivial content and bloats the conversation history.
+**Problem:** The scratchpad overflow path in §4.6 fires only when a tool body exceeds `BODY_BUDGET_CHARS`. Small and medium outputs are returned inline — the model receives plain text in the `[TOOL RESULT]` block with no stable `$scratch/` ref. To chain that output into a subsequent tool call (e.g. pass search results to `llm.summarize`) the model would have to copy-paste the text into an argument value, which is fragile for anything beyond trivial content and bloats conversation history.
 
-**Solution:** `files.read` and `files.search` accept an optional `store=true` argument. When present, the tool forces its body into the `SessionScratchpad` regardless of size, and returns a `$scratch/<path>` ref in the result — the same shape the model already sees for large files. The substitution pass in `VirtualShell.resolveRefs` (§4.4) handles ref resolution in subsequent calls transparently; no other infrastructure change is needed.
+**Solution:** Every tool result is stored in the `SessionScratchpad` automatically, regardless of size. No opt-in argument is needed. The scratchpad uses two key tracks:
 
-**Example — read a small config file, then summarise it:**
+- **Path-keyed** (file reads): key is the source file path relative to the workspace root, e.g. `data/report.txt`. Enables staleness detection across turns — re-reading the same file returns the same ref if the file is unchanged.
+- **Counter-keyed** (computed results): key is `__result_N__` where `N` is a monotonically-increasing integer from `SessionScratchpad.nextComputedKey()`. Used for search matches, `llm.*` outputs, and any tool result with no natural file-path key.
+
+**Response shape — small result** (body ≤ 8000 chars): return the inline content as normal, plus a `stored:` metadata line so the model has the ref without re-reading:
+
 ```
-run(command="files.read path=src/config.py store=true")
+$ files.read path=src/config.py
+ok
+─ size: 2.1 KB · lines: 67 · stored: $scratch/src/config.py
+─────
+<full file content inline>
+```
+
+**Response shape — large result** (body > 8000 chars): scratchpad ref only, no inline body (unchanged from §4.6 overflow behaviour):
+
+```
+$ files.read path=big_report.txt
+ok
+─ size: 120 KB · lines: 4821 · stored: $scratch/data/big_report.txt
+─ hint: content too large for context; use targeted tools to query it
+─ try: run(command="files.search query=\"your term\" path=big_report.txt")
+─ try: run(command="files.read path=big_report.txt lines=1-50")
+─ try: run(command="llm.summarize text=$scratch/data/big_report.txt")
+```
+
+**Example — chain a small file read into a summarise step:**
+```
+run(command="files.read path=src/config.py")
 → [TOOL RESULT]
   $ files.read path=src/config.py
   ok
   ─ size: 2.1 KB · lines: 67 · stored: $scratch/src/config.py
+  ─────
+  <file content>
 
 run(command="llm.summarize text=$scratch/src/config.py")
-→ [TOOL RESULT]
-  $ llm.summarize text=$scratch/src/config.py
-  ok
-  ─────
-  This config file defines...
 ```
 
-**Example — search results fed into a summarise step:**
+**Example — chain search results into a summarise step:**
 ```
-run(command="files.search query="revenue,growth" path=reports/ store=true")
+run(command="files.search query="revenue,growth" path=reports/")
 → [TOOL RESULT]
   $ files.search query="revenue,growth" path=reports/
   ok
-  ─ matches: 12 · files: 3 · stored: $scratch/__search_result__
+  ─ matches: 12 · files: 3 · stored: $scratch/__result_1__
+  ─────
+  <match lines>
 
-run(command="llm.summarize text=$scratch/__search_result__")
+run(command="llm.summarize text=$scratch/__result_1__")
 ```
 
 **Implementation changes:**
-- `FilesReadInput` gains `store: Boolean`; `FilesRead.validate()` reads `store=true/false` (default `false`); `FilesRead.render()` bypasses the `BODY_BUDGET_CHARS` check when `store == true` and always routes to `ScratchRef`.
-- `FilesSearchInput` gains `store: Boolean`; same pattern in `FilesSearch.validate()` and `FilesSearch.render()`.
-- `store` added to `schema.args` for both tools (optional, `required = false`).
-- `system_prompt.txt` gains a `[CHAINING]` section (see §8) teaching the model to use `store=true` + `$scratch/` refs as the explicit inter-tool chaining pattern. The existing `[SCRATCHPAD]` section is updated to clarify that `$scratch/` refs are passable to any tool accepting a compatible argument, not only `llm.summarize`.
+- `Tool.render()` gains a `ctx: ExecutionContext` parameter so the render stage can access the scratchpad directly: `def render(output: O, ctx: ExecutionContext): ToolResult`.
+- `FilesRead.render()`: always calls `ctx.scratchpad.store(sourcePath, entry)`; for bodies ≤ 8000 chars returns `ToolBody.Inline` with a `stored:` metadata entry alongside the inline content; for large bodies returns `ToolBody.ScratchRef` as before.
+- `FilesSearch.render()`: calls `ctx.scratchpad.store(ctx.scratchpad.nextComputedKey(), entry)` and returns the counter-keyed ref in metadata alongside inline content (if small) or as a `ScratchRef` (if large).
+- `[SCRATCHPAD]` section in `system_prompt.txt` updated to tell the model that all results include a `stored:` ref passable to any compatible tool argument. No `[CHAINING]` section needed.
 
-**Non-changes:** `VirtualShell.resolveRefs`, `SessionScratchpad`, `Tokenizer`, `ToolCallParser`, `AgentLoop` — all unchanged.
+**Non-changes:** `VirtualShell.resolveRefs`, `Tokenizer`, `ToolCallParser`, `AgentLoop` — all unchanged.
 
-### 4.7 `AgentResponse` and `ToolResult`
+### 4.8 `AgentResponse` and `ToolResult`
 
 ```scala
 // Execution layer output — typed
@@ -405,7 +431,7 @@ trait Tool[I, O]:
   def schema: CommandSchema
   def validate(args: Map[String, String]): Either[ArgError, I]
   def execute(input: I, ctx: ExecutionContext): O
-  def render(output: O): ToolResult
+  def render(output: O, ctx: ExecutionContext): ToolResult
 ```
 
 The `validate → execute → render` pipeline is the contract. `VirtualShell` calls them in sequence; each stage is independently testable.
@@ -416,10 +442,10 @@ The `validate → execute → render` pipeline is the contract. `VirtualShell` c
 
 | Command | Args | Returns |
 |---|---|---|
-| `files.read` | `path`, `lines` (optional range, e.g. `1-50`) | File text content inline if ≤8000 chars; otherwise stored in `SessionScratchpad` and ref returned |
+| `files.read` | `path`, `lines` (optional range, e.g. `1-50`) | File text content; always stored in `SessionScratchpad` (path-keyed); inline body + `stored:` ref if ≤8000 chars; ref only if larger |
 | `files.write` | `path`, `content` | Confirmation + bytes written |
 | `files.list` | `path` (optional), `recursive` (default false), `all` (dotfiles, default false), `depth` (default 3), `pattern` (glob filter) | Indented tree listing with size and date per file |
-| `files.search` | `query`, `path` (optional), `recursive` (default true), `ignore_case` (default false), `lines_context` (default 2), `max_matches` (default 50), `include` (glob), `regex` (default false) | Grep-style matches with context lines |
+| `files.search` | `query`, `path` (optional), `recursive` (default true), `ignore_case` (default false), `lines_context` (default 2), `max_matches` (default 50), `include` (glob), `regex` (default false) | Grep-style matches; always stored in `SessionScratchpad` (counter-keyed `__result_N__`); inline body + `stored:` ref if ≤8000 chars; ref only if larger |
 | `files.stat` | `path` | File size, modified time, type |
 
 **`files.write` is a sensitive (mutating) tool** — subject to permission scope check before execution (§6).
@@ -724,37 +750,37 @@ Error codes: not_found, permission_denied, invalid_args, path_escaped,
 cancelled, internal_error.
 
 [SCRATCHPAD]
-If a file or tool output is too large to include in context, it is stored
-automatically and a reference is returned instead:
+Every tool result is stored automatically in the scratchpad. Small results
+include their content inline and also a stored: ref:
 
-  ─ stored: $scratch/path/to/file.txt
+  $ files.read path=src/config.py
+  ok
+  ─ size: 2.1 KB · lines: 67 · stored: $scratch/src/config.py
+  ─────
+  <content>
+
+Large results return only the ref (content too large for context):
+
+  $ files.read path=big_report.txt
+  ok
+  ─ size: 120 KB · lines: 4821 · stored: $scratch/data/big_report.txt
   ─ hint: content too large for context; use targeted tools to query it
-  ─ try: run(command="files.search query=\"term\" path=path/to/file.txt")
-  ─ try: run(command="files.read path=path/to/file.txt lines=1-50")
-  ─ try: run(command="llm.summarize text=$scratch/path/to/file.txt")
+  ─ try: run(command="files.search query=\"term\" path=big_report.txt")
+  ─ try: run(command="files.read path=big_report.txt lines=1-50")
+  ─ try: run(command="llm.summarize text=$scratch/data/big_report.txt")
+
+Computed results (search matches, llm.* outputs) get a counter ref:
+
+  ─ stored: $scratch/__result_1__
 
 Rules for scratchpad refs:
-- $scratch/path refs are stable within this session.
-- Pass a $scratch ref as the value of any tool argument that accepts text
+- All $scratch/ refs are stable within this session.
+- Pass any $scratch/ ref as the value of any tool argument that accepts text
   (e.g. text=, content=). The full content is substituted before the tool
   runs — it never appears in the conversation history.
 - Re-reading the same file returns the same ref if the file has not changed.
-
-[CHAINING]
-Use store=true to explicitly store a small or medium tool output in the
-scratchpad so you can reference it by token in a later call:
-
-  run(command="files.read path=src/config.py store=true")
-  → ─ stored: $scratch/src/config.py
-
-  run(command="llm.summarize text=$scratch/src/config.py")
-
-Use this pattern whenever you intend to process the output of one tool
-as the input to another — regardless of file size. It avoids repeating
-large text in argument values and keeps the conversation history clean.
-
-store=true is supported on: files.read, files.search.
-The $scratch/ ref persists for the duration of the session.
+- Use stored refs to chain tool outputs without repeating large text in
+  argument values: run(command="llm.summarize text=$scratch/__result_1__")
 
 [PERMISSIONS]
 - files.write requires user approval. If you receive permission_denied, the
@@ -1020,7 +1046,7 @@ Given the dependency graph, the recommended order is:
 - `shell/VirtualShell.scala`
 - `shell/Presentation.scala`
 - `tools/Tool.scala`
-- `tools/files/FilesRead.scala`, `FilesWrite.scala`, `FilesList.scala`, `FilesSearch.scala`, `FilesStat.scala` — **`FilesRead` and `FilesSearch` gain `store=true` arg (§4.8)**
+- `tools/files/FilesRead.scala`, `FilesWrite.scala`, `FilesList.scala`, `FilesSearch.scala`, `FilesStat.scala` — **`FilesRead` and `FilesSearch` always store results in `SessionScratchpad` and return a `stored:` ref (§4.7)**
 - `tools/memory/MemoryGet.scala`, `MemorySet.scala`, `MemoryList.scala`
 - `tools/memory/MemoryStore.scala` *(new)*
 - `tools/llm/LlmSummarize.scala`, `LlmExtract.scala`, `LlmClassify.scala`
@@ -1042,7 +1068,7 @@ Given the dependency graph, the recommended order is:
 - `ui/css/main.css` — **add agent step styles (`.agent-steps`, `.agent-iter`, `.agent-thinking`, `.agent-tool-chip`)** (Phase 2.5)
 
 ### New resources:
-- `backend/src/main/resources/system_prompt.txt` — hybrid template with `{{TOOL_INDEX}}`, `{{ROOT_PATH}}`, `{{TODAY}}` slots; **gains `[CHAINING]` section and updated `[SCRATCHPAD]` section (§4.8)**
+- `backend/src/main/resources/system_prompt.txt` — hybrid template with `{{TOOL_INDEX}}`, `{{ROOT_PATH}}`, `{{TODAY}}` slots; **`[SCRATCHPAD]` section updated to reflect auto-store design — all results carry a `stored:` ref; no `[CHAINING]` section (§4.7)**
 - `ui/log-viewer.html` — dedicated log viewer page (opens via `window.open`)
 - `ui/js/log-viewer.js` — connects to `GET /log/stream` via **WebSocket**, renders/filters log lines, shows connection status, auto-reconnects
 - `ui/js/marked.min.js` — self-hosted Markdown renderer (JavaFX WebView compatible)
@@ -1216,7 +1242,7 @@ The original `web.fetch` using Jsoup is superseded by `browser.open`. Jsoup cann
 Noted explicitly to avoid scope creep:
 
 - **Progress events** for long-running tools (`─ progress: N% · ...` per FTRD §10 envelope spec) — no Phase 2 tool is long-running.
-- **`$last`/`$1`/`$2` general-purpose output-capture variables** (FTRD §10) — the `store=true` + `$scratch/<path>` pattern (§4.8) covers the primary chaining use case without new syntax. General-purpose named slots remain deferred.
+- **`$last`/`$1`/`$2` general-purpose output-capture variables** (FTRD §10) — automatic scratchpad storage (§4.7) covers the primary chaining use case: every result already carries a `$scratch/` ref. General-purpose named capture slots remain deferred.
 - **`commit()` tool** (FTRD §10) — sensitive operations remain inline in `run()` with permission checks.
 - **Cross-session memory** — `MemoryStore` trait is ready for it but Phase 6.
 - **Context summarization on truncation** — Phase 5.

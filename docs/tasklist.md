@@ -94,6 +94,17 @@ Goal: replace the Phase 1 single-call loop with a safe plan→act→observe agen
 - [x] Ensure all `files.*` tools run `PathSandbox` check before any execution.
 - [x] Ensure tools use typed validation and structured presentation envelopes; no arbitrary shell execution.
 
+### Step 2b — Automatic Scratchpad Chaining
+
+*See `agent_loop_runtime.md` §4.7. All tool results are stored automatically in the scratchpad — no opt-in argument needed. File reads use path-keyed refs for staleness-aware caching; computed results (search, `llm.*`) use counter-keyed refs (`$scratch/__result_N__`) that increment per result. The model always has a stable `$scratch/` ref to pass to subsequent tools.*
+
+- [x] Add `computedResultCounter: AtomicInteger` and `nextComputedKey(): String` to `SessionScratchpad`; key format is `"__result_N__"` where `N` increments per call (already stubbed in §4.6 class block).
+- [x] Update `Tool.render()` signature to `render(output: O, ctx: ExecutionContext): ToolResult`; update all existing `Tool` implementations to match.
+- [x] Update `FilesRead.render()`: always call `ctx.scratchpad.store(sourcePath, entry)`; for bodies ≤ 8000 chars return `ToolBody.Inline` with a `stored:` metadata entry; for large bodies return `ToolBody.ScratchRef` as before.
+- [x] Update `FilesSearch.render()`: call `ctx.scratchpad.store(ctx.scratchpad.nextComputedKey(), entry)`; for small results return inline body plus counter-keyed `stored:` ref; for large results return `ScratchRef` only.
+- [x] Update `[SCRATCHPAD]` section in `system_prompt.txt` to explain that all results include a `stored:` ref usable in subsequent tool arguments; remove `[CHAINING]` section (no longer needed — `store=true` arg eliminated).
+- [x] Update unit tests: `FilesRead` on a small file → `Inline` body with a `stored:` metadata entry and path-keyed ref in scratchpad; `FilesRead` on a large file → `ScratchRef` only; `FilesSearch` on a small result → inline body with a counter-keyed `stored:` ref; counter increments correctly across multiple calls.
+
 ### Step 3 — `memory.*` Tools and Permissions
 
 *`MemoryStore`, `memory.*`, `ScopeStore`, permission flow, UI modal*

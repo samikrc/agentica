@@ -220,18 +220,10 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case None =>
                 val rangeNote = if (output.truncated) " · partial" else ""
-                val metadata  = Map(
-                    "size"  -> f"${output.sizeBytes / 1024.0}%.1f KB",
-                    "lines" -> s"${output.totalLines}$rangeNote"
-                )
-                val body = if (output.content.length <= Presentation.BODY_BUDGET_CHARS)
+                if (!output.truncated)
                 {
-                    ToolBody.Inline(output.content)
-                }
-                else
-                {
-                    val ref = s"$$scratch/${output.sourcePath}"
-                    // Store the content in scratchpad so the ref resolves
+                    // Full file read: always store path-keyed; return inline + stored: for small,
+                    // ScratchRef only for large.
                     val entry = ScratchEntry(
                         content      = output.content,
                         sizeBytes    = output.sizeBytes,
@@ -240,15 +232,38 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
                         lastModified = output.lastModified,
                         storedAt     = System.currentTimeMillis()
                     )
-                    ctx.scratchpad.store(output.sourcePath, entry)
-                    ToolBody.ScratchRef(
-                        ref        = ref,
-                        sourcePath = output.sourcePath,
-                        sizeBytes  = output.sizeBytes,
-                        lineCount  = output.totalLines
+                    val ref  = ctx.scratchpad.store(output.sourcePath, entry)
+                    val body = if (output.content.length <= Presentation.BODY_BUDGET_CHARS)
+                        ToolBody.Inline(output.content)
+                    else
+                        ToolBody.ScratchRef(
+                            ref        = ref,
+                            sourcePath = output.sourcePath,
+                            sizeBytes  = output.sizeBytes,
+                            lineCount  = output.totalLines
+                        )
+                    ToolResult(
+                        status   = ToolStatus.Ok,
+                        metadata = Map(
+                            "size"   -> f"${output.sizeBytes / 1024.0}%.1f KB",
+                            "lines"  -> s"${output.totalLines}",
+                            "stored" -> ref
+                        ),
+                        body = Some(body)
                     )
                 }
-                ToolResult(status = ToolStatus.Ok, metadata = metadata, body = Some(body))
+                else
+                {
+                    // Range (truncated) read: return inline only; don't store partial content.
+                    ToolResult(
+                        status   = ToolStatus.Ok,
+                        metadata = Map(
+                            "size"  -> f"${output.sizeBytes / 1024.0}%.1f KB",
+                            "lines" -> s"${output.totalLines}$rangeNote"
+                        ),
+                        body = Some(ToolBody.Inline(output.content))
+                    )
+                }
         }
     }
 }

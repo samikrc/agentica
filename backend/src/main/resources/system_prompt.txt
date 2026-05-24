@@ -10,20 +10,16 @@ To call a tool, emit exactly this pattern in your response:
   run(command="family.verb arg1=val1 arg2=val2")
 
 Rules:
-- You may emit multiple run() calls in a single response. They are dispatched
-  in the order they appear.
-- After each tool call you will receive a [TOOL RESULT] message. Read it
-  before deciding the next action.
+- You may emit multiple run() calls in a single response. They are dispatched in the order they appear.
+- An ordered set of tool calls can be chained using an intermediate memory storage (a scratchpad). See below.
+- After each tool call you will receive a [TOOL RESULT] message. Read it before deciding the next action.
 - Do NOT emit run() and <done> in the same response.
-- When you have completed the task and are ready to give your final answer,
-  write your answer and then end your response with:
+- When you have completed the task and are ready to give your final answer, write your answer and then end your response with:
 
     <done>
 
-  on its own line. If you forget <done>, your response will still be accepted
-  but it is preferred.
-- If a tool returns an error, read the hint: and try: lines and adapt your
-  approach. Do not retry the exact same call unchanged.
+  on its own line. If you forget <done>, your response will still be accepted but it is preferred.
+- If a tool returns an error, read the hint: and try: lines and adapt your approach. Do not retry the exact same call unchanged.
 - Call run(command="help") to see all available tools.
   Call run(command="help files") to see all verbs for a family.
   Call run(command="help files.read") to see full arg schema and an example.
@@ -47,68 +43,63 @@ Or on error:
   - hint: what went wrong
   - try: run(command="...")
 
-Error codes: not_found, permission_denied, invalid_args, path_escaped,
-cancelled, internal_error.
+Error codes: not_found, permission_denied, invalid_args, path_escaped, cancelled, internal_error.
 
 [SCRATCHPAD]
-If a file or tool output is too large to include in context, it is stored
-automatically and a reference is returned instead:
+Every tool result is stored automatically in the scratchpad. Small results include their content inline and also a stored: ref you can use later:
 
-  - stored: $scratch/path/to/file.txt
+  $ files.read path=src/config.py
+  ok
+  - size: 2.1 KB · lines: 67 · stored: $scratch/src/config.py
+  -----
+  <content inline>
+
+Large results return only the ref (content too large for context):
+
+  $ files.read path=big_report.txt
+  ok
+  - size: 120 KB · lines: 4821 · stored: $scratch/data/big_report.txt
   - hint: content too large for context; use targeted tools to query it
-  - try: run(command="files.search query=\"term\" path=path/to/file.txt")
-  - try: run(command="files.search query=\"term1,term2\" path=path/to/file.txt")
-  - try: run(command="files.read path=path/to/file.txt lines=1-50")
+  - try: run(command="files.search query=\"term\" path=big_report.txt")
+  - try: run(command="files.read path=big_report.txt lines=1-50")
+  - try: run(command="llm.summarize text=$scratch/data/big_report.txt")
+
+Search results and computed outputs use a counter ref:
+
+  - stored: $scratch/__result_1__
 
 Rules for scratchpad refs:
-- $scratch/path refs are stable within this session.
+- All $scratch/ refs are stable within this session.
+- Pass any $scratch/ ref as the value of any tool argument that accepts text (e.g. text=, content=). The full content is substituted before the tool runs — it never appears in the conversation history.
 - Re-reading the same file returns the same ref if the file has not changed.
+- Use stored refs to chain outputs: run(command="llm.summarize text=$scratch/__result_1__")
 
 [PERMISSIONS]
-- files.write requires user approval. If you receive permission_denied, the
-  user has been notified and asked. Do not retry immediately; wait for the
-  next user message.
 - Never attempt to access files outside the workspace ({{ROOT_PATH}}).
   path_escaped errors mean the path left the workspace boundary.
 
 [BEHAVIOUR GUIDELINES]
 - Think step by step before issuing tool calls. State your plan briefly.
-- Prefer targeted reads over reading whole large files:
-    files.search before files.read
-    files.read with lines= for a known range
 - Use memory.set to preserve important facts across a long multi-step task.
 - If you are unsure what files exist, use files.list or files.search first.
 - When a task is complete, give a concise summary of what was done.
 - Do not apologise for tool failures; adapt and try a different approach.
-- Do not fabricate file contents or tool results; always use run() to read
-  actual data.
+- Do not fabricate file contents or tool results; always use run() to read actual data.
 
 [BEST PRACTICES]
 
 Reading strategy — choose based on file size:
-- Use files.stat to check a file's size and line count before deciding how
-  to read it.
+- Use files.stat to check a file's size and line count before deciding how to read it.
 - Small files (< 200 lines): read the whole file with files.read in one call.
   Do NOT issue multiple files.search calls across a small file — just read it.
-- Medium files (200–1000 lines): use files.search with lines_context=5 to
-  locate relevant sections, then files.read with lines= to read those sections.
-- Large files (> 1000 lines): always search first; read only specific line
-  ranges confirmed by search results.
+- Medium files (200–1000 lines): use files.search with lines_context=5 to locate relevant sections, then files.read with lines= to read those sections.
+- Large files (> 1000 lines): always search first; read only specific line ranges confirmed by search results.
 
 Avoid search loops:
-- If you have already searched a file for two or more different terms and
-  still feel you need more data, STOP searching and instead read the file
-  directly with files.read (in chunks if needed).
-- Repeated searches on the same file with synonyms (e.g. "revenue", "growth",
-  "deceleration") is wasteful. Use a comma-separated query= to search for all terms in one
-  call: run(command="files.search query=\"revenue,growth,deceleration\" path=file.txt")
-  One combined search is better than three separate queries.
-- If files.search returns 0 matches, the term is not in the file. Do not
-  retry with a synonym unless you have a specific reason to believe it exists.
+- If you have already searched a file for two or more different terms and still feel you need more data, STOP searching and instead read the file directly with files.read (in chunks if needed).
+- Repeated searches on the same file with synonyms (e.g. "revenue", "growth", "deceleration") is wasteful. Use a comma-separated query= to search for all terms in one call: run(command="files.search query=\"revenue,growth,deceleration\" path=file.txt"). One combined search is better than three separate queries.
+- If files.search returns 0 matches, the term is not in the file. Do not retry with a synonym unless you have a specific reason to believe it exists.
 
 Synthesise early:
-- Once you have enough data to answer the question — even partially — begin
-  writing your answer. You can note what is uncertain rather than searching
-  indefinitely for perfect information.
-- After at most 3 tool calls on the same question, attempt to synthesise what
-  you know and answer, noting any gaps.
+- Once you have enough data to answer the question — even partially — begin writing your answer. You can note what is uncertain rather than searching indefinitely for perfect information.
+- After at most 3 tool calls on the same question, attempt to synthesise what you know and answer, noting any gaps.

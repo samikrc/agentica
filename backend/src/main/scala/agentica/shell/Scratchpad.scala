@@ -1,5 +1,6 @@
 package agentica.shell
 
+import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable
 
 /**
@@ -39,9 +40,9 @@ case class ScratchEntry(
  */
 class SessionScratchpad
 {
-    private val MAX_ENTRIES = 20
-    // LinkedHashMap preserves insertion order; we evict the head (oldest entry).
-    private val entries = mutable.LinkedHashMap[String, ScratchEntry]()
+    private val MAX_ENTRIES     = 20
+    private val entries         = mutable.LinkedHashMap[String, ScratchEntry]()
+    private val computedCounter = AtomicInteger(0)
 
     /**
      *  Stores a large content body and returns its stable `$scratch/<path>` ref.
@@ -87,6 +88,13 @@ class SessionScratchpad
                 case Some(entry) => entry.lastModified != currentModified
             }
         }
+
+    /**
+     *  Returns a unique counter-based key for a computed result (search, LLM output, etc.).
+     *  Key format: `"__result_N__"` where `N` is a monotonically-increasing integer.
+     *  Each call increments the counter; refs are stable within the scratchpad entry lifetime.
+     */
+    def nextComputedKey(): String = s"__result_${computedCounter.incrementAndGet()}__"
 
     /**
      *  Returns the number of entries currently held in the scratchpad.
