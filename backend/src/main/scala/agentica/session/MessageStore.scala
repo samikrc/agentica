@@ -139,4 +139,24 @@ class MessageStore(conn: () => Connection)
         ps.close()
         c.close()
     }
+
+    /**
+     *  Deletes the specified message and all messages after it (inclusive).
+     *  Used by restart: the frontend re-submits the message as a fresh turn,
+     *  so the original DB entry must be removed to avoid duplicates.
+     *  @param sessionId      Session identifier.
+     *  @param fromMessageId  The message ID to delete from (inclusive).
+     */
+    def deleteFrom(sessionId: String, fromMessageId: String): Unit =
+    {
+        val c  = conn()
+        val ps = c.prepareStatement(
+            "DELETE FROM messages WHERE session_id = ? AND timestamp >= (SELECT timestamp FROM messages WHERE id = ?)"
+        )
+        ps.setString(1, sessionId)
+        ps.setString(2, fromMessageId)
+        ps.executeUpdate()
+        ps.close()
+        c.close()
+    }
 }

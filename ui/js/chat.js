@@ -392,6 +392,13 @@ const Chat = (() => {
         }
         messagesEl.scrollTop = messagesEl.scrollHeight;
       },
+      onToolProgress: ({ message, current, total }) => {
+        if (currentToolResultEl) {
+          const pct = Math.round((current / total) * 100);
+          currentToolResultEl.textContent = `${message} (${pct}%)`;
+        }
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+      },
       onToolResult: ({ tool, output }) => {
         if (currentToolResultEl) {
           currentToolResultEl.textContent = output;
@@ -535,17 +542,27 @@ const Chat = (() => {
 
   function confirmRestart(userMessageId) {
     if (!_sessionId) return;
-    if (!window.confirm('This will delete all messages after this point and restart the conversation. Are you sure?')) {
+    // Find the user message text from the DOM before confirming
+    const msgEl  = messagesEl.querySelector(`[data-message-id="${userMessageId}"]`);
+    const bubble = msgEl ? msgEl.querySelector('.msg-bubble') : null;
+    const text   = bubble ? bubble.textContent.trim() : null;
+    if (!text) return;
+    if (!window.confirm('This will delete all messages after this point and re-send your message. Are you sure?')) {
       return;
     }
-    restartFrom(userMessageId);
+    restartFrom(userMessageId, text);
   }
 
-  async function restartFrom(userMessageId) {
+  async function restartFrom(userMessageId, messageText) {
     try {
+      // Cancel any in-flight run first so its SSE stream doesn't corrupt the UI
+      cancel();
       await Api.post(`/sessions/${_sessionId}/restart`, { fromMessageId: userMessageId });
-      // Reload the conversation
+      // Reload history (now fully truncated — inclusive delete)
       await loadHistory();
+      // Re-submit the user message so the agent runs again from that point
+      inputEl.value = messageText;
+      send();
     } catch (err) {
       console.error('Failed to restart:', err);
       alert('Failed to restart conversation: ' + err.message);

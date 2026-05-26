@@ -27,6 +27,7 @@ const Api = (() => {
   async function post(path, body) {
     const r = await fetch(_baseUrl + path, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
     if (!r.ok) throw new Error(`POST ${path} → ${r.status}`);
+    if (r.status === 204) return null;
     return r.json();
   }
 
@@ -91,6 +92,7 @@ const Api = (() => {
       case 'error':       handlers.onError?.(JSON.parse(data).message); break;
       case 'done':        handlers.onDone?.(); break;
       case 'permission_required': handlers.onPermissionRequired?.(JSON.parse(data)); break;
+      case 'tool_progress': handlers.onToolProgress?.(JSON.parse(data)); break;
     }
   }
 

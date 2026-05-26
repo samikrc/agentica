@@ -47,7 +47,7 @@ object TraceLogger
      *  @param msg      Event name or free-form message.
      *  @param extra    Additional string fields merged into the JSON object.
      */
-    private def emit(level: String, traceId: String, msg: String, extra: Map[String, String] = Map.empty): Unit =
+    private def emit(level: String, traceId: String, msg: String, extra: Map[String, String] = Map.empty, logToStdErr: Boolean = false): Unit =
     {
         lock.lock()
         try
@@ -60,7 +60,10 @@ object TraceLogger
                 "msg"     -> msg
             )
             extra.foreach { case (k, v) => obj(k) = Option(v).getOrElse("null") }
-            writer.println(obj.render())
+            val line = obj.render()
+            writer.println(line)
+            if (logToStdErr)
+                System.err.println(line)
         }
         finally
         {
@@ -99,5 +102,16 @@ object TraceLogger
     def error(traceId: String, msg: String, extra: Map[String, String] = Map.empty): Unit =
     {
         emit("ERROR", traceId, msg, extra)
+    }
+
+    /**
+     *  Emits a debug structured log line.
+     *  @param traceId  Trace identifier associated with the event.
+     *  @param msg      Event name or message.
+     *  @param extra    Additional string fields to include in the JSON line.
+     */
+    def debug(traceId: String, msg: String, extra: Map[String, String] = Map.empty): Unit =
+    {
+        emit("DEBUG", traceId, msg, extra, logToStdErr = true)
     }
 }

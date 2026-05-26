@@ -9,7 +9,9 @@ import agentica.server.Routes
 import agentica.session.{AgentTurnStore, MemoryStoreImpl, MessageStore, RunStore, SessionStore}
 import agentica.settings.SettingsStore
 import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
-import agentica.tools.files.{FilesList, FilesRead, FilesSearch, FilesStat, FilesWrite}
+import agentica.doc.{DocFontLoader, DocToolDetector}
+import agentica.tools.deps.DepsCheck
+import agentica.tools.files.{FilesList, FilesRead, FilesReadDOCX, FilesReadPDF, FilesReadPPTX, FilesSearch, FilesStat, FilesWrite}
 import agentica.tools.memory.{MemoryGet, MemoryList, MemorySet}
 import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import java.net.ServerSocket
@@ -26,6 +28,11 @@ object BackendServer extends cask.Main
     // (mvn exec:java, fat-jar, tests) without relying on JVM command-line flags.
     System.setProperty("jdk.httpclient.allowRestrictedHeaders", "connection")
 
+    // PDFBox uses AWT (Graphics2D) for page rendering. On a headless Linux server without
+    // a display, AWT's font subsystem can hang indefinitely trying to connect to X11.
+    // This must be set before any PDFBox or ImageIO class is loaded.
+    System.setProperty("java.awt.headless", "true")
+
     /** Binds a [[java.net.ServerSocket]] on port 0 to let the OS pick a free port,
      *  then immediately releases the socket and returns the port number.
      */
@@ -38,7 +45,8 @@ object BackendServer extends cask.Main
     }
 
     // --- Port selection + binding ---
-    override val port = sys.env.get("AGENTICA_PORT").flatMap(_.toIntOption).getOrElse(findFreePort())
+    //override val port = sys.env.get("AGENTICA_PORT").flatMap(_.toIntOption).getOrElse(findFreePort())
+    override val port = sys.env.getOrElse("AGENTICA_PORT", "11211").toInt
     override val host = "0.0.0.0"
 
     // --- Database setup ---
@@ -63,6 +71,10 @@ object BackendServer extends cask.Main
     agentTurnStore.init()
     memoryStore.init()
     scopeStore.init()
+
+    // --- Document tool detection + font registration ---
+    DocToolDetector.status   // eagerly trigger detection; result is cached
+    DocFontLoader.init()
 
     // --- Settings + Dependencies ---
     val settings      = settingsStore.load()
@@ -91,6 +103,10 @@ object BackendServer extends cask.Main
     commandRegistry.register(MemorySet)
     commandRegistry.register(MemoryGet)
     commandRegistry.register(MemoryList)
+    commandRegistry.register(DepsCheck)
+    commandRegistry.register(FilesReadPDF)
+    commandRegistry.register(FilesReadDOCX)
+    commandRegistry.register(FilesReadPPTX)
 
     ContextManager.applyToolIndex(commandRegistry.helpIndex)
 

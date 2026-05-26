@@ -41,6 +41,7 @@ class ToolChainingTest extends AnyFunSuite
             scopeStore      = noGrants,
             scratchpad      = scratchpad,
             memoryStore     = null,
+            llmProvider     = null,
             onEvent         = _ => (),
             permissionLatch = SynchronousQueue[GrantDecision]()
         )

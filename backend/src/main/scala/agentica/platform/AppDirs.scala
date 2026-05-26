@@ -37,7 +37,16 @@ object AppDirs
                     Paths.get(sys.props("user.home"), ".local", "share", appName)
                 }
         }
-        Files.createDirectories(base)
+        try Files.createDirectories(base)
+        catch
+        {
+            // On WSL2, the path may exist as a symlink to a directory; createDirectories
+            // throws FileAlreadyExistsException in that case. Treat it as success if the
+            // resolved path is an existing directory.
+            case ex: java.nio.file.FileAlreadyExistsException =>
+                if (!Files.isDirectory(base))
+                    throw ex
+        }
         base
     }
 

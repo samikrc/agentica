@@ -277,16 +277,18 @@ class Routes(
 
     /**
      *  Restarts the conversation from a specific user message.
-     *  Deletes all messages, agent turns, tool runs, and token usage after the specified message.
+     *  Deletes the specified message and everything after it (inclusive), plus any
+     *  associated agent turns, tool runs, and token usage.
+     *  The frontend re-submits the message text as a fresh new turn after this call.
      *  Returns 204 on success.
      */
     @cask.route("/sessions/:id/restart", methods = Seq("post", "options"))
     def restartSession(id: String, request: Request): Response[Response.Data] =
     {
         withAuth(request) {
-            val body       = ujson.read(request.text())
-            val fromMsgId   = body("fromMessageId").str
-            messageStore.deleteAfter(id, fromMsgId)
+            val body      = ujson.read(request.text())
+            val fromMsgId = body("fromMessageId").str
+            messageStore.deleteFrom(id, fromMsgId)
             agentTurnStore.deleteAfter(id, fromMsgId)
             runStore.deleteRunsAfter(id, fromMsgId)
             runStore.deleteTokenUsageAfter(id, fromMsgId)
@@ -382,6 +384,10 @@ class Routes(
                                                 val pathStr  = path.map(p => ",\"path\":" + ujson.Str(p).render()).getOrElse("")
                                                 val optsJson = opts.map(o => ujson.Str(o).render()).mkString("[", ",", "]")
                                                 sseEvent("permission_required", s"""{"tool":$toolJson$pathStr,"options":$optsJson,"runId":"$runId"}""")
+                                            case AgentEvent.ToolProgress(tool, msg, cur, total) =>
+                                                val toolJson = ujson.Str(tool).render()
+                                                val msgJson  = ujson.Str(msg).render()
+                                                sseEvent("tool_progress", s"""{"tool":$toolJson,"message":$msgJson,"current":$cur,"total":$total}""")
                                         }
                                         queue.offer(eventStr)
                                         ev match
@@ -396,14 +402,16 @@ class Routes(
                             }
                             catch
                             {
-                                case ex: Exception =>
-                                    TraceLogger.error(traceId, "run_error", Map("error" -> ex.getMessage))
-                                    queue.offer(sseEvent("error", s"""{"message":${ujson.Str(ex.getMessage).render()}}"""))
+                                case t: Throwable =>
+                                    val msg = Option(t.getMessage).getOrElse(t.getClass.getName)
+                                    TraceLogger.error(traceId, "run_error", Map("error" -> msg, "type" -> t.getClass.getName))
+                                    queue.offer(sseEvent("error", s"""{"message":${ujson.Str(msg).render()}}"""))
                                     queue.offer(sseEvent("done", "{}"))
                             }
                             finally
                             {
                                 cancelFlags.remove(runId)
+                                sseQueues.remove(runId)
                             }
                         }
                     })

@@ -52,6 +52,35 @@
             <version>0.9.3</version>
         </dependency>
 
+        <!-- Apache PDFBox: PDF page rendering (Stage B) + font registration (Stage A) -->
+        <!-- Source: https://mvnrepository.com/artifact/org.apache.pdfbox/pdfbox -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>3.0.7</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- Apache POI XSLF: PPTX slide rendering and editing (Stage B) -->
+        <!-- Source: https://mvnrepository.com/artifact/org.apache.poi/poi-ooxml -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.5.1</version>
+            <scope>compile</scope>
+        </dependency>
+
+        <!-- log4j-core: POI 5.x uses log4j-api directly in class static initializers; without
+             a provider on the classpath LogManager's static block fails, causing NoClassDefFoundError.
+             log4j-core is the reference implementation and initialises cleanly. Logging is suppressed
+             below ERROR via log4j2.xml so PDFBox/POI debug output never reaches the console. -->
+        <dependency>
+            <groupId>org.apache.logging.log4j</groupId>
+            <artifactId>log4j-core</artifactId>
+            <version>2.24.3</version>
+            <scope>runtime</scope>
+        </dependency>
+
         <!-- ScalaSQL: typed SQLite access -->
         <!-- https://mvnrepository.com/artifact/com.lihaoyi/scalasql -->
         <dependency>
@@ -128,14 +157,27 @@
                 </configuration>
             </plugin>
 
-            <!-- exec:java for standalone dev mode -->
+            <!-- exec:exec spawns a true child JVM (unlike exec:java which shares Maven's classloader).
+                 Avoids classloader interference from Maven's own logging deps; Ctrl+C kills the child. -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.5.0</version>
                 <configuration>
-                    <mainClass>${exec.mainClass}</mainClass>
-                    <includePluginDependencies>false</includePluginDependencies>
+                    <executable>java</executable>
+                    <arguments>
+                        <!-- AWT headless: required for PDFBox/POI image rendering on WSL2/servers without a display -->
+                        <argument>-Djava.awt.headless=true</argument>
+                        <!-- Force JBoss Logging (pulled by Undertow/Cask) to use JDK logging instead of auto-detecting
+                             Log4j2. Without this, JBoss Logging's provider detection calls Class.forName("LogManager")
+                             at startup; if that static initializer fails (e.g. Java 25 + log4j-core init ordering),
+                             the JVM permanently poisons the LogManager class. Any subsequent POI/PDFBox log4j use
+                             then throws NoClassDefFoundError even though log4j-core is on the classpath. -->
+                        <argument>-Dorg.jboss.logging.provider=jdk</argument>
+                        <argument>-classpath</argument>
+                        <classpath/>
+                        <argument>${exec.mainClass}</argument>
+                    </arguments>
                 </configuration>
             </plugin>
 
@@ -148,6 +190,7 @@
                     <reportsDirectory>${project.build.directory}/surefire-reports</reportsDirectory>
                     <junitxml>.</junitxml>
                     <filereports>TestSuite.txt</filereports>
+                    <jvmArgs>-Djava.awt.headless=true</jvmArgs>
                 </configuration>
                 <executions>
                     <execution>

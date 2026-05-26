@@ -8,7 +8,7 @@ Just a JVM fat-jar + any browser.
 ### Quick start (Linux / macOS)
 For dev:
 ```
-AGENTICA_DEV_TOKEN=dev-token AGENTICA_PORT=8080 LLM_BASE_URL=http://172.23.64.1:1234 LLM_MODEL=mistralai/ministral-3-14b-reasoning mvn compile exec:java
+AGENTICA_DEV_TOKEN=dev-token AGENTICA_PORT=8080 LLM_BASE_URL=http://172.23.64.1:1234 LLM_MODEL=mistralai/ministral-3-14b-reasoning mvn compile exec:exec
 ```
 
 

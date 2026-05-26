@@ -8,6 +8,8 @@ Agentica's document intelligence subsystem provides a unified pipeline for readi
 
 **Ingestion approach:** Vision-First — each document format is rendered to per-page or per-slide images by a format-specific JVM renderer, then a Vision LLM converts each image to Markdown. This eliminates the Python/Docling subprocess dependency and leverages the same Vision LLM already configured in the agent.
 
+**Output approach:** All Markdown → DOCX and Markdown → PDF conversions use LibreOffice headless, which is already required for DOCX rendering. No additional system tools are needed for output generation.
+
 ---
 
 ## 2. Architecture
@@ -52,14 +54,14 @@ Agentica's document intelligence subsystem provides a unified pipeline for readi
 │ FREE-FORM    │ │ TEMPLATE-BASED │ │ IN-PLACE EDITING             │
 │ OUTPUT       │ │ OUTPUT         │ │                              │
 │              │ │                │ │ docx4j (DOCX)                │
-│ Pandoc       │ │ docx4j         │ │ Open existing .docx,         │
+│ LibreOffice  │ │ docx4j         │ │ Open existing .docx,         │
 │ Markdown →   │ │ Fill           │ │ locate section by anchor     │
 │   DOCX       │ │ placeholders   │ │ (SDT, heading, proximity),   │
 │   PDF        │ │ in branded     │ │ replace text runs preserving │
 │              │ │ .docx          │ │ <w:rPr> styles, save back.   │
-│ LibreOffice  │ │ templates      │ │                              │
-│ DOCX → PDF   │ │                │ │ POI XSLF (PPTX)              │
-│ (hi fidelity)│ │ LibreOffice    │ │ Find shape by slide + name,  │
+│              │ │ templates      │ │                              │
+│              │ │                │ │ POI XSLF (PPTX)              │
+│              │ │ LibreOffice    │ │ Find shape by slide + name,  │
 │              │ │ → PDF opt.     │ │ replace XSLFTextRun,         │
 │              │ │                │ │ save back.                   │
 └──────────────┘ └────────────────┘ └──────────────────────────────┘
@@ -143,27 +145,25 @@ The Vision LLM step is the core of ingestion for all three formats — it is not
 
 ## 5. Output Rendering
 
-### 5a. Free-Form Generation (Pandoc)
+### 5a. Free-Form Generation (LibreOffice)
 
 **Use case:** AI-generated documents where formatting is generic — reports, summaries, analyses.
 
-**Pipeline:** AI produces Markdown → Pandoc converts to target format.
+**Pipeline:** AI produces Markdown → LibreOffice headless converts to target format.
 
 | Target | Command |
 |--------|---------|
-| DOCX | `pandoc input.md -o output.docx` |
-| PDF | `pandoc input.md -o output.pdf` (via LaTeX or wkhtmltopdf) |
+| DOCX | `soffice --headless --convert-to docx input.md` |
+| PDF | `soffice --headless --convert-to pdf input.md` |
 
-**LibreOffice fallback for DOCX → PDF:** When higher fidelity PDF is needed from a DOCX (e.g. for a document that was template-filled), LibreOffice headless is used:
+LibreOffice is already required for DOCX rendering (§3c), so no additional system dependency is introduced here.
 
-```
-libreoffice --headless --convert-to pdf output.docx
-```
+**SVG support:** If the agent generates SVG images as part of a document, they can be referenced from Markdown/HTML and LibreOffice will render them correctly during conversion. For the docx4j/POI direct-embedding path, SVGs should be rasterized to PNG first using Apache Batik (JVM library, Maven dependency — add when needed).
 
 **Tools exposed:**
 - `files.write_markdown` — write raw Markdown to disk
-- `files.markdown_to_docx` — Markdown → DOCX via Pandoc
-- `files.markdown_to_pdf` — Markdown → PDF via Pandoc; DOCX→PDF via LibreOffice
+- `files.markdown_to_docx` — Markdown → DOCX via LibreOffice headless
+- `files.markdown_to_pdf` — Markdown → PDF via LibreOffice headless
 
 ### 5b. Template-Based DOCX Generation (docx4j)
 
@@ -223,12 +223,12 @@ Both are deferred until the DOCX pipeline (Stages C–D) is stable. Tool surface
 |------------|------|--------------------------|
 | Apache PDFBox | PDF page rendering (JVM library) | No — Maven dependency |
 | Apache POI XSLF | PPTX slide rendering + in-place editing (JVM library) | No — Maven dependency |
-| LibreOffice | DOCX page rendering (input) + DOCX→PDF conversion (output) | Yes — system package |
-| Pandoc | Free-form Markdown → DOCX / PDF | Yes — system package |
+| LibreOffice | DOCX rendering (input) + Markdown/DOCX → DOCX/PDF (output) | Yes — system package |
 | docx4j | DOCX template filling + in-place OOXML editing (JVM library) | No — Maven dependency |
+| Apache Batik | SVG → PNG rasterization for docx4j/POI embedding (JVM library) | No — Maven dependency (add when needed) |
 | Vision LLM | Document image → Markdown (core ingestion) | Depends on provider config |
 
-**Detection:** At startup and on first use, Agentica checks for external binaries (`pandoc`, `soffice`). Detection results are cached and surfaced in a `deps.check` tool and in the Settings UI. Missing tools degrade gracefully per-feature rather than failing the whole application. JVM libraries (PDFBox, POI XSLF, docx4j) are always available as Maven dependencies — no detection needed.
+**Detection:** At startup and on first use, Agentica checks for the `soffice` binary. Detection results are cached and surfaced in a `deps.check` tool and in the Settings UI. Missing LibreOffice degrades gracefully per-feature (DOCX read and all output generation) rather than failing the whole application. JVM libraries (PDFBox, POI XSLF, docx4j, Batik) are always available as Maven dependencies — no detection needed.
 
 ---
 
@@ -242,7 +242,7 @@ Both are deferred until the DOCX pipeline (Stages C–D) is stable. Tool surface
 | DOCX renderer | LibreOffice headless | DOCX page layout is too complex for JVM-native rendering at sufficient fidelity; LibreOffice already required for PDF output |
 | Font bundling | Programmatic registration at startup | Ensures consistent rendering across machines without relying on locally installed fonts |
 | Canonical format | Markdown | Natural for LLMs; works for RAG, editing, prompting, and rendering |
-| Free-form output | Pandoc | Mature, format-faithful, widely installed |
+| Free-form output | LibreOffice headless | Already required for DOCX rendering; eliminates Pandoc as a second mandatory system install |
 | Template output | docx4j | Programmatic control over DOCX structure; enterprise template fidelity |
 | Round-trip editing | docx4j in-place OOXML manipulation | Pandoc DOCX→MD→DOCX destroys styles, images, tracked changes; docx4j preserves `<w:rPr>` and surrounding structure |
 | Stable anchors | SDT tags > heading text > proximity | Preference order ensures most reliable anchor is tried first; fail explicitly when no anchor found rather than making unreliable replacements |

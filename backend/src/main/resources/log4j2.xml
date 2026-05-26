@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Suppress PDFBox and POI log4j2 output. Only ERRORs from these libraries reach stderr. -->
+<Configuration status="OFF">
+    <Appenders>
+        <Console name="Stderr" target="SYSTEM_ERR">
+            <PatternLayout pattern="%d{HH:mm:ss.SSS} [log4j] %-5level %logger{36} - %msg%n"/>
+        </Console>
+    </Appenders>
+    <Loggers>
+        <Root level="ERROR">
+            <AppenderRef ref="Stderr"/>
+        </Root>
+    </Loggers>
+</Configuration>

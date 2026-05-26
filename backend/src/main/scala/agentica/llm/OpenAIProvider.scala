@@ -184,4 +184,49 @@ class OpenAIProvider(
             responseId       = responseId
         )
     }
+
+    /**
+     *  OpenAI-compatible vision support via Chat Completions API.
+     *  Sends the image as a base64 data URI in a user message with the prompt.
+     */
+    override def completeVision(base64Image: String, prompt: String): String =
+    {
+        val body = ujson.Obj(
+            "model" -> modelName,
+            "messages" -> ujson.Arr(
+                ujson.Obj(
+                    "role" -> "user",
+                    "content" -> ujson.Arr(
+                        ujson.Obj(
+                            "type" -> "text",
+                            "text" -> prompt
+                        ),
+                        ujson.Obj(
+                            "type" -> "image_url",
+                            "image_url" -> ujson.Obj(
+                                "url" -> base64Image
+                            )
+                        )
+                    )
+                )
+            ),
+            "stream" -> false
+        )
+
+        val json    = ujson.read(doRequest("/v1/chat/completions", body))
+        val content = json.obj.get("choices")
+            .flatMap(_.arr.headOption)
+            .flatMap(_.obj.get("message"))
+            .flatMap(_.obj.get("content"))
+            .map(_.str)
+            .getOrElse("")
+
+        content
+    }
+
+    /**
+     *  Returns true — OpenAI-compatible providers typically support vision.
+     *  This is a best-effort assumption; actual support depends on the model.
+     */
+    override def supportsVision: Boolean = true
 }

@@ -25,4 +25,4 @@ echo "Open your browser at: http://localhost:${AGENTICA_PORT}/?token=${AGENTICA_
 echo "Press Ctrl+C to stop."
 echo
 
-exec java -jar "$JAR"
+exec java -Djava.awt.headless=true -jar "$JAR"

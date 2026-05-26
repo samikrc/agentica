@@ -120,4 +120,40 @@ class MessageStoreTest extends AnyFunSuite with BeforeAndAfterEach
         val messages = store.listForSession("s1")
         assert(messages.size == 3)
     }
+
+    test("deleteFrom removes the specified message and everything after it") {
+        val msg1 = store.append("s1", MessageRole.User, "First")
+        val msg2 = store.append("s1", MessageRole.Assistant, "Second")
+        val msg3 = store.append("s1", MessageRole.User, "Third")
+        val msg4 = store.append("s1", MessageRole.Assistant, "Fourth")
+        assert(store.listForSession("s1").size == 4)
+
+        store.deleteFrom("s1", msg2.id)
+        val messages = store.listForSession("s1")
+        assert(messages.size == 1)
+        assert(messages.head.id == msg1.id)
+    }
+
+    test("deleteFrom with first message removes all messages") {
+        val msg1 = store.append("s1", MessageRole.User, "First")
+        store.append("s1", MessageRole.Assistant, "Second")
+        store.append("s1", MessageRole.User, "Third")
+        assert(store.listForSession("s1").size == 3)
+
+        store.deleteFrom("s1", msg1.id)
+        assert(store.listForSession("s1").isEmpty)
+    }
+
+    test("deleteFrom with last message removes only that message") {
+        val msg1 = store.append("s1", MessageRole.User, "First")
+        val msg2 = store.append("s1", MessageRole.Assistant, "Second")
+        val msg3 = store.append("s1", MessageRole.User, "Third")
+        assert(store.listForSession("s1").size == 3)
+
+        store.deleteFrom("s1", msg3.id)
+        val messages = store.listForSession("s1")
+        assert(messages.size == 2)
+        assert(messages.head.id == msg1.id)
+        assert(messages(1).id == msg2.id)
+    }
 }

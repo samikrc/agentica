@@ -44,6 +44,7 @@ class FilesToolSandboxTest extends AnyFunSuite
             scopeStore      = noGrants,
             scratchpad      = SessionScratchpad(),
             memoryStore     = null,
+            llmProvider     = null,
             onEvent         = _ => (),
             permissionLatch = SynchronousQueue[GrantDecision]()
         )

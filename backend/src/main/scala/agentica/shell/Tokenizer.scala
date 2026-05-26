@@ -97,7 +97,11 @@ object Tokenizer
                 // Find '='
                 val eqIdx = s.indexOf('=', pos)
                 if (eqIdx < 0)
-                    return Left(ParseError(s"expected key=value, got trailing text: '${s.substring(pos)}'", rawInput))
+                    return Left(ParseError(
+                        s"expected key=value, got trailing text: '${s.substring(pos)}'. " +
+                        s"If a value contains spaces or hyphens, wrap it in quotes: path=\\\"My File.pdf\\\"",
+                        rawInput
+                    ))
 
                 val key = s.substring(pos, eqIdx).trim
                 if (key.isEmpty)

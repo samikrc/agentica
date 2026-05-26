@@ -84,6 +84,7 @@ class AgentLoop(
             scopeStore      = scopeStore,
             scratchpad      = sharedScratchpad,
             memoryStore     = memoryStore,
+            llmProvider     = llm,
             onEvent         = emitEvent,
             permissionLatch = permLatch
         )

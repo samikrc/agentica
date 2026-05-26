@@ -1,6 +1,7 @@
 package agentica.tools
 
 import agentica.agent.AgentEvent
+import agentica.llm.LLMProvider
 import agentica.permissions.{GrantDecision, ScopeStore}
 import agentica.session.{MemoryStore, Session}
 import agentica.shell.SessionScratchpad
@@ -111,6 +112,7 @@ case class AgentResponse(text: String, durationMs: Long)
  *  @param scopeStore       Permission grant store; checked by sensitive tools before execute.
  *  @param scratchpad       Session-scoped large-output cache.
  *  @param memoryStore      Session-scoped key-value memory store.
+ *  @param llmProvider      LLM provider for vision calls (document ingestion, Stage B).
  *  @param onEvent          Callback to emit structured [[AgentEvent]] SSE events from within a tool.
  *  @param permissionLatch  Queue on which [[VirtualShell]] blocks awaiting a [[GrantDecision]] from the UI.
  */
@@ -120,6 +122,7 @@ case class ExecutionContext(
     scopeStore:       ScopeStore,
     scratchpad:       SessionScratchpad,
     memoryStore:      MemoryStore,
+    llmProvider:      LLMProvider,
     onEvent:          AgentEvent => Unit,
     permissionLatch:  SynchronousQueue[GrantDecision]
 )

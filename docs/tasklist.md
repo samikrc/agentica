@@ -208,59 +208,62 @@ Goal: expand capabilities beyond chat/files with document processing, browser au
 
 ### Document Tools
 
-*Full architecture in `docs/document_processing.md`. Markdown is the canonical interchange format between the AI layer and all renderers. External tools (Docling, Pandoc, LibreOffice) are invoked via `ProcessBuilder`; JVM libraries (docx4j, POI) are Maven dependencies.*
+*Full architecture in `docs/document_processing.md`. Markdown is the canonical interchange format between the AI layer and all renderers. Ingestion is Vision-First: each format is rendered to images by a JVM-native renderer (PDFBox for PDF, POI XSLF for PPTX, LibreOffice headless for DOCX) and then converted to Markdown by the Vision LLM. Output rendering uses LibreOffice headless for all Markdown/DOCX → DOCX/PDF conversions, and docx4j for template filling and in-place OOXML editing. LibreOffice is the only required system install.*
 
-#### Stage A — External Dependency Detection
+#### Stage A — External Dependency Detection and Font Initialization ✓
 
-- [ ] Implement `DocToolDetector`: check `docling`, `pandoc`, and `soffice` binaries at startup; cache results; expose via `deps.check` agent tool and Settings UI panel.
-- [ ] Return structured, user-friendly error from any document tool when its required external binary is missing (include install instructions in the error body).
+- [x] Implement `DocToolDetector`: check the `soffice` binary at startup; cache result; expose via `deps.check` agent tool and Settings UI panel.
+- [x] Infrastructure for structured errors: `DocToolDetector.installInstructions` provides install guidance; document tools (Stage B/C) will use this to return user-friendly errors when LibreOffice is missing.
+- [x] Download Liberation font files (open-source substitutes: Sans → Arial, Serif → Times New Roman, Mono → Courier New). Proprietary fonts (Calibri, Aptos, Segoe UI) are not bundled — warned at startup.
+- [x] Register bundled fonts with AWT at startup (PDFBox/POI XSLF font embedding uses raw bytes from `DocFontLoader.loadedFonts` at render time); log registered families; warn if font resources missing.
 
-#### Stage B — Document Ingestion (Docling)
+#### Stage B — Vision-First Document Ingestion ✓
 
-- [ ] Add `DoclingRunner`: wraps `ProcessBuilder` invocation of `docling --to md --image-export-dir <tmp> <input>`; captures stdout/stderr; checks exit code; returns `(markdownPath, extractedImagePaths)`.
-- [ ] Implement `files.read_pdf`: invoke `DoclingRunner`, route result through `Presentation` (scratchpad if > 8000 chars); pass `enrich_images` arg to Stage C.
-- [ ] Implement `files.read_docx`: same pipeline as `files.read_pdf`.
-- [ ] Implement `files.read_pptx`: same pipeline as `files.read_pdf`.
-- [ ] Ensure all three tools run `PathSandbox` check before execution.
-- [ ] Unit tests: `DoclingRunner` with mock process (success, non-zero exit, binary not found); tool validation.
+*Implements `files.read_pdf`, `files.read_docx`, `files.read_pptx` via a shared Vision pipeline. PDFBox and POI XSLF dependencies added.*
 
-#### Stage C — Vision Enrichment
+- [x] Define `PageRenderer` abstraction: `def renderToImages(path: Path): List[Array[Byte]]` — returns ordered PNG byte arrays.
+- [x] Implement `PdfPageRenderer` using PDFBox: `Loader.loadPDF` → `PDFRenderer.renderImageWithDPI(pageIndex, dpi=150)` → PNG bytes per page.
+- [x] Implement `PptxSlideRenderer` using POI XSLF: `XMLSlideShow` → `slide.draw(Graphics2D)` on a target-DPI `BufferedImage` → PNG bytes per slide.
+- [x] Implement `DocxPageRenderer` using LibreOffice headless: `soffice --headless --convert-to png --outdir <tmp>` → read PNG files in page order.
+- [x] Implement `VisionIngester`: base64-encode each image → call `LLMProvider.completeVision()`; collect per-page Markdown; assemble with `---` separators.
+- [x] Add vision support to `LLMProvider`: `completeVision(base64Image, prompt)` and `supportsVision` flag; implemented in `OpenAIProvider`.
+- [x] Return structured error if `LLMProvider` does not support vision.
+- [x] Support `enrich_images=false` arg: skip `VisionIngester`, return stub Markdown with `[page N: vision enrichment skipped]` placeholders.
+- [x] Implement `files.read_pdf`: path validation → `PdfPageRenderer` → `VisionIngester`; scratchpad routing; `PathSandbox` check.
+- [x] Implement `files.read_docx`: path validation → `DocxPageRenderer` → `VisionIngester`; LibreOffice availability check with structured error; scratchpad routing.
+- [x] Implement `files.read_pptx`: path validation → `PptxSlideRenderer` → `VisionIngester`; scratchpad routing.
+- [ ] Tests: mock LLMProvider returning fixed per-page Markdown; fixture PDF/DOCX/PPTX files; verify assembled Markdown structure; scratchpad routing; `enrich_images=false` path. *(Deferred to Stage C)*
 
-- [ ] Implement `VisionEnricher`: for each extracted image path, base64-encode and call `LLMProvider` with a semantic description prompt; return `Map[imagePath, description]`.
-- [ ] Inject descriptions back into the Docling-produced Markdown at the corresponding image reference locations.
-- [ ] Skip enrichment (leave placeholder intact + append a note) if the active `LLMProvider` does not support vision or if `enrich_images=false` arg is passed.
-- [ ] Tests: mock vision provider; verify description injection into Markdown; verify graceful skip.
-
-#### Stage D — Free-Form Document Generation
+#### Stage C — Free-Form Document Generation
 
 - [ ] Implement `files.write_markdown`: write Markdown content to a sandboxed path; confirm bytes written; permission-gated like `files.write`.
-- [ ] Implement `files.markdown_to_docx`: invoke `pandoc <input.md> -o <output.docx>`; return output path.
-- [ ] Implement `files.markdown_to_pdf`: invoke Pandoc for Markdown → PDF; add `via_docx=true` arg path that first converts to DOCX then uses LibreOffice headless (`soffice --headless --convert-to pdf`) for higher fidelity.
-- [ ] Tests: mock `ProcessBuilder` for Pandoc/LibreOffice; verify arg construction and output path handling.
+- [ ] Implement `files.markdown_to_docx`: invoke `soffice --headless --convert-to docx <input.md> --outdir <tmp>`; return output path.
+- [ ] Implement `files.markdown_to_pdf`: invoke `soffice --headless --convert-to pdf <input.md> --outdir <tmp>`; return output path.
+- [ ] Tests: mock `ProcessBuilder` for LibreOffice; verify arg construction, output path handling, and non-zero exit handling.
 
-#### Stage E — Template-Based DOCX Generation + In-Place Editing (docx4j)
+#### Stage D — Template-Based DOCX Generation + In-Place Editing (docx4j)
 
 - [ ] Add `docx4j` Maven dependency.
 - [ ] Implement `files.list_templates`: scan workspace `templates/` directory for `.docx` files; return names and placeholder keys extracted from each template.
 - [ ] Implement `TemplateEngine` (docx4j): load `.docx` template, accept `Map[placeholderKey, content]`, fill structured document tags or `{{key}}` text markers, write filled DOCX to output path.
 - [ ] Implement `files.fill_template`: validate template exists, accept key→value content map from agent, invoke `TemplateEngine`, return output path; permission-gated.
 - [ ] Support optional `convert_to_pdf=true` arg: pipe filled DOCX through LibreOffice headless.
-- [ ] Implement `DocxSectionLocator`: given a loaded docx4j `WordprocessingMLPackage`, locate a target paragraph block via (in priority order): (1) named SDT (`<w:tag w:val="..."/>`), (2) heading text match (`<w:pStyle val="HeadingN">` + text comparison), (3) proximity text search. Return the paragraph index range to replace.
+- [ ] Implement `DocxSectionLocator`: given a loaded docx4j `WordprocessingMLPackage`, locate a target paragraph block via (in priority order): (1) named SDT (`<w:tag w:val="..."/>`), (2) heading text match (`<w:pStyle val="HeadingN">` + text comparison), (3) proximity text search. Return structured error (listing attempted strategies) when no anchor is found rather than making a best-guess replacement.
 - [ ] Implement thin Markdown-to-runs converter: handle `**bold**` → `<w:b>`, `*italic*` → `<w:i>`, plain text → unstyled run; copy `<w:rPr>` from first existing run of the target paragraph as the style prototype for all inserted runs.
 - [ ] Implement `files.edit_docx path=... section="..." content="..."`: locate section via `DocxSectionLocator`, replace paragraph block using Markdown-to-runs converter, save to path; permission-gated.
 - [ ] Implement `files.patch_docx path=... patches=[{section, content}, ...]`: apply all section replacements in a single docx4j pass (more efficient than repeated single edits); return output path; permission-gated.
-- [ ] Tests: fixture `.docx` templates with known placeholders; verify fill accuracy; verify PDF conversion path; verify `edit_docx` preserves surrounding paragraphs and `<w:rPr>` styles; verify `patch_docx` applies all patches atomically.
+- [ ] Tests: fixture `.docx` templates with known placeholders (SDT, heading, proximity); verify fill accuracy; verify PDF conversion path; verify `edit_docx` preserves surrounding paragraphs and `<w:rPr>` styles; verify `patch_docx` applies all patches atomically; verify structured error when no anchor found.
 
-#### Stage F — PPTX In-Place Editing and Generation (Apache POI XSLF — deferred)
+#### Stage E — PPTX In-Place Editing and Generation (Apache POI XSLF — deferred)
 
-- [ ] Add Apache POI XSLF Maven dependency when this stage begins.
-- [ ] Implement `files.edit_pptx path=... slide=N shape="..." content="..."`: open existing `.pptx`, find shape by slide index + shape name/title, replace `XSLFTextRun` content preserving run formatting, save back; permission-gated. *(Same dual-layer principle as DOCX editing — Docling for reading/reasoning, POI for writing.)*
+- [ ] POI XSLF Maven dependency is already present from Stage B — no additional install needed.
+- [ ] Implement `files.edit_pptx path=... slide=N shape="..." content="..."`: open existing `.pptx`, find shape by slide index + shape name/title, replace `XSLFTextRun` content preserving run formatting, save back; permission-gated. *(Same dual-layer principle as DOCX editing — Vision LLM for reading/reasoning, POI for writing.)*
 - [ ] Implement `files.write_pptx`: accept slide structure from agent (title, bullet content per slide), generate `.pptx` from scratch via POI XSLF.
-- [ ] *(Blocked: begin after Stage E DOCX pipeline is proven stable.)*
+- [ ] *(Blocked: begin after Stage D DOCX pipeline is proven stable.)*
 
-#### Stage G — Integration Tests
+#### Stage F — Integration Tests
 
-- [ ] Add golden scenario: read PDF → enrich images → generate DOCX report via Pandoc.
+- [ ] Add golden scenario: read PDF → generate DOCX report via Pandoc.
 - [ ] Add golden scenario: read DOCX → extract content → fill branded template via docx4j → export PDF.
 - [ ] Add fixture files for PDF, DOCX, PPTX with known content for deterministic test assertions.
 - [ ] Keep Excel deferred until a safe tool surface is designed.
@@ -372,4 +375,4 @@ Goal: improve isolation, extensibility, collaboration, and advanced product capa
 - [ ] Implement `llm.summarize`, `llm.extract`, `llm.classify` tool bodies (Phase 2 Step 5 — currently stubs).
 - [ ] Add configurable `AGENTICA_HOST` bind address (Phase 1 cleanup).
 - [ ] Add UI smoke tests for streamed agent events.
-- [ ] Begin Phase 3: browser tools (`browser.open`), cloud LLM providers, document read tools.
+- [ ] Begin Phase 3: document read tools (Vision-First ingestion, Stage A→B), browser tools (`browser.open`), cloud LLM providers.

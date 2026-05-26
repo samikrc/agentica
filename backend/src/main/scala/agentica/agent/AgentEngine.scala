@@ -93,4 +93,13 @@ enum AgentEvent
      *  @param options  Human-readable TTL option labels presented to the user.
      */
     case PermissionRequired(tool: String, path: Option[String], options: List[String])
+
+    /**
+     *  Emitted by long-running tools to report incremental progress.
+     *  @param tool     Canonical tool name, e.g. `"files.read_pdf"`.
+     *  @param message  Human-readable progress description, e.g. `"Transcribing page 3 / 12"`.
+     *  @param current  Current step (1-based).
+     *  @param total    Total number of steps.
+     */
+    case ToolProgress(tool: String, message: String, current: Int, total: Int)
 }
