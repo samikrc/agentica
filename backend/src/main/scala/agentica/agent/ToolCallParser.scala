@@ -173,8 +173,8 @@ object ToolCallParser
         traceId:   String
     ): Option[(String, Int)] =
     {
-        val buf = StringBuilder()
-        var i   = startPos
+        val buf   = StringBuilder()
+        var i     = startPos
         var found = false
         var result: Option[(String, Int)] = None
 
@@ -183,6 +183,7 @@ object ToolCallParser
             val ch = text.charAt(i)
             if (ch == '\\' && i + 1 < text.length && text.charAt(i + 1) == quoteChar)
             {
+                // explicit escape sequence \" — consume as literal quote
                 buf.append(quoteChar)
                 i += 2
             }

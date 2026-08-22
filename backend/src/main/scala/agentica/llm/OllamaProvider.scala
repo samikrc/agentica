@@ -6,11 +6,11 @@ import ujson.*
 /**
  *  [[LLMProvider]] backed by a locally running Ollama instance.
  *  Communicates with the Ollama `/api/chat` endpoint using NDJSON streaming.
- *  @param baseUrl    Base URL of the Ollama server.
+ *  @param baseURL    Base URL of the Ollama server.
  *  @param modelName  Model identifier to send in requests.
  */
 class OllamaProvider(
-    baseUrl:         String = "http://localhost:11434",
+    baseURL:         String = "http://localhost:11434",
     val modelName:   String = "llama3.2"
 ) extends LLMProvider
 {
@@ -45,7 +45,7 @@ class OllamaProvider(
         )
 
         val response = requests.post(
-            url     = s"$baseUrl/api/chat",
+            url     = s"$baseURL/api/chat",
             data    = ujson.write(body),
             headers = Map("Content-Type" -> "application/json")
         )

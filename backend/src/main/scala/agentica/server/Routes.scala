@@ -26,6 +26,8 @@ import scala.jdk.CollectionConverters.*
  *  @param commandRegistry   Registry of all registered tools; used for dispatch and help.
  *  @param agentEngine       Agent execution engine used to process user messages.
  *  @param uiRoot            Root directory containing static UI files.
+ *  @param onSettingsSaved   Called with the newly persisted [[AppSettings]] after a successful POST /settings.
+ *                           Allows callers (e.g. [[agentica.BackendServer]]) to rebuild providers in place.
  */
 class Routes(
     sessionStore:    SessionStore,
@@ -37,7 +39,8 @@ class Routes(
     scopeStore:      ScopeStore,
     commandRegistry: CommandRegistry,
     agentEngine:     AgentEngine,
-    uiRoot:          java.nio.file.Path
+    uiRoot:          java.nio.file.Path,
+    onSettingsSaved: AppSettings => Unit = _ => ()
 ) extends MainRoutes
 {
 
@@ -157,14 +160,16 @@ class Routes(
     }
 
     /** 
-     *  Saves application settings and returns the normalized persisted value.
+     *  Saves application settings, notifies [[onSettingsSaved]], and returns the normalized value.
      */
     @cask.route("/settings", methods = Seq("post", "options"))
     def saveSettings(request: Request): Response[Response.Data] =
     {
         withAuth(request) {
-            val body = read[AppSettings](request.text())
-            Response(write(settingsStore.save(body)), headers = Seq("Content-Type" -> "application/json"))
+            val body    = read[AppSettings](request.text())
+            val saved   = settingsStore.save(body)
+            onSettingsSaved(saved)
+            Response(write(saved), headers = Seq("Content-Type" -> "application/json"))
         }
     }
 
@@ -344,12 +349,13 @@ class Routes(
                             try
                             {
                                 agentEngine.run(
-                                    session    = session,
-                                    history    = history,
-                                    userMsg    = userMsg,
-                                    traceId    = traceId,
-                                    cancelFlag = cancel,
-                                    emitToken  = tok => if !cancel.get() then queue.offer(sseEvent("token", tok)),
+                                    session         = session,
+                                    history         = history,
+                                    userMsg         = userMsg,
+                                    traceId         = traceId,
+                                    cancelFlag      = cancel,
+                                    permissionLatch = permLatch,
+                                    emitToken       = tok => if !cancel.get() then queue.offer(sseEvent("token", tok)),
                                     emitEvent  = ev =>
                                     {
                                         val eventStr = ev match

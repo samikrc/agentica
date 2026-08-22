@@ -57,7 +57,7 @@ class SettingsStoreTest extends AnyFunSuite
     }
 
     test("AppSettings with missing apiMode field falls back to ChatCompletions") {
-        val json   = """{"theme":"light","showStatusLine":false,"serverUrl":"http://localhost:1234","modelName":"test-model","maxIterations":20,"contextBudgetTokens":8000}"""
+        val json   = """{"theme":"light","showStatusLine":false,"serverURL":"http://localhost:1234","modelName":"test-model","maxIterations":20,"contextBudgetTokens":8000}"""
         val parsed = read[AppSettings](json)
         assert(parsed.apiMode == APIMode.ChatCompletions)
     }

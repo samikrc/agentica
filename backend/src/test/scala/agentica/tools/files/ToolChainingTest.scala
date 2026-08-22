@@ -42,8 +42,10 @@ class ToolChainingTest extends AnyFunSuite
             scratchpad      = scratchpad,
             memoryStore     = null,
             llmProvider     = null,
+            vlmProvider     = None,
             onEvent         = _ => (),
-            permissionLatch = SynchronousQueue[GrantDecision]()
+            permissionLatch = SynchronousQueue[GrantDecision](),
+            debugMode       = false
         )
 
     private def mkShell(): (VirtualShell, CommandRegistry) =

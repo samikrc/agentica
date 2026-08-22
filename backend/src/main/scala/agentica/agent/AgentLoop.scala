@@ -18,7 +18,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  Iterates up to `settings.maxIterations` times, dispatching all `run(command="...")` calls
  *  found in each LLM response through [[VirtualShell]], injecting results as `user`-role
  *  `[TOOL RESULT]` turns, until the model emits `<done>` or no further tool calls.
- *  @param llm                     LLM provider for streaming.
+ *  @param initialLLMProvider      Initial LLM provider for streaming; replaceable via [[updateProviders]].
+ *  @param initialVLMProvider      Initial optional Vision LLM provider; replaceable via [[updateProviders]].
  *  @param messageStore             Persistence layer for chat messages.
  *  @param runStore                 Persistence layer for tool runs.
  *  @param tokenAccounting          Records LLM token usage per call.
@@ -27,22 +28,40 @@ import java.util.concurrent.atomic.AtomicBoolean
  *  @param scopeStore               Permission grant store for sensitive tools.
  *  @param memoryStore              Session-scoped key-value memory store.
  *  @param sessionStore             Persistence layer for session records; used to persist response IDs.
- *  @param permissionLatchFactory   Produces the per-run [[SynchronousQueue]] for permission handoff.
  */
 class AgentLoop(
-    llm:                    LLMProvider,
-    messageStore:           MessageStore,
-    runStore:               RunStore,
-    agentTurnStore:         AgentTurnStore,
-    tokenAccounting:        TokenAccounting,
-    virtualShell:           VirtualShell,
-    settings:               AppSettings,
-    scopeStore:             ScopeStore,
-    memoryStore:            MemoryStore,
-    sessionStore:           SessionStore,
-    permissionLatchFactory: () => SynchronousQueue[GrantDecision]
+    initialLLMProvider: LLMProvider,
+    initialVLMProvider: Option[LLMProvider],
+    messageStore:       MessageStore,
+    runStore:           RunStore,
+    agentTurnStore:     AgentTurnStore,
+    tokenAccounting:    TokenAccounting,
+    virtualShell:       VirtualShell,
+    settings:           AppSettings,
+    scopeStore:         ScopeStore,
+    memoryStore:        MemoryStore,
+    sessionStore:       SessionStore
 ) extends AgentEngine
 {
+
+    @volatile private var llmProvider: LLMProvider         = initialLLMProvider
+    @volatile private var vlmProvider: Option[LLMProvider] = initialVLMProvider
+
+    /**
+     *  Replaces the LLM and VLM providers used for all future runs.
+     *  Thread-safe via `@volatile`; runs already in progress are unaffected.
+     *  @param llm  New primary LLM provider.
+     *  @param vlm  New optional VLM provider.
+     */
+    def updateProviders(llm: LLMProvider, vlm: Option[LLMProvider]): Unit =
+    {
+        llmProvider = llm
+        vlmProvider = vlm
+        val vlmName = vlm.map(_.modelName).getOrElse("(none; falling back to primary LLM)")
+        println(s"[AgentLoop] Providers updated — LLM: ${llm.modelName}, VLM: $vlmName")
+        TraceLogger.info("-", "providers_updated",
+            Map("model" -> llm.modelName, "vlm" -> vlmName))
+    }
 
     /**
      *  Runs the full plan→act→observe loop for one user turn.
@@ -52,22 +71,32 @@ class AgentLoop(
      *  @param history     Prior message history (assembled by caller).
      *  @param userMsg     New user message appended to the history.
      *  @param traceId     Trace ID for this run.
-     *  @param cancelFlag  Polled between iterations and tool calls for external cancellation.
-     *  @param emitToken   Called to emit each streamed text token from the LLM.
-     *  @param emitEvent   Called to emit structured lifecycle SSE events.
+     *  @param cancelFlag       Polled between iterations and tool calls for external cancellation.
+     *  @param permissionLatch  Rendez-vous queue shared with [[agentica.server.Routes]]; tools block on this.
+     *  @param emitToken        Called to emit each streamed text token from the LLM.
+     *  @param emitEvent        Called to emit structured lifecycle SSE events.
      */
     def run(
-        session:    Session,
-        history:    List[Message],
-        userMsg:    Message,
-        traceId:    String,
-        cancelFlag: AtomicBoolean,
-        emitToken:  String => Unit,
-        emitEvent:  AgentEvent => Unit
+        session:         Session,
+        history:         List[Message],
+        userMsg:         Message,
+        traceId:         String,
+        cancelFlag:      AtomicBoolean,
+        permissionLatch: SynchronousQueue[GrantDecision],
+        emitToken:       String => Unit,
+        emitEvent:       AgentEvent => Unit
     ): Unit =
     {
+        val vlmModel = vlmProvider.map(_.modelName).getOrElse("(none; falling back to primary LLM)")
+        println(s"[AgentLoop] Using LLM model: ${llmProvider.modelName}")
+        println(s"[AgentLoop] Using VLM model: $vlmModel")
         TraceLogger.info(traceId, "agent_loop_start",
-            Map("sessionId" -> session.id, "model" -> session.model))
+            Map(
+                "sessionId" -> session.id,
+                "sessionModel" -> session.model,
+                "llmModel" -> llmProvider.modelName,
+                "vlmModel" -> vlmModel
+            ))
 
         // Accumulates assistant + [TOOL RESULT] turn pairs added during the current run.
         // These are appended after the budget-windowed history on every buildContext() call
@@ -77,16 +106,18 @@ class AgentLoop(
         val turnSteps       = scala.collection.mutable.ListBuffer.empty[AgentTurnStep]
         // Shared context for all tool calls within this run
         val sharedScratchpad = SessionScratchpad()
-        val permLatch          = permissionLatchFactory()
         val sharedCtx = ExecutionContext(
             session         = session,
             traceId         = traceId,
             scopeStore      = scopeStore,
             scratchpad      = sharedScratchpad,
             memoryStore     = memoryStore,
-            llmProvider     = llm,
+            llmProvider     = llmProvider,
+            vlmProvider     = vlmProvider,
             onEvent         = emitEvent,
-            permissionLatch = permLatch
+            permissionLatch = permissionLatch,
+            debugMode       = settings.debugMode,
+            vlmParallelism  = settings.vlmParallelism
         )
         var iteration = 1
         // Tracks the last Responses API response ID across all iterations in this run.
@@ -140,10 +171,10 @@ class AgentLoop(
                 val wrappedEmitToken = (tok: String) => { buf.append(tok); emitToken(tok) }
 
                 val context = buildContext()
-                emitEvent(AgentEvent.LLMCallStart(iteration, llm.modelName, context.length))
+                emitEvent(AgentEvent.LLMCallStart(iteration, llmProvider.modelName, context.length))
                 TraceLogger.info(traceId, "llm_call_start", Map(
                     "iteration" -> iteration.toString,
-                    "model"     -> llm.modelName,
+                    "model"     -> llmProvider.modelName,
                     "msgCount"  -> context.length.toString,
                     "context"   -> context.map(m =>
                         s"[${m.role.value}] ${m.content}"
@@ -181,9 +212,9 @@ class AgentLoop(
                 {
                     val response = settings.apiMode match
                         case APIMode.Responses =>
-                            llm.streamResponses(llmInput, wrappedEmitToken, lastResponseId)
+                            llmProvider.streamResponses(llmInput, wrappedEmitToken, lastResponseId)
                         case APIMode.ChatCompletions =>
-                            llm.streamChatCompletions(context, wrappedEmitToken)
+                            llmProvider.streamChatCompletions(context, wrappedEmitToken)
                     Some(response)
                 }
                 catch

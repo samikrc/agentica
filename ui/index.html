@@ -53,27 +53,60 @@
   </div>
 
   <div id="settings-modal">
-    <div class="modal-box">
+    <div class="modal-box modal-box-wide">
       <h2>Settings</h2>
+      <div class="settings-tabs">
+        <button type="button" class="settings-tab active" data-tab="general">General</button>
+        <button type="button" class="settings-tab" data-tab="llm">LLM</button>
+        <button type="button" class="settings-tab" data-tab="vlm">VLM</button>
+      </div>
       <form id="settings-form">
-        <label for="settings-theme">Theme</label>
-        <select id="settings-theme">
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
-        <label for="settings-server-url" style="margin-top:12px">Server URL</label>
-        <input type="text" id="settings-server-url" placeholder="http://172.23.64.1:1234" />
-        <label for="settings-model-name" style="margin-top:12px">Model</label>
-        <input type="text" id="settings-model-name" placeholder="mistralai/ministral-3-14b-reasoning" />
-        <label for="settings-api-mode" style="margin-top:12px">API Mode</label>
-        <select id="settings-api-mode">
-          <option value="chatcompletions">Chat Completions API (default)</option>
-          <option value="responses">Responses API</option>
-        </select>
-        <label for="settings-show-status-line" style="margin-top:12px">
-          <input type="checkbox" id="settings-show-status-line" />
-          Show status line
-        </label>
+        <!-- General tab -->
+        <div class="settings-tab-pane active" data-tab="general">
+          <label for="settings-theme">Theme</label>
+          <select id="settings-theme">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+          <label for="settings-show-status-line" style="margin-top:12px">
+            <input type="checkbox" id="settings-show-status-line" />
+            Show status line
+          </label>
+          <label for="settings-debug-mode" style="margin-top:12px">
+            <input type="checkbox" id="settings-debug-mode" />
+            Debug mode <span class="label-hint">(saves VLM input images next to source document)</span>
+          </label>
+        </div>
+        <!-- LLM tab -->
+        <div class="settings-tab-pane" data-tab="llm">
+          <label for="settings-server-url">Server URL <span class="required">*</span></label>
+          <input type="text" id="settings-server-url" placeholder="http://172.23.64.1:1234" />
+          <label for="settings-api-key" style="margin-top:12px">API Key</label>
+          <input type="password" id="settings-api-key" placeholder="Leave empty for local servers" />
+          <label for="settings-model-name" style="margin-top:12px">Model <span class="required">*</span></label>
+          <input type="text" id="settings-model-name" placeholder="mistralai/ministral-3-14b-reasoning" />
+          <label for="settings-api-mode" style="margin-top:12px">API Mode</label>
+          <select id="settings-api-mode">
+            <option value="chatcompletions">Chat Completions API (default)</option>
+            <option value="responses">Responses API</option>
+          </select>
+        </div>
+        <!-- VLM tab -->
+        <div class="settings-tab-pane" data-tab="vlm">
+          <p class="settings-hint">Configure a separate Vision LLM for document ingestion. When empty, the primary LLM is used. Both Server URL and Model must be filled in (or both left empty).</p>
+          <label for="settings-vlm-server-url">Server URL <span class="required">*</span></label>
+          <input type="text" id="settings-vlm-server-url" placeholder="http://172.23.64.1:1234" />
+          <label for="settings-vlm-api-key" style="margin-top:12px">API Key</label>
+          <input type="password" id="settings-vlm-api-key" placeholder="Leave empty for local servers" />
+          <label for="settings-vlm-model" style="margin-top:12px">Model <span class="required">*</span></label>
+          <input type="text" id="settings-vlm-model" placeholder="mistralai/ministral-3-14b-reasoning" />
+          <label for="settings-vlm-parallel" style="margin-top:16px">
+            <input type="checkbox" id="settings-vlm-parallel" />
+            Parallel page transcription <span class="label-hint">(recommended for hosted APIs)</span>
+          </label>
+          <label for="settings-vlm-parallelism" style="margin-top:8px">Threads</label>
+          <input type="number" id="settings-vlm-parallelism" min="1" max="32" step="1" placeholder="4" style="width:80px" />
+        </div>
         <div class="modal-actions">
           <button type="button" id="settings-cancel">Cancel</button>
           <button type="submit">Save</button>

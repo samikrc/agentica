@@ -577,6 +577,43 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   gap: 14px;
 }
 .modal-box h2 { font-size: 15px; font-weight: 700; color: var(--text); }
+.modal-box-wide { width: 480px; }
+
+/* ── Settings Tabs ── */
+.settings-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.settings-tab {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  font-family: var(--font);
+  padding: 6px 16px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.settings-tab:hover { color: var(--text); }
+.settings-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.settings-tab-pane { display: none; }
+.settings-tab-pane.active {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 0 0 4px 0;
+  font-style: italic;
+}
 
 #new-session-form,
 #rename-session-form,
@@ -594,6 +631,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   letter-spacing: 0.04em;
 }
 .label-hint { text-transform: none; letter-spacing: 0; font-style: italic; }
+.required { color: var(--accent); font-weight: bold; }
 
 #new-session-form input,
 #rename-session-form input,

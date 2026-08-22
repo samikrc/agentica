@@ -1,5 +1,7 @@
 package agentica.shell
 
+import scala.collection.mutable
+
 /**
  *  Structured parse error returned when a command string cannot be tokenized.
  *  @param message  Human-readable description of the parse failure.
@@ -80,7 +82,7 @@ object Tokenizer
             return Right(Map.empty)
         }
 
-        val result = scala.collection.mutable.LinkedHashMap.empty[String, String]
+        val result = mutable.LinkedHashMap.empty[String, String]
         var pos    = 0
 
         while (pos < s.length)

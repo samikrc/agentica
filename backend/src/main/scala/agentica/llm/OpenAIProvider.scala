@@ -12,7 +12,7 @@ import java.time.Duration
  *  Responses (`/v1/responses`) endpoints.
  *  Compatible with LM Studio (default: http://localhost:1234),
  *  OpenAI, and any other OpenAI-compatible server.
- *  @param baseUrl    Base URL of the LLM server.
+ *  @param baseURL    Base URL of the LLM server.
  *  @param modelName  Model identifier to send in requests.
  *  @param apiKey     Bearer token for the Authorization header.
  */
@@ -39,7 +39,7 @@ object OpenAIProvider:
         }
 
 class OpenAIProvider(
-    baseUrl:         String = "http://localhost:1234",
+    baseURL:         String = "http://localhost:1234",
     val modelName:   String = "local-model",
     apiKey:          String = "lm-studio"
 ) extends LLMProvider
@@ -60,21 +60,20 @@ class OpenAIProvider(
     /**
      *  Sends a POST request to the given path and returns the raw response body.
      *  Also logs the request and response at DEBUG level.
-     *  @param path     URL path relative to `baseUrl`, e.g. `/v1/chat/completions`.
+     *  @param path     URL path relative to `baseURL`, e.g. `/v1/chat/completions`.
      *  @param body     JSON request body to send.
      *  @return         Raw response body string.
      */
     private def doRequest(path: String, body: ujson.Obj): String =
     {
         val req = HttpRequest.newBuilder()
-            .uri(URI.create(s"$baseUrl$path"))
+            .uri(URI.create(s"$baseURL$path"))
             .header("Content-Type", "application/json")
             .header("Authorization", s"Bearer $apiKey")
-            .header("Connection", "close")
             .POST(HttpRequest.BodyPublishers.ofString(ujson.write(body)))
             .build()
 
-        System.err.println(s"[DEBUG] OpenAIProvider -> POST $baseUrl$path model=$modelName")
+        System.err.println(s"[DEBUG] OpenAIProvider -> POST $baseURL$path model=$modelName")
         val resp    = buildClient().send(req, HttpResponse.BodyHandlers.ofString())
         val bodyStr = resp.body()
         System.err.println(s"[DEBUG] OpenAIProvider <- status=${resp.statusCode()} len=${bodyStr.length}")

@@ -70,7 +70,7 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
             ArgSpec("query",         "Term(s) to search; comma or pipe-separated for OR logic", required = true),
             ArgSpec("path",          "Root path to search (default: workspace root)",            required = false),
             ArgSpec("recursive",     "Descend into subdirectories (default: true)",              required = false),
-            ArgSpec("ignore_case",   "Case-insensitive match (default: false)",                  required = false),
+            ArgSpec("ignore_case",   "Case-insensitive match (default: true)",                   required = false),
             ArgSpec("lines_context", "Context lines before/after each match (default: 2)",      required = false),
             ArgSpec("max_matches",   "Maximum matches to return (default: 50)",                 required = false),
             ArgSpec("include",       "Glob pattern to filter filenames (default: none)",        required = false),
@@ -97,7 +97,7 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                     rawPath      = args.getOrElse("path", "."),
                     query        = query,
                     recursive    = args.getOrElse("recursive", "true").toLowerCase != "false",
-                    ignoreCase   = args.getOrElse("ignore_case", "false").toLowerCase == "true",
+                    ignoreCase   = args.getOrElse("ignore_case", "true").toLowerCase != "false",
                     linesContext = linesContext,
                     maxMatches   = maxMatches,
                     include      = args.get("include"),
@@ -119,7 +119,28 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
         {
             case Left(_) =>
                 FilesSearchOutput(Nil, 0, 0, false, Some(FilesError.PathEscaped))
-            case Right(startPath) =>
+            case Right(rawStartPath) =>
+                // If the path points directly to a document file (.pdf/.docx/.pptx) and a
+                // sibling .md exists (produced by the read_*_to_markdown tools), search the
+                // .md instead — the binary source file contains no searchable text.
+                val startPath =
+                {
+                    val name = rawStartPath.getFileName.toString.toLowerCase
+                    val isDoc = Files.isRegularFile(rawStartPath) &&
+                        (name.endsWith(".pdf") || name.endsWith(".docx") || name.endsWith(".pptx"))
+                    if (isDoc)
+                    {
+                        val baseName = rawStartPath.getFileName.toString
+                        val mdName   = baseName.lastIndexOf('.') match
+                        {
+                            case i if i > 0 => baseName.substring(0, i) + ".md"
+                            case _          => baseName + ".md"
+                        }
+                        val mdPath = rawStartPath.getParent.resolve(mdName)
+                        if (Files.exists(mdPath)) mdPath else rawStartPath
+                    }
+                    else rawStartPath
+                }
                 try
                 {
                     val flags   = if (input.ignoreCase) "(?i)" else ""
