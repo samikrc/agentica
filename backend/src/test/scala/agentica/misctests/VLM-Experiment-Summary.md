@@ -7,7 +7,9 @@ Determine the optimal `DPI` (PDF rasterization resolution) and `maxImageDimensio
 ## Background
 
 - **DPI** controls the resolution at which PDF pages are rasterized to PNG images by `PDFPageRenderer` (Apache PDFBox). Higher DPI produces sharper images but larger pixel dimensions, which increases vision-encoder token count and preprocessing time.
-- **`maxImageDimension`** caps the longest side of the rendered image via `PDFPageRenderer.resizeToMaxDimension`. Images are downscaled (preserving aspect ratio) so their longest side does not exceed this value. This is critical for dynamic-resolution VLMs (e.g. Qwen2.5-VL) where CPU-bound image preprocessing can take minutes on high-DPI renders.
+- **`maxImageDimension`** caps the longest side of the rendered image via `PDFPageRenderer.resizeToMaxDimension`. Images are downscaled (preserving aspect ratio) so their longest side does not exceed this value. This helps in two distinct ways:
+  1. **CPU-bound preprocessing**: For dynamic-resolution VLMs (e.g. Qwen2.5-VL), the image processor tiles/patchifies the image *before* it reaches the encoder — this step commonly runs on CPU regardless of whether the encoder itself runs on GPU. On high-DPI renders this preprocessing alone can take minutes, which is the dominant cost observed against LM Studio's local pipeline.
+  2. **Encoder/LLM compute (GPU or CPU)**: More patches means more vision tokens, which increases encoder forward-pass compute and LLM context length. This cost scales with hardware (GPU handles it far faster than CPU) but is never free — capping `maxImageDimension` reduces it on any setup.
 - **No-op resizing**: If `maxImageDimension` is greater than or equal to the actual rendered image's longest side at a given DPI, no resizing occurs. The sweep harness detects and skips these redundant combinations, reusing the previous result.
 
 ## Models Evaluated

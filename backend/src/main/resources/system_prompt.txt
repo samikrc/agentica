@@ -73,7 +73,7 @@ Large results return only the ref (content too large for context):
   ok
   - size: 120 KB · lines: 4821 · stored: $scratch/data/big_report.txt
   - hint: content too large for context; use targeted tools to query it
-  - try: run(command="files.search query=\"term1, term2  \" path=big_report.txt")
+  - try: run(command="files.search query=\"term1, term2\" path=big_report.txt")
   - try: run(command="files.read path=big_report.txt lines=1-50")
   - try: run(command="llm.summarize text=$scratch/data/big_report.txt")
 

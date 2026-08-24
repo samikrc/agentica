@@ -12,11 +12,15 @@ import javax.imageio.ImageIO
  *  Renders PPTX slides to PNG images using Apache POI XSLF.
  *
  *  Rendering parameters:
- *  - Target width: 1280 px (equivalent to ~150 DPI at standard slide dimensions)
+ *  - DPI: matches [[PDFPageRenderer.RenderDPI]] (150) for consistency across document
+ *    types. POI reports slide dimensions in points (1/72 inch); the render scale is
+ *    computed as `RenderDPI / 72` and applied uniformly, so a widescreen (13.333in)
+ *    slide renders at `13.333 * 150 ≈ 2000px` wide — actually 150 DPI, not the previous
+ *    fixed 1280px width (which worked out to ~96 DPI for widescreen slides).
  *  - Format: PNG (lossless)
  *
- *  The slide aspect ratio is preserved; height is calculated from the slide's
- *  native dimensions to maintain proportions.
+ *  The slide aspect ratio is preserved exactly since both width and height are
+ *  scaled by the same factor derived from the slide's native point dimensions.
  *
  *  Thread safety: POI's [[XMLSlideShow]] is not thread-safe; each call creates
  *  a fresh instance.
@@ -24,8 +28,8 @@ import javax.imageio.ImageIO
 object PPTXSlideRenderer extends PageRenderer
 {
 
-    /** Target width in pixels — 1280 provides good vision LLM readability. */
-    val TargetWidth: Int = 1280
+    /** Render DPI — matches [[PDFPageRenderer.RenderDPI]] so all document types share one quality baseline. */
+    val RenderDPI: Float = PDFPageRenderer.RenderDPI
 
     /**
      *  Renders each slide of the PPTX to a PNG image.
@@ -99,9 +103,9 @@ object PPTXSlideRenderer extends PageRenderer
         val pageSize      = slideshow.getPageSize
         val slideWidthPt  = pageSize.getWidth
         val slideHeightPt = pageSize.getHeight
-        val scale         = TargetWidth / slideWidthPt
-        val widthPx       = TargetWidth
-        val heightPx      = (slideHeightPt * scale).toInt
+        val scale         = RenderDPI / 72.0f
+        val widthPx       = (slideWidthPt * scale).round.toInt
+        val heightPx      = (slideHeightPt * scale).round.toInt
 
         val image    = BufferedImage(widthPx, heightPx, BufferedImage.TYPE_INT_RGB)
         val graphics = image.createGraphics()

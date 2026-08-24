@@ -26,6 +26,13 @@ object PDFPageRenderer extends PageRenderer
     val RenderDPI: Float = 150.0f
 
     /**
+     *  Default longest-side pixel cap applied to rendered page images before sending
+     *  to a VLM. Determined empirically (150 DPI / 1200px) to balance transcription
+     *  quality against preprocessing/encoder cost — see `misctests/VLM-Experiment-Summary.md`.
+     */
+    val MaxImageDimension: Int = 1200
+
+    /**
      *  Renders each page of the PDF to a PNG image.
      *
      *  @param path  Absolute path to the PDF file.

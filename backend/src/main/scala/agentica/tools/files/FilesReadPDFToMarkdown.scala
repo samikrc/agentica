@@ -207,7 +207,8 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
             {
                 PageVisionTranscriber.transcribe(
                     totalPages    = pageCount,
-                    renderBatch   = (from, to) => PDFPageRenderer.renderBatch(resolved, from, to),
+                    renderBatch   = (from, to) => PDFPageRenderer.renderBatch(resolved, from, to)
+                        .map(PDFPageRenderer.resizeToMaxDimension(_, PDFPageRenderer.MaxImageDimension)),
                     llmProvider   = visionProvider,
                     traceId       = ctx.traceId,
                     parallelism   = ctx.vlmParallelism,

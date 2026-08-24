@@ -1,7 +1,7 @@
 package agentica.tools.files
 
 import agentica.agent.AgentEvent
-import agentica.doc.{PPTXSlideRenderer, PageVisionTranscriber}
+import agentica.doc.{PDFPageRenderer, PPTXSlideRenderer, PageVisionTranscriber}
 import agentica.llm.LLMProvider
 import agentica.observability.TraceLogger
 import agentica.permissions.{GrantDecision, GrantTTL}
@@ -195,7 +195,8 @@ object FilesReadPPTXToMarkdown extends Tool[FilesReadPPTXToMarkdownInput, FilesR
             {
                 PageVisionTranscriber.transcribe(
                     totalPages    = slideCount,
-                    renderBatch   = (from, to) => PPTXSlideRenderer.renderBatch(resolved, from, to),
+                    renderBatch   = (from, to) => PPTXSlideRenderer.renderBatch(resolved, from, to)
+                        .map(PDFPageRenderer.resizeToMaxDimension(_, PDFPageRenderer.MaxImageDimension)),
                     llmProvider   = visionProvider,
                     traceId       = ctx.traceId,
                     parallelism   = ctx.vlmParallelism,

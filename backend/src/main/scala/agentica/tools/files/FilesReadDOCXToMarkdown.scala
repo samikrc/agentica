@@ -1,7 +1,7 @@
 package agentica.tools.files
 
 import agentica.agent.AgentEvent
-import agentica.doc.{DOCXPageRenderer, PageVisionTranscriber, DocToolDetector}
+import agentica.doc.{DOCXPageRenderer, PDFPageRenderer, PageVisionTranscriber, DocToolDetector}
 import agentica.llm.LLMProvider
 import agentica.observability.TraceLogger
 import agentica.permissions.{GrantDecision, GrantTTL}
@@ -199,6 +199,7 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
 
             TraceLogger.info(ctx.traceId, "files_read_docx_to_markdown_render", Map("path" -> sourcePath))
             val allImages = DOCXPageRenderer.renderToImages(resolved)
+                .map(PDFPageRenderer.resizeToMaxDimension(_, PDFPageRenderer.MaxImageDimension))
             val pageCount = allImages.size
 
             val debugDir  = if (ctx.debugMode) Some(resolved.getParent.resolve("debug")) else None
