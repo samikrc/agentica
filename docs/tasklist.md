@@ -217,22 +217,23 @@ Goal: expand capabilities beyond chat/files with document processing, browser au
 - [x] Download Liberation font files (open-source substitutes: Sans → Arial, Serif → Times New Roman, Mono → Courier New). Proprietary fonts (Calibri, Aptos, Segoe UI) are not bundled — warned at startup.
 - [x] Register bundled fonts with AWT at startup (PDFBox/POI XSLF font embedding uses raw bytes from `DocFontLoader.loadedFonts` at render time); log registered families; warn if font resources missing.
 
-#### Stage B — Vision-First Document Ingestion ✓
+#### Stage B — Vision-First Document Ingestion
 
-*Implements `files.read_pdf`, `files.read_docx`, `files.read_pptx` via a shared Vision pipeline. PDFBox and POI XSLF dependencies added.*
+*Implements `files.read_pdf_to_markdown`, `files.read_docx_to_markdown`, `files.read_pptx_to_markdown` via a shared Vision pipeline. PDFBox and POI XSLF dependencies added. Each tool persists the assembled Markdown as `<document>.md` (e.g., `report.pdf` → `report.md`) alongside the source file; subsequent calls reuse the cached file if the source has not been modified (last-modified timestamp comparison).*
 
 - [x] Define `PageRenderer` abstraction: `def renderToImages(path: Path): List[Array[Byte]]` — returns ordered PNG byte arrays.
-- [x] Implement `PdfPageRenderer` using PDFBox: `Loader.loadPDF` → `PDFRenderer.renderImageWithDPI(pageIndex, dpi=150)` → PNG bytes per page.
-- [x] Implement `PptxSlideRenderer` using POI XSLF: `XMLSlideShow` → `slide.draw(Graphics2D)` on a target-DPI `BufferedImage` → PNG bytes per slide.
-- [x] Implement `DocxPageRenderer` using LibreOffice headless: `soffice --headless --convert-to png --outdir <tmp>` → read PNG files in page order.
-- [x] Implement `VisionIngester`: base64-encode each image → call `LLMProvider.completeVision()`; collect per-page Markdown; assemble with `---` separators.
+- [x] Implement `PDFPageRenderer` using PDFBox: `Loader.loadPDF` → `PDFRenderer.renderImageWithDPI(pageIndex, dpi=150)` → PNG bytes per page.
+- [x] Implement `PPTXSlideRenderer` using POI XSLF: `XMLSlideShow` → `slide.draw(Graphics2D)` on a target-DPI `BufferedImage` → PNG bytes per slide.
+- [x] Implement `DOCXPageRenderer` using LibreOffice headless: `soffice --headless --convert-to png --outdir <tmp>` → read PNG files in page order.
+- [x] Implement `PageVisionTranscriber`: base64-encode each image → call VLM `completeVision()`; collect per-page Markdown; assemble with `---` separators.
 - [x] Add vision support to `LLMProvider`: `completeVision(base64Image, prompt)` and `supportsVision` flag; implemented in `OpenAIProvider`.
-- [x] Return structured error if `LLMProvider` does not support vision.
-- [x] Support `enrich_images=false` arg: skip `VisionIngester`, return stub Markdown with `[page N: vision enrichment skipped]` placeholders.
-- [x] Implement `files.read_pdf`: path validation → `PdfPageRenderer` → `VisionIngester`; scratchpad routing; `PathSandbox` check.
-- [x] Implement `files.read_docx`: path validation → `DocxPageRenderer` → `VisionIngester`; LibreOffice availability check with structured error; scratchpad routing.
-- [x] Implement `files.read_pptx`: path validation → `PptxSlideRenderer` → `VisionIngester`; scratchpad routing.
-- [ ] Tests: mock LLMProvider returning fixed per-page Markdown; fixture PDF/DOCX/PPTX files; verify assembled Markdown structure; scratchpad routing; `enrich_images=false` path. *(Deferred to Stage C)*
+- [x] Return structured error if neither VLM nor LLM supports vision.
+- [x] Support `enrich_images=false` arg: skip VLM, return stub Markdown with `[page N: vision enrichment skipped]` placeholders.
+- [ ] Rename `files.read_pdf` → `files.read_pdf_to_markdown`; write assembled Markdown to `<source>.md`; on subsequent calls compare source vs `.md` last-modified timestamps — regenerate only if source is newer; return path to `.md` file. Permission-gated (writes to source directory).
+- [ ] Rename `files.read_docx` → `files.read_docx_to_markdown`; same persist + staleness + permission logic; LibreOffice availability check with structured error.
+- [ ] Rename `files.read_pptx` → `files.read_pptx_to_markdown`; same persist + staleness + permission logic.
+- [ ] Use separately configured VLM provider (Settings → VLM tab) for vision calls; fall back to primary LLM if VLM not configured.
+- [ ] Tests: mock LLMProvider returning fixed per-page Markdown; fixture PDF/DOCX/PPTX files; verify assembled Markdown structure and `.md` caching; staleness re-generation; `enrich_images=false` path.
 
 #### Stage C — Free-Form Document Generation
 
@@ -276,6 +277,22 @@ Goal: expand capabilities beyond chat/files with document processing, browser au
 - [ ] Add Playwright browser detection/installation helper.
 - [ ] Add browser-tool tests with local HTTP server fixtures.
 
+### Settings Redesign — Tabbed UI + VLM Configuration
+
+*Current flat settings modal does not scale. Redesign as a tabbed interface with separate LLM and VLM configuration.*
+
+- [ ] Redesign settings modal as tabbed UI with three tabs: **General**, **LLM**, **VLM**.
+  - **General tab:** Theme, Show status line.
+  - **LLM tab:** Server URL, API Key, Model, API Mode (Chat Completions / Responses).
+  - **VLM tab:** Server URL, API Key, Model. When empty, falls back to primary LLM.
+- [ ] Add `vlmServerUrl`, `vlmApiKey`, `vlmModel` fields to `AppSettings`.
+- [ ] Add `apiKey` field to `AppSettings` for LLM API key (currently only via `LLM_API_KEY` env var).
+- [ ] Update `SettingsStore` to serialize/deserialize new fields.
+- [ ] Update `BackendServer`: construct a separate VLM `LLMProvider` from VLM settings when configured; pass to document tools via `ExecutionContext`.
+- [ ] Update settings UI HTML (`index.html`): replace flat form with tabbed layout.
+- [ ] Update `settings.js`: handle tab switching, new fields, save/load.
+- [ ] Default LLM and VLM server URLs to `http://172.23.64.1:1234`; default model to `mistralai/ministral-3-14b-reasoning`.
+
 ### LLM Providers and Secrets
 
 - [ ] Stabilize llama.cpp provider as a power-user option.
@@ -283,7 +300,6 @@ Goal: expand capabilities beyond chat/files with document processing, browser au
 - [ ] Add Anthropic provider configuration.
 - [ ] Implement OS-keychain-backed secret storage.
 - [ ] Ensure secrets are never stored in SQLite or plain files.
-- [ ] Add provider selection UI/configuration.
 
 ---
 
@@ -375,4 +391,6 @@ Goal: improve isolation, extensibility, collaboration, and advanced product capa
 - [ ] Implement `llm.summarize`, `llm.extract`, `llm.classify` tool bodies (Phase 2 Step 5 — currently stubs).
 - [ ] Add configurable `AGENTICA_HOST` bind address (Phase 1 cleanup).
 - [ ] Add UI smoke tests for streamed agent events.
-- [ ] Begin Phase 3: document read tools (Vision-First ingestion, Stage A→B), browser tools (`browser.open`), cloud LLM providers.
+- [ ] Rename document read tools to `read_*_to_markdown`; add Markdown caching with staleness check (Phase 3, Stage B).
+- [ ] Settings redesign: tabbed UI (General / LLM / VLM), separate VLM configuration, LLM API key field.
+- [ ] Begin Phase 3: document generation (Stage C), browser tools (`browser.open`), cloud LLM providers.

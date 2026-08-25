@@ -71,7 +71,7 @@
         </dependency>
 
         <!-- log4j-core: POI 5.x uses log4j-api directly in class static initializers; without
-             a provider on the classpath LogManager's static block fails, causing NoClassDefFoundError.
+             a provider on the classpath, LogManager's static block fails, causing NoClassDefFoundError.
              log4j-core is the reference implementation and initialises cleanly. Logging is suppressed
              below ERROR via log4j2.xml so PDFBox/POI debug output never reaches the console. -->
         <dependency>

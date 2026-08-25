@@ -101,6 +101,30 @@ object DOCXPageRenderer extends PageRenderer
             }
         }
     }
+
+    /**
+     *  Returns the number of pages in the DOCX by converting it and counting PNGs.
+     *  Note: LibreOffice always converts the whole document; there is no cheaper
+     *  way to count DOCX pages without rendering.
+     *
+     *  @param path  Absolute path to the DOCX file.
+     *  @return      Total page count.
+     *  @throws Exception if LibreOffice is unavailable or conversion fails.
+     */
+    def pageCount(path: Path): Int = renderToImages(path).size
+
+    /**
+     *  Renders a contiguous slice of pages from the DOCX.
+     *  LibreOffice converts the whole document; this method returns the requested slice.
+     *
+     *  @param path      Absolute path to the DOCX file.
+     *  @param fromPage  First page index (0-based, inclusive).
+     *  @param toPage    One past the last page index (exclusive).
+     *  @return          PNG byte arrays in page order.
+     *  @throws Exception if LibreOffice is unavailable or conversion fails.
+     */
+    def renderBatch(path: Path, fromPage: Int, toPage: Int): List[Array[Byte]] =
+        renderToImages(path).slice(fromPage, toPage)
 }
 
 /**

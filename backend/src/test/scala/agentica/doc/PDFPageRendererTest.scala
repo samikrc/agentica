@@ -61,11 +61,16 @@ class PDFPageRendererTest extends AnyFunSuite
     }
 
     test("PageVisionTranscriber: produces one Markdown section per page") {
-        val images   = PDFPageRenderer.renderToImages(pdfPath)
-        val markdown = PageVisionTranscriber.transcribe(images, StubVisionProvider(), traceId = "test")
+        val total    = PDFPageRenderer.pageCount(pdfPath)
+        val markdown = PageVisionTranscriber.transcribe(
+            totalPages  = total,
+            renderBatch = (from, to) => PDFPageRenderer.renderBatch(pdfPath, from, to),
+            llmProvider = StubVisionProvider(),
+            traceId     = "test"
+        )
         val sections = markdown.split("\n\n---\n\n")
-        assert(sections.length == images.size,
-            s"expected ${images.size} sections (one per page), got ${sections.length}")
+        assert(sections.length == total,
+            s"expected $total sections (one per page), got ${sections.length}")
     }
 
     test("PageVisionTranscriber: stubMarkdown returns one placeholder per page") {

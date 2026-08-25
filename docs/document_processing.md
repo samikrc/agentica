@@ -6,7 +6,7 @@ Agentica's document intelligence subsystem provides a unified pipeline for readi
 
 **Design principle:** Keep semantic content generation (AI) strictly separate from layout/format rendering (templates and renderers). The canonical interchange format between these two layers is Markdown.
 
-**Ingestion approach:** Vision-First — each document format is rendered to per-page or per-slide images by a format-specific JVM renderer, then a Vision LLM converts each image to Markdown. This eliminates the Python/Docling subprocess dependency and leverages the same Vision LLM already configured in the agent.
+**Ingestion approach:** Vision-First — each document format is rendered to per-page or per-slide images by a format-specific JVM renderer, then a Vision LLM converts each image to Markdown. The resulting Markdown is persisted as `<document>.md` alongside the source file (e.g., `report.pdf` → `report.md`) so that subsequent sessions can reuse it without re-running the Vision LLM. This eliminates the Python/Docling subprocess dependency and leverages a separately configurable Vision LLM (VLM) for fast, cost-effective page transcription.
 
 **Output approach:** All Markdown → DOCX and Markdown → PDF conversions use LibreOffice headless, which is already required for DOCX rendering. No additional system tools are needed for output generation.
 
@@ -92,11 +92,12 @@ ROUND-TRIP EDITING PATTERN
 **Pipeline:**
 1. `PDDocument.load(path)` — open PDF
 2. `PDFRenderer.renderImageWithDPI(pageIndex, dpi=150)` → `BufferedImage` per page
-3. Encode each image as PNG bytes (base64 for Vision LLM call)
-4. Vision LLM prompt: "Convert this document page to Markdown, preserving headings, lists, tables, and captions."
+3. Encode each image as PNG bytes (base64 for VLM call)
+4. VLM prompt: "Convert this document page to Markdown, preserving headings, lists, tables, and captions."
 5. Concatenate per-page Markdown with `---` separators
+6. Write assembled Markdown to `<document>.md` (e.g., `report.pdf` → `report.md`) in the same directory as the source PDF
 
-**Tools exposed:** `files.read_pdf`
+**Tools exposed:** `files.read_pdf_to_markdown`
 
 ### 3b. PPTX — Apache POI XSLF
 
@@ -105,12 +106,13 @@ ROUND-TRIP EDITING PATTERN
 **Pipeline:**
 1. `XMLSlideShow.open(path)` — load PPTX
 2. For each slide: create `BufferedImage` at target DPI, call `slide.draw(Graphics2D)` → PNG bytes
-3. Vision LLM prompt: "Convert this presentation slide to Markdown. Capture title, bullet points, and any visible text."
+3. VLM prompt: "Convert this presentation slide to Markdown. Capture title, bullet points, and any visible text."
 4. Concatenate per-slide Markdown with `---` separators
+5. Write assembled Markdown to `<document>.md` (e.g., `slides.pptx` → `slides.md`) in the same directory as the source PPTX
 
 **Note:** POI XSLF is the same library used for in-place PPTX editing (§5d) — no extra dependency for either path.
 
-**Tools exposed:** `files.read_pptx`
+**Tools exposed:** `files.read_pptx_to_markdown`
 
 ### 3c. DOCX — LibreOffice Headless
 
@@ -119,25 +121,30 @@ ROUND-TRIP EDITING PATTERN
 **Pipeline:**
 1. `soffice --headless --convert-to png --outdir <tmp_dir> <input.docx>` → per-page PNG files
 2. Read PNG files from temp directory in page order
-3. Vision LLM prompt: same page-to-Markdown prompt as PDF
+3. VLM prompt: same page-to-Markdown prompt as PDF
 4. Concatenate per-page Markdown with `---` separators
+5. Write assembled Markdown to `<document>.md` (e.g., `report.docx` → `report.md`) in the same directory as the source DOCX
 
 **Note:** LibreOffice is also used for DOCX→PDF output (§5a), making it dual-role: rendering input documents and converting output documents.
 
-**Tools exposed:** `files.read_docx`
+**Tools exposed:** `files.read_docx_to_markdown`
 
 ---
 
-## 4. Vision LLM Pipeline
+## 4. Vision LLM (VLM) Pipeline
 
-The Vision LLM step is the core of ingestion for all three formats — it is not optional post-processing. It is the primary mechanism for extracting semantic content from rendered images.
+The VLM step is the core of ingestion for all three formats — it is not optional post-processing. It is the primary mechanism for extracting semantic content from rendered images.
+
+**Separate VLM configuration:** The VLM used for page transcription is configured independently from the primary chat LLM (Settings → VLM tab). This allows using a fast, cost-effective hosted VLM (e.g. GPT-4o, Claude) for vision tasks while keeping a local LLM for chat. When no VLM is configured, the primary LLM provider is used as a fallback (it must support vision).
 
 **Requirements:**
-- The active `LLMProvider` must support multimodal (image + text) input.
-- If the provider does not support vision, the tool returns a structured error with a clear message (e.g. "Vision LLM required for document ingestion; configure a multimodal provider in Settings").
+- The configured VLM (or fallback LLM) must support multimodal (image + text) input.
+- If neither VLM nor LLM supports vision, the tool returns a structured error with a clear message (e.g. "Vision LLM required for document ingestion; configure a VLM in Settings → VLM tab").
 - There is no text-only fallback for ingestion.
 
-**Opt-out:** Pass `enrich_images=false` to skip the Vision LLM entirely and receive a Markdown document with `[page N: vision enrichment skipped]` placeholders. Useful for confirming file accessibility or counting pages before committing to a full ingestion pass.
+**Markdown caching:** Each `read_*_to_markdown` tool writes the assembled Markdown to `<document>.md` (e.g., `report.pdf` → `report.md`) in the same directory as the source file. On subsequent calls, the tool compares the source file's last-modified timestamp against the cached `.md` file. If the source is newer, the Markdown is regenerated; otherwise the cached file is reused. This avoids redundant VLM calls across sessions and makes the content available for `files.read`, `files.search`, and future BM25/vector search. Because the tool writes a file to the user's workspace, it is **permission-gated** like `files.write` — the write target is always in the same directory as the source file, so a "Allow for session" grant on the first conversion covers all subsequent ones.
+
+**Opt-out:** Pass `enrich_images=false` to skip the VLM entirely and receive a Markdown document with `[page N: vision enrichment skipped]` placeholders. Useful for confirming file accessibility or counting pages before committing to a full ingestion pass.
 
 **Prompt:** A single shared system prompt is used for all formats. It instructs the model to preserve headings, lists, tables, inline code, captions, and alt-text for embedded images. Slide-specific variants are minimal overrides on top of this shared base.
 
@@ -187,7 +194,7 @@ LibreOffice is already required for DOCX rendering (§3c), so no additional syst
 **Why Pandoc cannot be used here:** Pandoc DOCX → MD → DOCX destroys styles, custom fonts, tracked changes, embedded images, and table formatting. Any round-trip through Markdown is destructive. docx4j operates directly on OOXML and only touches what it needs to.
 
 **Dual-layer pattern:**
-1. `files.read_docx` → Vision LLM → Markdown stored in scratchpad *(agent reads and reasons — this path is read-only)*
+1. `files.read_docx_to_markdown` → VLM → Markdown persisted as `<document>.md` *(agent reads and reasons — this path is read-only)*
 2. Agent identifies which section(s) need changing and produces new content
 3. `files.edit_docx` → docx4j:
    - Locate target paragraph block using one of three strategies (in order of preference):
@@ -207,7 +214,7 @@ LibreOffice is already required for DOCX rendering (§3c), so no additional syst
 
 ### 5d. PPTX Editing and Generation (Apache POI XSLF)
 
-**Read:** Available from Stage B via the Vision-First pipeline (`files.read_pptx`). POI XSLF dependency is already present from ingestion — no additional install.
+**Read:** Available from Stage B via the Vision-First pipeline (`files.read_pptx_to_markdown`). POI XSLF dependency is already present from ingestion — no additional install.
 
 **In-place edit:** Open existing `.pptx` with POI XSLF; find shape by slide index + shape name/title; replace `XSLFTextRun` content; save back. Same dual-layer principle as DOCX editing — Vision LLM for reasoning, POI for writing.
 
@@ -226,7 +233,7 @@ Both are deferred until the DOCX pipeline (Stages C–D) is stable. Tool surface
 | LibreOffice | DOCX rendering (input) + Markdown/DOCX → DOCX/PDF (output) | Yes — system package |
 | docx4j | DOCX template filling + in-place OOXML editing (JVM library) | No — Maven dependency |
 | Apache Batik | SVG → PNG rasterization for docx4j/POI embedding (JVM library) | No — Maven dependency (add when needed) |
-| Vision LLM | Document image → Markdown (core ingestion) | Depends on provider config |
+| Vision LLM (VLM) | Document image → Markdown (core ingestion); separately configurable from chat LLM | Depends on provider config (Settings → VLM tab) |
 
 **Detection:** At startup and on first use, Agentica checks for the `soffice` binary. Detection results are cached and surfaced in a `deps.check` tool and in the Settings UI. Missing LibreOffice degrades gracefully per-feature (DOCX read and all output generation) rather than failing the whole application. JVM libraries (PDFBox, POI XSLF, docx4j, Batik) are always available as Maven dependencies — no detection needed.
 
@@ -248,7 +255,8 @@ Both are deferred until the DOCX pipeline (Stages C–D) is stable. Tool surface
 | Stable anchors | SDT tags > heading text > proximity | Preference order ensures most reliable anchor is tried first; fail explicitly when no anchor found rather than making unreliable replacements |
 | Read layer vs write layer | Strictly separated (Vision LLM reads, docx4j/POI writes) | Prevents round-trip through Markdown for existing documents; Markdown is always read-only for existing content |
 | DOCX → PDF | LibreOffice headless | Highest fidelity for complex DOCX layouts; no vendor lock-in |
-| Vision LLM | Via existing `LLMProvider` | Reuses configured provider; no separate vision client needed |
+| VLM configuration | Separate from chat LLM (Settings → VLM tab) | Allows fast hosted VLM for vision while keeping local LLM for chat; falls back to primary LLM when not configured |
+| Markdown caching | Persist `<document>.md` alongside source (e.g., `report.pdf` → `report.md`); reuse if source not modified | Avoids redundant VLM calls across sessions; enables `files.read`/`files.search`/BM25/vector search on document content |
 | Scratchpad routing | Existing `SessionScratchpad` | Large document content (>8000 chars) stored as `$scratch/` refs; consistent with other tools |
 | PPTX write/edit | Deferred (POI XSLF) | POI already present from ingestion; write complexity justified only after DOCX pipeline is proven |
 
@@ -259,7 +267,7 @@ Both are deferred until the DOCX pipeline (Stages C–D) is stable. Tool surface
 See [tasklist.md](tasklist.md) Phase 3 — Document Tools for the detailed task breakdown.
 
 **Stage A** — External dependency detection, graceful degradation, and font initialization  
-**Stage B** — Vision-First document ingestion (`files.read_pdf`, `files.read_docx`, `files.read_pptx`)  
+**Stage B** — Vision-First document ingestion (`files.read_pdf_to_markdown`, `files.read_docx_to_markdown`, `files.read_pptx_to_markdown`)  
 **Stage C** — Free-form generation (`files.write_markdown`, `files.markdown_to_docx`, `files.markdown_to_pdf`)  
 **Stage D** — Template-based generation + in-place editing via docx4j (`files.list_templates`, `files.fill_template`, `files.edit_docx`, `files.patch_docx`)  
 **Stage E** — PPTX in-place editing and generation via Apache POI XSLF (`files.edit_pptx`, `files.write_pptx` — deferred)  

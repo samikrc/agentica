@@ -136,17 +136,17 @@ class GoldenScenarioRunner(scenarioPath: Path, workspaceFiles: Map[String, Strin
 
         // Build AgentLoop with capturing dependencies
         val loop = new AgentLoop(
-            llm                    = llm,
-            messageStore           = messageStore,
-            runStore               = runStore,
-            agentTurnStore         = new AgentTurnStore(null) { override def insert(t: agentica.session.AgentTurn): Unit = () },
-            tokenAccounting        = accounting,
-            virtualShell           = virtualShell,
-            settings               = settings,
-            scopeStore             = null.asInstanceOf[ScopeStore],
-            memoryStore            = null.asInstanceOf[agentica.session.MemoryStore],
-            sessionStore           = null.asInstanceOf[agentica.session.SessionStore],
-            permissionLatchFactory = () => new SynchronousQueue()
+            initialLLMProvider = llm,
+            initialVLMProvider = None,
+            messageStore       = messageStore,
+            runStore           = runStore,
+            agentTurnStore     = new AgentTurnStore(null) { override def insert(t: agentica.session.AgentTurn): Unit = () },
+            tokenAccounting    = accounting,
+            virtualShell       = virtualShell,
+            settings           = settings,
+            scopeStore         = null.asInstanceOf[ScopeStore],
+            memoryStore        = null.asInstanceOf[agentica.session.MemoryStore],
+            sessionStore       = null.asInstanceOf[agentica.session.SessionStore]
         )
         {
             // Note: buildCtx override removed since AgentLoop now uses shared context
@@ -155,12 +155,13 @@ class GoldenScenarioRunner(scenarioPath: Path, workspaceFiles: Map[String, Strin
 
         // Run the loop and capture events
         loop.run(
-            session    = session,
-            history    = Nil,
-            userMsg    = userMsg,
-            traceId    = "golden-trace",
-            cancelFlag = new AtomicBoolean(false),
-            emitToken  = _ => (),
+            session         = session,
+            history         = Nil,
+            userMsg         = userMsg,
+            traceId         = "golden-trace",
+            cancelFlag      = new AtomicBoolean(false),
+            permissionLatch = new SynchronousQueue[GrantDecision](),
+            emitToken       = _ => (),
             emitEvent  = evt =>
             {
                 events.append(evt)

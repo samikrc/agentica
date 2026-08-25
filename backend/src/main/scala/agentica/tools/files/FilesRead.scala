@@ -111,7 +111,27 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
         {
             case Left(_) =>
                 FilesReadOutput("", 0, 0, false, input.path.toString, 0, Some(FilesError.PathEscaped))
-            case Right(resolved) =>
+            case Right(rawResolved) =>
+                // If the path points to a document file (.pdf/.docx/.pptx) and a sibling .md
+                // exists (produced by the read_*_to_markdown tools), read the .md instead.
+                val resolved =
+                {
+                    val name  = rawResolved.getFileName.toString.toLowerCase
+                    val isDoc = Files.exists(rawResolved) && Files.isRegularFile(rawResolved) &&
+                        (name.endsWith(".pdf") || name.endsWith(".docx") || name.endsWith(".pptx"))
+                    if (isDoc)
+                    {
+                        val baseName = rawResolved.getFileName.toString
+                        val mdName   = baseName.lastIndexOf('.') match
+                        {
+                            case i if i > 0 => baseName.substring(0, i) + ".md"
+                            case _          => baseName + ".md"
+                        }
+                        val mdPath = rawResolved.getParent.resolve(mdName)
+                        if (Files.exists(mdPath)) mdPath else rawResolved
+                    }
+                    else rawResolved
+                }
                 val sourcePath = rootPath.relativize(resolved).toString
                 readFromDisk(input, ctx, resolved, sourcePath)
         }

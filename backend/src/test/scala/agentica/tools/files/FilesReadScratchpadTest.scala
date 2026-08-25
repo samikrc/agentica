@@ -35,8 +35,10 @@ class FilesReadScratchpadTest extends AnyFunSuite
             scratchpad      = scratchpad,
             memoryStore     = null,
             llmProvider     = null,
+            vlmProvider     = None,
             onEvent         = _ => (),
-            permissionLatch = SynchronousQueue[GrantDecision]()
+            permissionLatch = SynchronousQueue[GrantDecision](),
+            debugMode       = false
         )
 
     private def deleteTmpDir(dir: java.nio.file.Path): Unit =

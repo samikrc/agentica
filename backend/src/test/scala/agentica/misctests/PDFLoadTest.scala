@@ -11,7 +11,7 @@ import org.apache.pdfbox.pdmodel.PDDocument
 object PDFLoadTest
 {
     val PdfPath: String =
-        "/home/samik/git/myprojects/agentica/examples/pdf-reading/IT Support Analyst - India.pdf"
+        getClass.getResource("/files/IT Support Analyst - India.pdf").toURI.getPath
 
     def main(args: Array[String]): Unit =
     {

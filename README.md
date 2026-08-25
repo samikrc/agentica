@@ -2,8 +2,7 @@
 
 ## Running Agentica
 
-The UI is served directly by the backend — no Tauri, no Electron, no build step.
-Just a JVM fat-jar + any browser.
+The UI is served directly by the backend — just a JVM fat-jar + any browser.
 
 ### Quick start (Linux / macOS)
 For dev:
@@ -11,6 +10,7 @@ For dev:
 AGENTICA_DEV_TOKEN=dev-token AGENTICA_PORT=8080 LLM_BASE_URL=http://172.23.64.1:1234 LLM_MODEL=mistralai/ministral-3-14b-reasoning mvn compile exec:exec
 ```
 
+The backend's own default port is `11211`; the examples below explicitly set `AGENTICA_PORT=8080` for convenience.
 
 ```bash
 cd backend && mvn package -DskipTests   # build the fat-jar (once)
@@ -32,35 +32,70 @@ REM Open: http://localhost:8080/?token=dev-token
 
 ### Configuration
 
-LLM server URL and model name are configured in the **Settings** modal (gear icon in the sidebar). Defaults:
+Most configuration lives in the **Settings** modal (gear/menu icon in the sidebar). Settings are persisted to `settings.json` in the OS app-data directory, next to the SQLite database.
 
-| Setting | Default |
-|---|---|
-| Server URL | `http://172.23.64.1:1234` |
-| Model | `mistralai/ministral-3-14b-reasoning` |
+#### Settings Modal Fields
 
-Settings are persisted as `settings.json` alongside the SQLite database.
+The modal is organized into tabs:
 
-Launch scripts accept additional environment variables:
+- **General**
+  - **Theme**: `light` or `dark`
+  - **Show status line**: toggles the status bar at the bottom of the chat pane
+  - **Debug mode**: saves VLM input images next to the source document for inspection
+- **LLM**
+  - **Server URL**: OpenAI-compatible LLM server base URL
+  - **API Key**: Bearer token for hosted endpoints; leave empty for local LM Studio
+  - **Model**: Model identifier sent to the LLM server
+  - **API Mode**: `chatcompletions` (default, stateless) or `responses` (stateful)
+- **VLM** (optional; when empty the primary LLM is used for vision calls)
+  - **Server URL**: Vision LLM server base URL
+  - **API Key**: Bearer token for the VLM server
+  - **Model**: Vision model identifier
+  - **Parallel page transcription**: enable concurrent VLM calls for document pages
+  - **Threads**: concurrency limit (1–32) for parallel transcription
+
+Saved settings take effect immediately for future agent runs without restarting the backend.
+
+#### Environment Variables
+
+Environment variables are read once at startup and used as fallbacks or overrides:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `LLM_BASE_URL` | `http://localhost:1234` | LM Studio / Ollama base URL (launch script only) |
-| `LLM_MODEL` | `mistralai/ministral-3-14b-reasoning` | Model name (launch script only) |
-| `AGENTICA_DEV_TOKEN` | `dev-token` | Bearer token for the API |
-| `AGENTICA_PORT` | `8080` | HTTP port the backend listens on |
+| `AGENTICA_PORT` | `11211` (backend) / `8080` (launch scripts) | HTTP port the backend listens on |
+| `AGENTICA_DEV_TOKEN` | `dev-token` | Bearer token for browser/dev mode |
 | `AGENTICA_UI_ROOT` | `../ui` (relative to jar) | Path to the `ui/` folder |
+| `LLM_PROVIDER` | `openai` | Primary LLM provider type: `openai` or `ollama` |
+| `LLM_BASE_URL` | `http://localhost:1234` | LM Studio / Ollama base URL (launch script / initial default only) |
+| `LLM_MODEL` | `mistralai/ministral-3-14b-reasoning` | Model name (launch script / initial default only) |
+| `LLM_API_KEY` | `lm-studio` | Fallback API key when the settings API key is empty |
+| `VLM_API_KEY` | `lm-studio` | Fallback API key when the settings VLM API key is empty |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL when `LLM_PROVIDER=ollama` |
+| `OLLAMA_MODEL` | `llama3.2` | Default Ollama model |
+| `AGENTICA_DESKTOP_URL` / `agentica.desktop.url` | `http://127.0.0.1:8080/?token=dev-token` | URL the JavaFX desktop shell loads |
+
+Environment-supplied `LLM_BASE_URL` / `LLM_MODEL` are only used to seed the initial settings file; once settings have been saved, the persisted values take precedence. Use the Settings modal to change them permanently.
 
 ## UI Features
 
-- **Session management**: Create, rename, and delete sessions from the sidebar
-- **Dynamic session titles**: Sessions are automatically titled based on the first agent response
-- **Message actions**: 
-  - **Copy**: Copy message text to clipboard (plain text for user messages, HTML for agent messages)
-  - **Restart**: Restart conversation from any user message (deletes all subsequent messages and data)
-- **Agent steps**: View detailed step-by-step execution history for each agent response
-- **Settings**: Configure LLM server URL and model (persisted to settings.json)
-- **Theme**: Toggle between light and dark themes
+- **Menu dropdown** (top-left): Settings, Debug Log
+- **Sidebar**: Session list with create, rename (double-click or title button), delete, and select
+- **Chat pane**
+  - **Dynamic session titles**: Sessions are automatically titled based on the first agent response
+  - **Collapsible agent steps**: Each assistant response shows the plan→act→observe iterations, thinking text, tool calls, and tool results
+  - **Live tool progress**: Long-running tools stream progress updates inside the active step
+  - **Stop button**: The Send button becomes Stop while the agent is running; clicking it cancels the active run
+  - **Token usage**: A chart icon on assistant messages reveals tokens in/out, total latency, and number of LLM turns for that run
+  - **Message actions**:
+    - **Copy**: Copy message text to clipboard
+    - **Restart**: Restart conversation from any user message (deletes all subsequent messages and data)
+- **New session modal**: Name the session and optionally set a working folder (with a folder picker on supported browsers)
+- **Rename session modal**: Edit the session title inline
+- **Permission modal**: When a sensitive tool needs access, choose Deny / Allow once / Allow for session / Allow always
+- **Settings modal**: Tabbed UI (General, LLM, VLM) with theme, status line, debug mode, API mode, and separate VLM configuration
+- **Theme**: Light and dark modes, applied immediately and persisted
+- **Debug log viewer**: Opens `/log-viewer.html` in a new tab/window with a live WebSocket tail of `agentica.log`
+- **Sidebar toggle**: Collapse/expand the session list on narrow screens
 
 ---
 
@@ -94,132 +129,39 @@ Hot-editing `ui/` JS/CSS files takes effect on the next browser refresh — no r
 The backend serves both the REST/SSE API **and** the static UI files:
 
 - `GET /` → redirects to `/index.html`
-- `GET /index.html`, `/css/*`, `/js/*`, `/fonts/*` → served from `AGENTICA_UI_ROOT`
-- `GET /settings`, `POST /settings` → user-configurable settings
-- `GET /log/stream` → WebSocket endpoint; streams `agentica.log` in real time (authenticated)
-- All chat/session API routes are under `/sessions`, `/runs`, `/health`
-- `POST /sessions/:id/title` → rename a session; also used by the UI after first-turn title generation
-- `GET /sessions/:id/agent-turns` → trajectory steps for each agent run
-- `POST /sessions/:id/restart` → restart conversation from a specific user message (deletes all subsequent messages and data)
+- `GET /index.html`, `/css/*`, `/js/*`, `/fonts/*`, `/icons/*` → served from `AGENTICA_UI_ROOT`
+- `GET /settings`, `POST /settings` → user-configurable settings; changes trigger provider rebuild in `BackendServer`
+- `GET /health` → smoke check returning `{"status":"ok"}`
 
-The bearer token is passed as a `?token=` URL query param, which `api.js` picks up automatically.
+#### Sessions
+- `GET /sessions` → list all sessions (most-recent first)
+- `POST /sessions` → create a new session `{title, model, rootPath?}`
+- `GET /sessions/:id` → fetch session metadata
+- `DELETE /sessions/:id` → delete session and all its messages
+- `POST /sessions/:id/title` → rename a session
+- `POST /sessions/:id/restart` → restart conversation from a specific user message
+- `GET /sessions/:id/messages` → fetch all messages
+- `POST /sessions/:id/messages` → append user message and start an agent run (returns 202 with `runId`, `traceId`, `userMessageId`)
+- `GET /sessions/:id/stream/:runId` → SSE stream of tokens and lifecycle events
+- `GET /sessions/:id/agent-turns` → persisted trajectory steps for each agent run
+- `GET /sessions/:id/token-usage` → token usage per LLM call for the session
+
+#### Runs & permissions
+- `DELETE /runs/:runId` → request cancellation of an in-progress run
+- `POST /permissions/:runId` → resolve a permission grant (denied / once / session / always)
+
+#### Log streaming
+- `GET /log/stream` → WebSocket endpoint; streams `agentica.log` in real time (authenticated via `?token=`)
+
+The bearer token is passed as an `Authorization: Bearer ...` header for most API calls; SSE/WebSocket endpoints fall back to a `?token=` URL query param, which `api.js` picks up automatically.
+
+Settings changes via `POST /settings` take effect immediately: `BackendServer` rebuilds the LLM/VLM providers and passes them to `AgentLoop.updateProviders`, so no server restart is required.
 
 ---
 
-### Data Storage
+## Data Storage
 
 SQLite database and `settings.json` are stored in the OS-appropriate app data directory (see `AppDirs.scala`).
-
----
-
-## Project Structure
-
-```text
-agentica/
-│
-├── docs/
-│   ├── FTRD.md                          # Functional & Technical Requirements Document
-│   └── tasklist.md                      # Phase-by-phase implementation task list
-│
-├── launch.bat                           # Windows launcher for browser mode
-├── launch.sh                            # Linux/macOS launcher for browser mode
-│
-├── ui/                                  # Browser UI served directly by the backend
-│   ├── index.html
-│   ├── log-viewer.html                  # Debug log viewer (WebSocket)
-│   ├── css/
-│   │   └── main.css
-│   ├── fonts/
-│   │   ├── NotoEmoji-Regular.ttf        # Emoji fallback font
-│   │   └── Symbola.ttf                  # Symbol/emoji fallback font
-│   ├── icons/
-│   │   ├── menu.svg                     # Settings menu icon
-│   │   ├── sidebar-toggle.svg           # Sidebar toggle icon
-│   │   ├── copy.svg                     # Copy message icon
-│   │   └── restart.svg                  # Restart conversation icon
-│   └── js/
-│       ├── main.js                      # App entry point, session init
-│       ├── chat.js                      # Chat rendering, SSE client, agent step UI, title metadata display, copy/restart
-│       ├── session.js                   # Session list, create/load/delete/rename
-│       ├── settings.js                  # Settings modal, theme, LLM config
-│       ├── api.js                       # HTTP wrapper with bearer-token injection
-│       ├── log-viewer.js                # WebSocket log viewer client
-│       └── marked.min.js               # Self-hosted Markdown renderer
-│
-├── backend/                             # Scala 3 local backend + static UI server (Maven)
-│   ├── pom.xml
-│   └── src/main/scala/agentica/
-│       ├── BackendServer.scala          # Entry point: configure app, start Cask server
-│       ├── DesktopLauncher.scala        # JavaFX WebView thin launcher
-│       ├── settings/
-│       │   └── SettingsStore.scala      # JSON-backed app settings persistence
-│       ├── server/
-│       │   ├── Routes.scala             # Static UI, chat, sessions, stream, runs
-│       │   └── Auth.scala               # Bearer-token middleware
-│       ├── session/
-│       │   ├── SessionStore.scala       # ScalaSQL: sessions CRUD
-│       │   ├── MessageStore.scala       # ScalaSQL: messages CRUD
-│       │   ├── RunStore.scala           # ScalaSQL: tool execution log
-│       │   ├── AgentTurnStore.scala     # Persistence: agent turn trajectory (agent_turns table)
-│       │   └── Models.scala             # Case classes: Session, Message, ToolRun, AgentTurn
-│       ├── agent/
-│       │   ├── AgentEngine.scala        # trait AgentEngine (pluggable)
-│       │   ├── AgentLoop.scala          # Multi-iteration plan→act→observe loop with turn persistence
-│       │   └── ContextManager.scala     # Sliding window, token budget, summarization
-│       ├── shell/
-│       │   ├── VirtualShell.scala       # run() entry point; dispatches via registry
-│       │   ├── Tokenizer.scala          # Hand-written tokenizer (key=value, quoted strings)
-│       │   ├── CommandAst.scala         # Single-command AST
-│       │   ├── CommandRegistry.scala    # Central registry: dispatch + help + schemas
-│       │   └── Presentation.scala       # Presentation layer: AgentResponse envelope
-│       ├── tools/
-│       │   ├── Tool.scala               # trait Tool[I, O] (validate / execute / render)
-│       │   ├── files/
-│       │   │   ├── FilesRead.scala
-│       │   │   ├── FilesWrite.scala
-│       │   │   ├── FilesSearch.scala
-│       │   │   ├── FilesList.scala
-│       │   │   └── FilesStat.scala
-│       │   ├── memory/
-│       │   │   ├── MemoryGet.scala
-│       │   │   ├── MemorySet.scala
-│       │   │   └── MemoryList.scala
-│       │   ├── llm/
-│       │   │   ├── LlmSummarize.scala
-│       │   │   ├── LlmExtract.scala
-│       │   │   └── LlmClassify.scala
-│       │   └── doc/                     # Phase 3
-│       │       ├── WordRead.scala
-│       │       ├── WordAppend.scala
-│       │       ├── PptRead.scala
-│       │       ├── PptAddSlide.scala
-│       │       └── PptToImages.scala    # Sealed soffice wrapper
-│       ├── llm/
-│       │   ├── LLMProvider.scala        # trait LLMProvider (stream / complete)
-│       │   ├── OpenAIProvider.scala     # OpenAI-compatible provider (LM Studio)
-│       │   ├── OllamaProvider.scala     # Ollama provider
-│       │   └── LlamaCppProvider.scala   # Power-user local provider (Phase 3)
-│       ├── permissions/
-│       │   └── ScopeStore.scala         # Scoped grants: (tool-set, path-prefix, TTL)
-│       ├── observability/
-│       │   ├── TraceLogger.scala        # Structured JSON-lines logger with traceId
-│       │   └── TokenAccounting.scala    # Per-call token/cost recording
-│       └── platform/
-│           └── AppDirs.scala            # OS-specific data dir resolution
-```
-
-### Key structural notes
-
-- **`ui/api.js`** — only file that knows the bearer token and HTTP base URL; all other JS calls through it.
-- **`backend/BackendServer.scala`** — owns runtime configuration, including HTTP port, bind host, LLM provider, data directory, and `AGENTICA_UI_ROOT`.
-- **`backend/server/Routes.scala`** — serves both static browser assets and authenticated REST/SSE APIs.
-- **`backend/shell/`** — virtual shell is a self-contained package: `Tokenizer` → `CommandAst` → `CommandRegistry` dispatch → `Presentation` envelope. Each stage is independently unit-testable.
-- **`backend/tools/`** — one file per tool, grouped by action family. `CommandRegistry` is the only place that enumerates the full tool list.
-- **`backend/agent/`** — `AgentEngine` trait keeps the loop swappable; `ContextManager` evolves independently of loop control flow. `AgentLoop` records full reasoning trajectories (`AgentTurnStore`) and emits SSE step events for live UI rendering.
-- **`backend/session/AgentTurnStore`** — each completed agent run persists its `thinking` and `tool_call` steps as a JSON column in `agent_turns`; the frontend fetches these on reload to reconstruct the collapsible step view.
-- **`ui/js/chat.js`** — chat rendering, SSE streaming, live agent step UI (`onIteration`/`onToolStart`/`onToolResult`), history reload with interleaved agent turns, Markdown rendering via `marked.js`.
-- **`GET /log/stream`** — WebSocket endpoint (not SSE); enables clean connection lifecycle events so the background polling thread shuts down when the viewer tab closes.
-- **Desktop mode** — `DesktopLauncher` is a JavaFX WebView thin launcher that loads the same backend-served UI. It requires the backend to be running separately (Phase 1.5A). Automatic backend startup is planned for Phase 1.5B.
 
 ---
 

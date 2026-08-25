@@ -45,8 +45,10 @@ class FilesToolSandboxTest extends AnyFunSuite
             scratchpad      = SessionScratchpad(),
             memoryStore     = null,
             llmProvider     = null,
+            vlmProvider     = None,
             onEvent         = _ => (),
-            permissionLatch = SynchronousQueue[GrantDecision]()
+            permissionLatch = SynchronousQueue[GrantDecision](),
+            debugMode       = false
         )
 
     // ── files.stat ────────────────────────────────────────────────────────────

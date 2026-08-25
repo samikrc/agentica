@@ -1,17 +1,17 @@
 package agentica
 
 import agentica.agent.{AgentLoop, ContextManager}
-import agentica.llm.{OllamaProvider, OpenAIProvider}
+import agentica.llm.{LLMProvider, OllamaProvider, OpenAIProvider}
 import agentica.observability.{TokenAccounting, TraceLogger}
 import agentica.permissions.ScopeStoreImpl
 import agentica.platform.AppDirs
 import agentica.server.Routes
 import agentica.session.{AgentTurnStore, MemoryStoreImpl, MessageStore, RunStore, SessionStore}
-import agentica.settings.SettingsStore
+import agentica.settings.{AppSettings, SettingsStore}
 import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
 import agentica.doc.{DocFontLoader, DocToolDetector}
 import agentica.tools.deps.DepsCheck
-import agentica.tools.files.{FilesList, FilesRead, FilesReadDOCX, FilesReadPDF, FilesReadPPTX, FilesSearch, FilesStat, FilesWrite}
+import agentica.tools.files.{FilesList, FilesRead, FilesReadDOCXToMarkdown, FilesReadPDFToMarkdown, FilesReadPPTXToMarkdown, FilesSearch, FilesStat, FilesWrite}
 import agentica.tools.memory.{MemoryGet, MemoryList, MemorySet}
 import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import java.net.ServerSocket
@@ -77,21 +77,59 @@ object BackendServer extends cask.Main
     DocFontLoader.init()
 
     // --- Settings + Dependencies ---
-    val settings      = settingsStore.load()
-    val llmProvider   = sys.env.getOrElse("LLM_PROVIDER", "openai")
-    val llm           = llmProvider match
+    val settings        = settingsStore.load()
+    val llmProviderType = sys.env.getOrElse("LLM_PROVIDER", "openai")
+
+    /**
+     *  Constructs the primary [[LLMProvider]] from the given settings.
+     *  When `LLM_PROVIDER=ollama`, uses [[OllamaProvider]] with env-supplied base URL and model.
+     *  Otherwise defaults to [[OpenAIProvider]] using the settings' server URL, model, and API key.
+     *  @param s  Application settings to read server URL, model name, and API key from.
+     *  @return   A freshly constructed [[LLMProvider]] instance.
+     */
+    def buildLLMProvider(settings: AppSettings): LLMProvider = llmProviderType match
     {
         case "ollama" =>
-            val baseUrl = sys.env.getOrElse("OLLAMA_BASE_URL", "http://localhost:11434")
+            val baseURL = sys.env.getOrElse("OLLAMA_BASE_URL", "http://localhost:11434")
             val model   = sys.env.getOrElse("OLLAMA_MODEL", "llama3.2")
-            OllamaProvider(baseUrl = baseUrl, modelName = model)
+            OllamaProvider(baseURL = baseURL, modelName = model)
         case _ =>
+            val apiKey = if settings.apiKey.nonEmpty then settings.apiKey
+                         else sys.env.getOrElse("LLM_API_KEY", "lm-studio")
             OpenAIProvider(
-                baseUrl   = settings.serverUrl,
+                baseURL = settings.serverURL,
                 modelName = settings.modelName,
-                apiKey    = sys.env.getOrElse("LLM_API_KEY", "lm-studio")
+                apiKey = apiKey
             )
     }
+
+    /**
+     *  Constructs an optional Vision [[LLMProvider]] from the given settings.
+     *  Returns `Some` only when both `vlmServerURL` and `vlmModel` are non-empty.
+     *  Falls back to the `VLM_API_KEY` environment variable when no API key is configured.
+     *  @param settings  Application settings to read VLM server URL, model name, and API key from.
+     *  @return          `Some` [[OpenAIProvider]] configured for vision calls, or `None` if VLM is not configured.
+     */
+    def buildVLMProvider(settings: AppSettings): Option[LLMProvider] =
+        val hasUrl   = settings.vlmServerURL.nonEmpty
+        val hasModel = settings.vlmModel.nonEmpty
+        if hasUrl && hasModel then
+            val vlmAPIKey = if settings.vlmAPIKey.nonEmpty then settings.vlmAPIKey
+                            else sys.env.getOrElse("VLM_API_KEY", "lm-studio")
+            Some(OpenAIProvider(
+                baseURL = settings.vlmServerURL,
+                modelName = settings.vlmModel,
+                apiKey = vlmAPIKey
+            ))
+        else
+            if hasUrl || hasModel then
+                TraceLogger.warn("-", "vlm_provider_partial_config",
+                    Map("hasUrl" -> hasUrl.toString, "hasModel" -> hasModel.toString,
+                        "vlmServerURL" -> settings.vlmServerURL, "vlmModel" -> settings.vlmModel))
+            None
+
+    val llmProvider = buildLLMProvider(settings)
+    val vlmProvider = buildVLMProvider(settings)
     val accounting    = TokenAccounting(runStore)
 
     val commandRegistry = CommandRegistry()
@@ -104,15 +142,26 @@ object BackendServer extends cask.Main
     commandRegistry.register(MemoryGet)
     commandRegistry.register(MemoryList)
     commandRegistry.register(DepsCheck)
-    commandRegistry.register(FilesReadPDF)
-    commandRegistry.register(FilesReadDOCX)
-    commandRegistry.register(FilesReadPPTX)
+    commandRegistry.register(FilesReadPDFToMarkdown)
+    commandRegistry.register(FilesReadDOCXToMarkdown)
+    commandRegistry.register(FilesReadPPTXToMarkdown)
 
     ContextManager.applyToolIndex(commandRegistry.helpIndex)
 
     val virtualShell = VirtualShell(commandRegistry)
-    val agentEngine  = AgentLoop(llm, messageStore, runStore, agentTurnStore, accounting, virtualShell, settings,
-        scopeStore, memoryStore, sessionStore, () => java.util.concurrent.SynchronousQueue[agentica.permissions.GrantDecision]())
+    val agentEngine  = AgentLoop(
+        llmProvider,
+        vlmProvider,
+        messageStore,
+        runStore,
+        agentTurnStore,
+        accounting,
+        virtualShell,
+        settings,
+        scopeStore,
+        memoryStore,
+        sessionStore
+    )
 
     // UI root: AGENTICA_UI_ROOT env var, or ../ui relative to the working directory
     val uiRoot: Path  = Paths.get(sys.env.getOrElse("AGENTICA_UI_ROOT", "../ui")).toAbsolutePath.normalize()
@@ -121,8 +170,9 @@ object BackendServer extends cask.Main
     TraceLogger.info("-", "backend_start", Map(
         "port"     -> port.toString,
         "db"       -> AppDirs.dbPath.toString,
-        "provider" -> llmProvider,
-        "model"    -> llm.modelName
+        "provider" -> llmProviderType,
+        "model"    -> llmProvider.modelName,
+        "vlm"      -> vlmProvider.map(_.modelName).getOrElse("(using primary LLM)")
     ))
 
     // --- Announce selected port for launch scripts and future launchers ---
@@ -130,6 +180,18 @@ object BackendServer extends cask.Main
     System.out.flush()
 
     // --- Start HTTP server ---
-    override val allRoutes = Seq(Routes(sessionStore, messageStore, runStore, agentTurnStore, settingsStore, memoryStore, scopeStore, commandRegistry, agentEngine, uiRoot))
+    override val allRoutes = Seq(Routes(
+        sessionStore    = sessionStore,
+        messageStore    = messageStore,
+        runStore        = runStore,
+        agentTurnStore  = agentTurnStore,
+        settingsStore   = settingsStore,
+        memoryStore     = memoryStore,
+        scopeStore      = scopeStore,
+        commandRegistry = commandRegistry,
+        agentEngine     = agentEngine,
+        uiRoot          = uiRoot,
+        onSettingsSaved = s => agentEngine.updateProviders(buildLLMProvider(s), buildVLMProvider(s))
+    ))
     TraceLogger.info("-", "http_server_start", Map("port" -> port.toString))
 }

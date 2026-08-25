@@ -21,20 +21,34 @@ object APIMode:
  *  User-configurable application settings persisted outside the SQLite database.
  *  @param theme                UI theme identifier, currently `"light"` or `"dark"`.
  *  @param showStatusLine       Whether to show the status line at the bottom of the chat pane.
- *  @param serverUrl            Base URL of the OpenAI-compatible LLM server.
+ *  @param serverURL            Base URL of the OpenAI-compatible LLM server.
+ *  @param apiKey               API key for the LLM server (empty string means no auth / local server).
  *  @param modelName            Model identifier sent to the LLM server.
  *  @param maxIterations        Maximum number of plan→act→observe loop iterations per agent run.
  *  @param contextBudgetTokens  Approximate token budget for the sliding context window.
  *  @param apiMode              LLM API to use: [[APIMode.ChatCompletions]] (default) or [[APIMode.Responses]].
+ *  @param vlmServerURL         Base URL of the Vision LLM server (empty = use primary LLM).
+ *  @param vlmAPIKey            API key for the VLM server (empty string means no auth / local server).
+ *  @param vlmModel             Model identifier for Vision LLM calls (empty = use primary model).
+ *  @param debugMode            When true, page images sent to the VLM are saved alongside the source document
+ *                              in a `<stem>_debug/` subdirectory for inspection.
+ *  @param vlmParallelism       Number of concurrent VLM calls when transcribing document pages (default 4).
+ *                              Values above 1 enable parallel page processing, useful with hosted APIs.
  */
 case class AppSettings(
     theme:                String  = "light",
     showStatusLine:       Boolean = false,
-    serverUrl:            String  = "http://172.23.64.1:1234",
+    serverURL:            String  = "http://172.23.64.1:1234",
+    apiKey:               String  = "",
     modelName:            String  = "mistralai/ministral-3-14b-reasoning",
     maxIterations:        Int     = 20,
     contextBudgetTokens:  Int     = 8000,
-    apiMode:              APIMode = APIMode.ChatCompletions
+    apiMode:              APIMode = APIMode.ChatCompletions,
+    vlmServerURL:         String  = "",
+    vlmAPIKey:            String  = "",
+    vlmModel:             String  = "",
+    debugMode:            Boolean = false,
+    vlmParallelism:       Int     = 4
 )
 
 object AppSettings:
@@ -97,11 +111,17 @@ class SettingsStore(path: Path)
             val json = ujson.Obj(
                 "theme"               -> ujson.Str(normalized.theme),
                 "showStatusLine"      -> ujson.Bool(normalized.showStatusLine),
-                "serverUrl"           -> ujson.Str(normalized.serverUrl),
+                "serverURL"           -> ujson.Str(normalized.serverURL),
+                "apiKey"              -> ujson.Str(normalized.apiKey),
                 "modelName"           -> ujson.Str(normalized.modelName),
                 "maxIterations"       -> ujson.Num(normalized.maxIterations),
                 "contextBudgetTokens" -> ujson.Num(normalized.contextBudgetTokens),
-                "apiMode"             -> ujson.Str(normalized.apiMode.toString.toLowerCase)
+                "apiMode"             -> ujson.Str(normalized.apiMode.toString.toLowerCase),
+                "vlmServerURL"        -> ujson.Str(normalized.vlmServerURL),
+                "vlmAPIKey"           -> ujson.Str(normalized.vlmAPIKey),
+                "vlmModel"            -> ujson.Str(normalized.vlmModel),
+                "debugMode"           -> ujson.Bool(normalized.debugMode),
+                "vlmParallelism"      -> ujson.Num(normalized.vlmParallelism)
             )
             Files.createDirectories(path.getParent)
             Files.writeString(
@@ -124,6 +144,7 @@ class SettingsStore(path: Path)
             case "dark" => "dark"
             case _      => "light"
         }
-        settings.copy(theme = theme)
+        val vlmParallelism = settings.vlmParallelism.max(1).min(32)
+        settings.copy(theme = theme, vlmParallelism = vlmParallelism)
     }
 }

@@ -1,6 +1,9 @@
 package agentica.agent
 
+import agentica.llm.LLMProvider
+import agentica.permissions.GrantDecision
 import agentica.session.{Session, Message}
+import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -17,19 +20,31 @@ trait AgentEngine
      *  @param history     Full message history for this session (for context assembly).
      *  @param userMsg     The new user message just appended.
      *  @param traceId     Trace ID for this turn (propagated to logger + token accounting).
-     *  @param cancelFlag  Polled between iterations and tool calls; set externally to cancel the run.
-     *  @param emitToken    Called to emit each streamed text token from the LLM.
-     *  @param emitEvent    Called to emit structured lifecycle SSE events.
+     *  @param cancelFlag       Polled between iterations and tool calls; set externally to cancel the run.
+     *  @param permissionLatch  Rendez-vous queue shared with the HTTP permission endpoint; tools block on this.
+     *  @param emitToken        Called to emit each streamed text token from the LLM.
+     *  @param emitEvent        Called to emit structured lifecycle SSE events.
      */
     def run(
-        session:    Session,
-        history:    List[Message],
-        userMsg:    Message,
-        traceId:    String,
-        cancelFlag: AtomicBoolean,
-        emitToken:  String => Unit,
-        emitEvent:  AgentEvent => Unit
+        session:          Session,
+        history:          List[Message],
+        userMsg:          Message,
+        traceId:          String,
+        cancelFlag:       AtomicBoolean,
+        permissionLatch:  SynchronousQueue[GrantDecision],
+        emitToken:        String => Unit,
+        emitEvent:        AgentEvent => Unit
     ): Unit
+
+    /**
+     *  Replaces the LLM and VLM provider instances used for future runs.
+     *  Called when the user saves updated settings (e.g. a new model name or server URL)
+     *  so the change takes effect without a server restart.
+     *  Runs in-progress are not affected — they retain the provider snapshot they started with.
+     *  @param llm  New primary LLM provider.
+     *  @param vlm  New optional VLM provider (`None` if VLM is not configured).
+     */
+    def updateProviders(llm: LLMProvider, vlm: Option[LLMProvider]): Unit
 }
 
 /**

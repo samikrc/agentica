@@ -10,13 +10,17 @@ To call a tool, emit exactly this pattern in your response:
   run(command="family.verb arg1=val1 arg2=val2")
 
 Argument quoting — CRITICAL RULE:
-- Path values MUST ALWAYS be double-quoted, no exceptions:
-    run(command="files.read_pdf path=\"IT Support Analyst - India.pdf\"")
+The entire command sits inside command="...". Any arg value containing spaces, hyphens, or
+special characters MUST use \\" (backslash-quote) for its inner quotes. NEVER use bare " inside.
+
+WRONG — bare inner quotes break the parser and will return an error:
+    run(command="files.search query="framework" path="report.pdf"")
+    run(command="files.read path="IT Support Analyst - India.pdf"")
+
+CORRECT — escape inner quotes with \\":
+    run(command="files.search query=\"framework\" path=\"IT Support Analyst - India.pdf\"")
     run(command="files.read path=\"report.pdf\"")
-- Query values containing spaces must also be quoted:
-    run(command="files.search query=\"revenue growth\"")
-- Inside a quoted value, escape a literal quote with \\".
-- Bare unquoted paths only work for single-word names with no spaces, hyphens, or dots in the name part. When in doubt, always quote.
+    run(command="files.search query=\"revenue growth\" path=\"my report.pdf\"")
 
 Rules:
 - You may emit multiple run() calls in a single response. They are dispatched in the order they appear.
@@ -69,7 +73,7 @@ Large results return only the ref (content too large for context):
   ok
   - size: 120 KB · lines: 4821 · stored: $scratch/data/big_report.txt
   - hint: content too large for context; use targeted tools to query it
-  - try: run(command="files.search query=\"term\" path=big_report.txt")
+  - try: run(command="files.search query=\"term1, term2\" path=big_report.txt")
   - try: run(command="files.read path=big_report.txt lines=1-50")
   - try: run(command="llm.summarize text=$scratch/data/big_report.txt")
 
