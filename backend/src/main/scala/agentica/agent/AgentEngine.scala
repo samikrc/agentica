@@ -1,9 +1,8 @@
 package agentica.agent
 
 import agentica.llm.LLMProvider
-import agentica.permissions.GrantDecision
+import agentica.permissions.PermissionCoordinator
 import agentica.session.{Session, Message}
-import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -21,7 +20,7 @@ trait AgentEngine
      *  @param userMsg     The new user message just appended.
      *  @param traceId     Trace ID for this turn (propagated to logger + token accounting).
      *  @param cancelFlag       Polled between iterations and tool calls; set externally to cancel the run.
-     *  @param permissionLatch  Rendez-vous queue shared with the HTTP permission endpoint; tools block on this.
+     *  @param permissionCoordinator  Coordinates one-shot UI permission requests for this run.
      *  @param emitToken        Called to emit each streamed text token from the LLM.
      *  @param emitEvent        Called to emit structured lifecycle SSE events.
      */
@@ -31,7 +30,7 @@ trait AgentEngine
         userMsg:          Message,
         traceId:          String,
         cancelFlag:       AtomicBoolean,
-        permissionLatch:  SynchronousQueue[GrantDecision],
+        permissionCoordinator: PermissionCoordinator,
         emitToken:        String => Unit,
         emitEvent:        AgentEvent => Unit
     ): Unit
@@ -103,11 +102,12 @@ enum AgentEvent
     /**
      *  Signals that a sensitive tool requires user permission before proceeding.
      *  The agent run is suspended until the UI modal posts a decision.
-     *  @param tool     Canonical tool name, e.g. `"files.write"`.
-     *  @param path     Absolute resolved path the tool intends to access, if applicable.
-     *  @param options  Human-readable TTL option labels presented to the user.
+     *  @param requestId Unique identifier for this permission prompt within the run.
+     *  @param tool      Canonical tool name, e.g. `"files.write"`.
+     *  @param path      Absolute resolved path the tool intends to access, if applicable.
+     *  @param options   Human-readable TTL option labels presented to the user.
      */
-    case PermissionRequired(tool: String, path: Option[String], options: List[String])
+    case PermissionRequired(requestId: String, tool: String, path: Option[String], options: List[String])
 
     /**
      *  Emitted by long-running tools to report incremental progress.

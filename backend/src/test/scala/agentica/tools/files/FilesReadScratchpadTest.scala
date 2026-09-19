@@ -7,7 +7,7 @@ import agentica.shell.{Presentation, SessionScratchpad}
 import agentica.tools.{ExecutionContext, ToolBody}
 import org.scalatest.funsuite.AnyFunSuite
 import java.nio.file.{Files, Paths}
-import java.util.concurrent.SynchronousQueue
+import agentica.permissions.PermissionCoordinator
 
 /**
  *  Test suite for FilesRead and FilesSearch scratchpad functionality.
@@ -37,7 +37,7 @@ class FilesReadScratchpadTest extends AnyFunSuite
             llmProvider     = null,
             vlmProvider     = None,
             onEvent         = _ => (),
-            permissionLatch = SynchronousQueue[GrantDecision](),
+            permissionCoordinator = new PermissionCoordinator("test-run"),
             debugMode       = false
         )
 

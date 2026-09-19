@@ -2,7 +2,6 @@ package agentica.tools.deps
 
 import agentica.doc.{DocFontLoader, DocToolDetector}
 import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, ToolBody, ToolResult, ToolStatus, Tool}
-import scala.jdk.CollectionConverters.*
 
 /**
  *  Validated input for [[DepsCheck]] — no arguments needed.
@@ -57,7 +56,7 @@ object DepsCheck extends Tool[DepsCheckInput, DepsCheckOutput]
     {
         val status = DocToolDetector.status
 
-        val loadedFonts  = DocFontLoader.loadedFonts.keys().asScala.toList.sorted
+        val loadedFonts  = DocFontLoader.loadedFonts.keys.toList.sorted
         val missingFonts = List("Calibri", "Aptos", "Segoe UI")
 
         DepsCheckOutput(

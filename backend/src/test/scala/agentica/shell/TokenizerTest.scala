@@ -85,8 +85,11 @@ class TokenizerTest extends AnyFunSuite
 
     test("parse error: missing dot in head") {
         val result = Tokenizer.parse("filesread path=foo.txt")
-        assert(result.isLeft)
-        assert(result.left.get.message.contains("expected family.verb"))
+        result match
+        {
+            case Left(err) => assert(err.message.contains("expected family.verb"))
+            case Right(_)  => fail("expected a parse error")
+        }
     }
 
     test("parse error: dot at start (empty family)") {
@@ -99,26 +102,38 @@ class TokenizerTest extends AnyFunSuite
 
     test("parse error: missing = in arg") {
         val result = Tokenizer.parse("files.read path")
-        assert(result.isLeft)
-        assert(result.left.get.message.contains("expected key=value"))
+        result match
+        {
+            case Left(err) => assert(err.message.contains("expected key=value"))
+            case Right(_)  => fail("expected a parse error")
+        }
     }
 
     test("parse error: empty value for arg") {
         val result = Tokenizer.parse("files.read path=")
-        assert(result.isLeft)
-        assert(result.left.get.message.contains("empty value"))
+        result match
+        {
+            case Left(err) => assert(err.message.contains("empty value"))
+            case Right(_)  => fail("expected a parse error")
+        }
     }
 
     test("parse error: unclosed quote") {
         val result = Tokenizer.parse("""files.search query="unclosed""")
-        assert(result.isLeft)
-        assert(result.left.get.message.contains("unclosed quoted string"))
+        result match
+        {
+            case Left(err) => assert(err.message.contains("unclosed quoted string"))
+            case Right(_)  => fail("expected a parse error")
+        }
     }
 
     test("parse error: character after closing quote") {
         val result = Tokenizer.parse("""files.search query="value"x""")
-        assert(result.isLeft)
-        assert(result.left.get.message.contains("unexpected character"))
+        result match
+        {
+            case Left(err) => assert(err.message.contains("unexpected character"))
+            case Right(_)  => fail("expected a parse error")
+        }
     }
 
     // ── fullName helper ───────────────────────────────────────────────────────

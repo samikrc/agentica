@@ -123,7 +123,8 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
                 .relativize(mdPath).toString
 
             // Check if cached Markdown is fresh
-            val cachedMdFresh = Files.exists(mdPath) && {
+            val cachedMdFresh = Files.exists(mdPath) &&
+            {
                 val mdAttrs = Files.readAttributes(mdPath, classOf[BasicFileAttributes])
                 val mdMtime = mdAttrs.lastModifiedTime().toMillis
                 mdMtime >= sourceMtime && mdAttrs.size() > 100
@@ -132,11 +133,14 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
             if (cachedMdFresh)
             {
                 // Cache hit - return existing Markdown file path
-                val pageCount = try {
+                val pageCount = try
+                {
                     // Try to get page count from cached content by counting separators
                     val content = Files.readString(mdPath)
                     content.split("\n---\n").length
-                } catch {
+                }
+                catch
+                {
                     case _: Throwable => 0
                 }
                 return FilesReadPDFToMarkdownOutput(mdRelPath, pageCount, sizeBytes, sourcePath, false)
@@ -170,27 +174,22 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
             {
                 // Emit permission required event and block awaiting decision
                 TraceLogger.info(ctx.traceId, "files_read_pdf_perm_waiting", Map("path" -> parentRelPath))
-                ctx.onEvent(AgentEvent.PermissionRequired(
+                val decision = ctx.permissionCoordinator.request(
                     tool    = name,
                     path    = Some(parentRelPath),
-                    options = List("Allow once", "Allow for session", "Allow always", "Deny")
-                ))
-                val decision = Option(ctx.permissionLatch.poll(60, java.util.concurrent.TimeUnit.SECONDS))
+                    options = List("Allow once", "Allow for session", "Allow always", "Deny"),
+                    onEvent = ctx.onEvent
+                )
                 TraceLogger.info(ctx.traceId, "files_read_pdf_perm_decision",
-                    Map("decision" -> decision.map(_.toString).getOrElse("timeout")))
+                    Map("decision" -> decision.toString))
                 decision match
                 {
-                    case None =>
-                        return FilesReadPDFToMarkdownOutput(
-                            "", 0, sizeBytes, sourcePath, false,
-                            Some(FilesError.IoError("Permission request timed out (60s)"))
-                        )
-                    case Some(GrantDecision.Denied) =>
+                    case GrantDecision.Denied =>
                         return FilesReadPDFToMarkdownOutput(
                             "", 0, sizeBytes, sourcePath, false,
                             Some(FilesError.IoError("Permission denied to write Markdown file to workspace"))
                         )
-                    case Some(granted: GrantDecision.Granted) =>
+                    case granted: GrantDecision.Granted =>
                         TraceLogger.info(ctx.traceId, "files_read_pdf_perm_granted",
                             Map("ttl" -> granted.ttl.toString, "prefix" -> granted.pathPrefix.getOrElse("(none)")))
                         ctx.scopeStore.addGrant(ctx.session.id, name, granted)

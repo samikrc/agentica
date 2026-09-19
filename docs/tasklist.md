@@ -75,7 +75,7 @@ Goal: replace the Phase 1 single-call loop with a safe plan→act→observe agen
 - [x] Implement `Tool[I,O]` trait: `validate / execute / render` pipeline; independently testable per stage.
 - [x] Implement `PathSandbox` utility: resolve `path=` args against `session.rootPath`, reject if result escapes sandbox; used by all file-touching tools.
 - [x] Implement `SessionScratchpad`: session-scoped in-memory content cache, path-keyed, staleness check (`lastModifiedTime` comparison), LRU eviction (max 20 entries); `store()`, `get()`, `isStale()`.
-- [x] Hold one `SessionScratchpad` per active session in `BackendServer` (`ConcurrentHashMap[sessionId, SessionScratchpad]`); remove on session delete.
+- [x] Hold one `SessionScratchpad` per active session in `BackendServer` (`TrieMap[sessionId, SessionScratchpad]`); remove on session delete.
 - [x] Add `scratchpad: SessionScratchpad` reference to `ExecutionContext`; also carries `rootPath`, `traceId`, `sessionId`, `scopeStore`.
 - [x] Implement `CommandRegistry`: `dispatch()`, `helpIndex()`, `helpFor()`, `allSchemas()`; register all tools here at startup.
 - [x] Add `help` command (handled directly in `CommandRegistry`, not a `Tool[I,O]`): `help` / `help <family>` / `help <family.verb>`; output in `AgentResponse` envelope.
@@ -113,14 +113,14 @@ Goal: replace the Phase 1 single-call loop with a safe plan→act→observe agen
 - [x] Implement `memory.set`, `memory.get`, `memory.list` using session-scoped `MemoryStore`.
 - [x] Add `MemoryEntry` to `session/Models.scala`; create DB migration.
 - [x] Implement `ScopeStore`: SQLite-backed `permission_grants` table; `Grant`, `GrantTTL`, `GrantDecision` types in `permissions/Models.scala`.
-- [x] Add `AgentEvent.PermissionRequired(tool, path, options)` to `AgentEvent` enum in `AgentEngine.scala`.
+- [x] Add `AgentEvent.PermissionRequired(requestId, tool, path, options)` to `AgentEvent` enum in `AgentEngine.scala`.
 - [x] Emit `PermissionRequired` SSE event from `VirtualShell` when `files.write` has no grant; handle in `Routes.scala` SSE serialiser.
-- [x] Add `permissionQueues: ConcurrentHashMap[runId, SynchronousQueue[GrantDecision]]` to `Routes.scala`.
-- [x] Add `POST /permissions` endpoint: look up `runId`, offer `GrantDecision` to the queue.
-- [x] Block the agent virtual thread on `SynchronousQueue.poll(60, SECONDS)`; treat timeout as `Denied`.
+- [x] Add a `PermissionCoordinator` backed by a `TrieMap[(runId, requestId), CompletableFuture[GrantDecision]]` shared with `Routes.scala`.
+- [x] Add `POST /permissions/:runId` endpoint: resolve the exact `(runId, requestId)` future with the `GrantDecision`.
+- [x] Block the agent virtual thread on each request's fresh `CompletableFuture.get(60, SECONDS)`; treat timeout as `Denied`.
 - [x] On `Granted`: store grant in `ScopeStore` with chosen `GrantTTL`; continue execution.
 - [x] On `Denied` or timeout: return `AgentResponse(error: permission_denied)`; log event.
-- [x] UI: handle `permission_required` SSE event; show modal with **Allow once / Allow for session / Allow always / Deny** options; POST decision to `/permissions`.
+- [x] UI: handle `permission_required` SSE event; show modal with **Allow once / Allow for session / Allow always / Deny** options; POST the decision and `requestId` to `/permissions/:runId`.
 - [x] Add path traversal and workspace-boundary tests.
 
 ### Step 4 — Context Management
@@ -229,11 +229,11 @@ Goal: expand capabilities beyond chat/files with document processing, browser au
 - [x] Add vision support to `LLMProvider`: `completeVision(base64Image, prompt)` and `supportsVision` flag; implemented in `OpenAIProvider`.
 - [x] Return structured error if neither VLM nor LLM supports vision.
 - [x] Support `enrich_images=false` arg: skip VLM, return stub Markdown with `[page N: vision enrichment skipped]` placeholders.
-- [ ] Rename `files.read_pdf` → `files.read_pdf_to_markdown`; write assembled Markdown to `<source>.md`; on subsequent calls compare source vs `.md` last-modified timestamps — regenerate only if source is newer; return path to `.md` file. Permission-gated (writes to source directory).
-- [ ] Rename `files.read_docx` → `files.read_docx_to_markdown`; same persist + staleness + permission logic; LibreOffice availability check with structured error.
-- [ ] Rename `files.read_pptx` → `files.read_pptx_to_markdown`; same persist + staleness + permission logic.
-- [ ] Use separately configured VLM provider (Settings → VLM tab) for vision calls; fall back to primary LLM if VLM not configured.
-- [ ] Tests: mock LLMProvider returning fixed per-page Markdown; fixture PDF/DOCX/PPTX files; verify assembled Markdown structure and `.md` caching; staleness re-generation; `enrich_images=false` path.
+- [x] Rename `files.read_pdf` → `files.read_pdf_to_markdown`; write assembled Markdown to `<source>.md`; on subsequent calls compare source vs `.md` last-modified timestamps — regenerate only if source is newer; return path to `.md` file. Permission-gated (writes to source directory).
+- [x] Rename `files.read_docx` → `files.read_docx_to_markdown`; same persist + staleness + permission logic; LibreOffice availability check with structured error.
+- [x] Rename `files.read_pptx` → `files.read_pptx_to_markdown`; same persist + staleness + permission logic.
+- [x] Use separately configured VLM provider (Settings → VLM tab) for vision calls; fall back to primary LLM if VLM not configured (`ExecutionContext.vlmProvider`, built in `BackendServer.buildVLMProvider`).
+- [x] Tests: `PDFPageRendererTest` (mock `completeVision`, PDFBox rendering, one section per page, `stubMarkdown`); `FilesReadToMarkdownTest` (`.md` generation, cache hit, staleness re-generation, small-cache rejection, `enrich_images=false`, permission denied/granted, VLM-over-LLM preference, vision-unsupported error, render) with PDF/DOCX/PPTX fixtures in `src/test/resources/files/`; `PDFEvalTest` + `EvalHarness` for opt-in LLM-backed Q&A evals.
 
 #### Stage C — Free-Form Document Generation
 
@@ -279,19 +279,19 @@ Goal: expand capabilities beyond chat/files with document processing, browser au
 
 ### Settings Redesign — Tabbed UI + VLM Configuration
 
-*Current flat settings modal does not scale. Redesign as a tabbed interface with separate LLM and VLM configuration.*
+*Implemented: tabbed interface with separate LLM and VLM configuration (`AppSettings.vlm*`, `apiKey`, `debugMode`, `vlmParallelism`).*
 
-- [ ] Redesign settings modal as tabbed UI with three tabs: **General**, **LLM**, **VLM**.
+- [x] Redesign settings modal as tabbed UI with three tabs: **General**, **LLM**, **VLM**.
   - **General tab:** Theme, Show status line.
   - **LLM tab:** Server URL, API Key, Model, API Mode (Chat Completions / Responses).
   - **VLM tab:** Server URL, API Key, Model. When empty, falls back to primary LLM.
-- [ ] Add `vlmServerUrl`, `vlmApiKey`, `vlmModel` fields to `AppSettings`.
-- [ ] Add `apiKey` field to `AppSettings` for LLM API key (currently only via `LLM_API_KEY` env var).
-- [ ] Update `SettingsStore` to serialize/deserialize new fields.
-- [ ] Update `BackendServer`: construct a separate VLM `LLMProvider` from VLM settings when configured; pass to document tools via `ExecutionContext`.
-- [ ] Update settings UI HTML (`index.html`): replace flat form with tabbed layout.
-- [ ] Update `settings.js`: handle tab switching, new fields, save/load.
-- [ ] Default LLM and VLM server URLs to `http://172.23.64.1:1234`; default model to `mistralai/ministral-3-14b-reasoning`.
+- [x] Add `vlmServerUrl`, `vlmApiKey`, `vlmModel` fields to `AppSettings`.
+- [x] Add `apiKey` field to `AppSettings` for LLM API key (currently only via `LLM_API_KEY` env var).
+- [x] Update `SettingsStore` to serialize/deserialize new fields.
+- [x] Update `BackendServer`: construct a separate VLM `LLMProvider` from VLM settings when configured; pass to document tools via `ExecutionContext`.
+- [x] Update settings UI HTML (`index.html`): replace flat form with tabbed layout.
+- [x] Update `settings.js`: handle tab switching, new fields, save/load.
+- [x] Default LLM server URL to `http://172.23.64.1:1234` and model to `mistralai/ministral-3-14b-reasoning`; VLM URL/model default to empty (falls back to primary LLM).
 
 ### LLM Providers and Secrets
 
@@ -391,6 +391,4 @@ Goal: improve isolation, extensibility, collaboration, and advanced product capa
 - [ ] Implement `llm.summarize`, `llm.extract`, `llm.classify` tool bodies (Phase 2 Step 5 — currently stubs).
 - [ ] Add configurable `AGENTICA_HOST` bind address (Phase 1 cleanup).
 - [ ] Add UI smoke tests for streamed agent events.
-- [ ] Rename document read tools to `read_*_to_markdown`; add Markdown caching with staleness check (Phase 3, Stage B).
-- [ ] Settings redesign: tabbed UI (General / LLM / VLM), separate VLM configuration, LLM API key field.
 - [ ] Begin Phase 3: document generation (Stage C), browser tools (`browser.open`), cloud LLM providers.

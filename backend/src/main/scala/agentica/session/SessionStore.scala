@@ -15,7 +15,8 @@ class SessionStore(conn: () => Connection)
     def init(): Unit =
     {
         val c  = conn()
-        try {
+        try
+        {
         val st = c.createStatement()
         st.execute("""
             CREATE TABLE IF NOT EXISTS sessions (

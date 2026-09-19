@@ -1,0 +1,35 @@
+{
+  "file": "/files/ind_nifty50.pdf",
+  "qset": [
+    {
+      "question": "What is the weight of the Financial Services sector in the Nifty 50 index?",
+      "answer": "36.18%",
+      "category": "direct"
+    },
+    {
+      "question": "Which company has the highest weight in the Nifty 50 index, and what is its weight?",
+      "answer": "HDFC Bank Ltd. with a weight of 10.27%",
+      "category": "direct"
+    },
+    {
+      "question": "What was the Nifty 50 Total Return over the last 1 year?",
+      "answer": "-0.43%",
+      "category": "direct"
+    },
+    {
+      "question": "If a company is one of the largest listed firms in India but is not eligible for Futures & Options (F&O) trading, can it become a constituent of the Nifty 50 index?",
+      "answer": "No. Only companies that are allowed to trade in the F&O segment are eligible to be constituents of the Nifty 50 index.",
+      "category": "derived"
+    },
+    {
+      "question": "Which sector has the greatest influence on movements of the Nifty 50 index, and why?",
+      "answer": "Financial Services has the highest sector weight (36.18%) and the index is calculated using a free-float market capitalization methodology, making heavily weighted sectors more influential on index performance.",
+      "category": "derived"
+    },
+    {
+      "question": "If market conditions change sharply in August 2026, would the constituent companies of the Nifty 50 necessarily change immediately?",
+      "answer": "No. While the index is calculated in real time, constituent changes occur through the semi-annual rebalancing process based on January 31 and July 31 cut-off dates.",
+      "category": "derived"
+    }
+  ]
+}

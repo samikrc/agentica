@@ -14,7 +14,7 @@ What exists and works today:
 - `AgentLoop`: Phase 1 stub — single `llm.stream()` call, no tool dispatch, no iteration.
 - `ContextManager.assemble()`: prepends a hardcoded system prompt, returns all history as-is.
 - `Routes.scala`: orchestrates the virtual thread, SSE queue, run/cancel lifecycle, and `AgentEvent` → SSE serialization. Core wiring is complete; Phase 2 adds `cancelFlag` threading, `permissionQueues`, and `POST /permissions` (see §6.2).
-- `AgentEvent` enum: `IterationBoundary`, `ToolCallStart`, `ToolCallResult`, `Final`, `Cancelled`, `AgentError` — all already defined. Phase 2 adds `PermissionRequired(tool, path, options)` (see §6.2).
+- `AgentEvent` enum: `IterationBoundary`, `ToolCallStart`, `ToolCallResult`, `Final`, `Cancelled`, `AgentError` — all already defined. Phase 2 adds `PermissionRequired(requestId, tool, path, options)` (see §6.2).
 - All `shell/` and `tools/` files exist as stub packages with TODO comments.
 - `ScopeStore`, `VirtualShell`, `CommandRegistry`, `Tokenizer`, `CommandAst`, `Presentation`, `Tool` — all stubs.
 
@@ -325,7 +325,7 @@ class SessionScratchpad:
   private def evictOldestIfFull(): Unit
 ```
 
-**Lifecycle**: one `SessionScratchpad` per active session, held in a `ConcurrentHashMap[sessionId, SessionScratchpad]` in `BackendServer`. Removed when the session is deleted. Lost on backend restart — the agent re-reads files on the next turn (graceful degradation).
+**Lifecycle**: one `SessionScratchpad` per active session, held in a `TrieMap[sessionId, SessionScratchpad]` in `BackendServer`. Removed when the session is deleted. Lost on backend restart — the agent re-reads files on the next turn (graceful degradation).
 
 **Staleness**: when `files.read` is called for a path already in the scratchpad, `isStale()` compares the file's current `lastModifiedTime` against the stored value. If stale, the entry is replaced. If fresh, the existing ref is returned without re-reading.
 
@@ -566,8 +566,8 @@ VirtualShell.execute(cmd, ctx):
   if tool.isSensitive:
     grant = ScopeStore.check(cmd, ctx)
     if grant.isEmpty:
-      emit AgentEvent.PermissionRequired(tool, path, grantOptions)
-      result = ctx.permissionLatch.await(timeout = 60s)
+      result = ctx.permissionCoordinator.request(tool, path, grantOptions, emitEvent)
+      // emits AgentEvent.PermissionRequired(requestId, tool, path, grantOptions) and waits up to 60s
       if result == Denied or timeout:
         return AgentResponse(error: permission_denied)
       else:
@@ -577,21 +577,21 @@ VirtualShell.execute(cmd, ctx):
 
 Flow:
 1. Agent loop hits a sensitive tool with no existing grant.
-2. Emits `AgentEvent.PermissionRequired(tool, path, List[GrantTTL])` over SSE.
-3. Blocks on a per-run `SynchronousQueue[GrantDecision]` with a **60-second timeout**.
-4. Frontend receives the SSE event, shows a modal dialog with options: **Allow once / Allow for session / Allow always / Deny**.
-5. User responds → frontend calls `POST /permissions { runId, tool, path, decision }`.
-6. Backend handler writes the decision into the `SynchronousQueue` for the blocked run.
+2. `PermissionCoordinator` registers a fresh future and emits `AgentEvent.PermissionRequired(requestId, tool, path, List[GrantTTL])` over SSE.
+3. The agent virtual thread blocks on that request's `CompletableFuture[GrantDecision]` with a **60-second timeout**.
+4. Frontend receives the SSE event, stores `requestId`, and shows a modal dialog with options: **Allow once / Allow for session / Allow always / Deny**.
+5. User responds → frontend calls `POST /permissions/:runId { requestId, decision, ttl, pathPrefix }`.
+6. Backend resolves the exact `(runId, requestId)` future; duplicate completion returns 409 and unknown requests return 404.
 7. If timeout expires with no response → `permission_denied` returned gracefully; loop continues.
 
 `AgentEvent` gains a new case:
 ```scala
-case PermissionRequired(tool: String, path: Option[String], options: List[String])
+case PermissionRequired(requestId: String, tool: String, path: Option[String], options: List[String])
 ```
 
 `Routes.scala` gains:
-- `permissionQueues: ConcurrentHashMap[runId, SynchronousQueue[GrantDecision]]`
-- `POST /permissions` endpoint: looks up `runId`, offers decision to queue.
+- `PermissionCoordinator` registry: `TrieMap[(runId, requestId), CompletableFuture[GrantDecision]]`
+- `POST /permissions/:runId` endpoint: resolves the exact request future without removing it before coordinator cleanup.
 
 Phase 2 scope: `files.write` only. `memory.set` is not gated in Phase 2 (low risk, session-scoped).
 
@@ -990,7 +990,7 @@ enum AgentEvent:
   case IterationBoundary(iteration: Int)
   case ToolCallStart(tool: String, input: String)
   case ToolCallResult(tool: String, output: String, durationMs: Long)
-  case PermissionRequired(tool: String, path: Option[String], options: List[String])  // new
+  case PermissionRequired(requestId: String, tool: String, path: Option[String], options: List[String])  // new
   case Final(assistantMessageId: String, sessionTitle: Option[String])
   case Cancelled
   case AgentError(message: String)
@@ -1006,7 +1006,7 @@ enum AgentEvent:
 | ~~**Q-7**~~ | ~~`files.search`: grep-based or index-based?~~ | **Decided**: grep-based (`java.nio.file`, no subprocess); Unix-aligned args for both `files.search` (grep-style) and `files.list` (ls-style); index-based search deferred to Phase 5 |
 | ~~**Q-8**~~ | ~~`memory.*`: session-scoped only or global cross-session in Phase 2?~~ | **Decided**: session-scoped only; `MemoryStore` trait with `Option[sessionId]` ready for Phase 6 global upgrade |
 | ~~**Q-9**~~ | ~~`llm.*` tools: same provider or configurable separate model?~~ | **Decided**: same `LLMProvider`; fresh isolated message list per tool call, no session context shared; `callType="tool_llm"` in token accounting |
-| ~~**Q-10**~~ | ~~Permission prompts: SSE-based run suspension or natural language relay + re-submit?~~ | **Decided**: Option A — `PermissionRequired` SSE event; run suspends on `SynchronousQueue`; UI modal with Allow once/session/always/Deny; `POST /permissions`; 60s timeout → graceful `permission_denied` |
+| ~~**Q-10**~~ | ~~Permission prompts: SSE-based run suspension or natural language relay + re-submit?~~ | **Decided**: Option A — `PermissionRequired` SSE event; run suspends through `PermissionCoordinator` on a per-request `CompletableFuture`; UI modal with Allow once/session/always/Deny; `POST /permissions/:runId` with `requestId`; 60s timeout → graceful `permission_denied` |
 | ~~**Q-11**~~ | ~~Context budget: fixed constant, global setting, or model-derived?~~ | **Decided**: global `AppSettings` field `contextBudgetTokens` (default 8000); newest-first history inclusion; system prompt + current user msg + in-flight tool results always included |
 | ~~**Q-12**~~ | ~~Is context summarization required for Phase 2 or deferred?~~ | **Decided**: deferred to Phase 5; silent truncation of oldest messages in Phase 2 |
 | ~~**Q-13**~~ | ~~Duplicate of Q-3/Q-4~~ | **Decided**: see Q-3 |
@@ -1056,8 +1056,8 @@ Given the dependency graph, the recommended order is:
 
 ### Modified:
 - `session/Models.scala` — add `MemoryEntry`, extend `ToolRun` fields; **add `AgentTurnStep` and `AgentTurn` case classes** (Phase 2.5)
-- `BackendServer.scala` — wire `CommandRegistry`, `VirtualShell`, new `AgentLoop` constructor; load `system_prompt.txt`; add `scratchpads: ConcurrentHashMap[sessionId, SessionScratchpad]`; clean up on session delete; **instantiate and init `AgentTurnStore`** (Phase 2.5)
-- `server/Routes.scala` — add `cancelFlag` to `agentEngine.run()` call; add `permissionQueues: ConcurrentHashMap[runId, SynchronousQueue[GrantDecision]]`; add `POST /permissions`; **upgrade `GET /log/stream` to WebSocket (`@cask.websocket`, `WsHandler`/`WsActor`)** (Phase 2); **add `GET /sessions/:id/agent-turns`** (Phase 2.5); serve `log-viewer.html` static route
+- `BackendServer.scala` — wire `CommandRegistry`, `VirtualShell`, new `AgentLoop` constructor; load `system_prompt.txt`; add `scratchpads: TrieMap[sessionId, SessionScratchpad]`; clean up on session delete; **instantiate and init `AgentTurnStore`** (Phase 2.5)
+- `server/Routes.scala` — add `cancelFlag` to `agentEngine.run()` call; add the `PermissionCoordinator` `TrieMap[(runId, requestId), CompletableFuture[GrantDecision]]` registry; add `POST /permissions/:runId`; **upgrade `GET /log/stream` to WebSocket (`@cask.websocket`, `WsHandler`/`WsActor`)** (Phase 2); **add `GET /sessions/:id/agent-turns`** (Phase 2.5); serve `log-viewer.html` static route
 - `agent/AgentEngine.scala` — add `cancelFlag: AtomicBoolean` parameter to `run()`; add `PermissionRequired` to `AgentEvent` enum
 - `agent/AgentLoop.scala` — **add `agentTurnStore: AgentTurnStore` constructor parameter; accumulate `thinking`/`tool_call` steps in `ListBuffer`; persist `AgentTurn` on `Final`** (Phase 2.5)
 - `settings/SettingsStore.scala` — add `maxIterations: Int = 20` and `contextBudgetTokens: Int = 8000` to `AppSettings`
@@ -1104,7 +1104,7 @@ The following use cases drive tool design and are referenced throughout this sec
 
 | ID | Use Case | Triggering Input | Desired Output | Key Tools Needed |
 |---|---|---|---|---|
-| **UC1** | **Web to Presentation** | URLs or PDFs containing research/articles | PPTX slide deck summarizing content | `browser.open`, `files.read_pdf`, `llm.summarize`, `files.write_pptx` |
+| **UC1** | **Web to Presentation** | URLs or PDFs containing research/articles | PPTX slide deck summarizing content | `browser.open`, `files.read_pdf_to_markdown`, `llm.summarize`, `files.write_pptx` |
 | **UC2** | **Image to Document** | Image file (diagram, whiteboard, screenshot) | DOCX or PDF describing the image content | `vision.describe`, `files.write_docx` |
 | **UC3** | **Audio to Presentation** | Audio file (meeting recording, podcast) | PPTX with transcript summary and key points | `audio.transcribe`, `llm.summarize`, `files.write_pptx` |
 
@@ -1162,8 +1162,9 @@ Content → Markdown → [Pandoc] → DOCX/PPTX
 | `files.markdown_to_docx` | `path`, `template` (optional) | DOCX file | Phase 3 |
 | `files.markdown_to_pptx` | `path`, `template` (optional) | PPTX file | Phase 3 |
 | `files.markdown_to_pdf` | `path` | PDF file | Phase 3 |
-| `files.read_pdf` | `path`, `pages` (optional range) | Extracted text | Phase 3 |
-| `files.read_docx` | `path` | Extracted text | Phase 3 |
+| `files.read_pdf_to_markdown` | `path`, `enrich_images` (default true) | Path to cached `<doc>.md` | Phase 3 (done) |
+| `files.read_docx_to_markdown` | `path`, `enrich_images` (default true) | Path to cached `<doc>.md` | Phase 3 (done) |
+| `files.read_pptx_to_markdown` | `path`, `enrich_images` (default true) | Path to cached `<doc>.md` | Phase 3 (done) |
 
 **Markdown slide format for PPTX:**
 ```markdown
@@ -1249,7 +1250,7 @@ Noted explicitly to avoid scope creep:
 - **RAG / proactive file injection** — Phase 5; files enter context only via explicit `files.read` in Phase 2.
 - **Cloud LLM provider routing** for `llm.*` tools — Phase 3+ once cloud providers exist.
 - **Native function-call message role** — Phase 3+ behind a `nativeFunctionCalling: Boolean` per-provider flag.
-- **Office document tools** (`files.read_docx`, `files.write_pptx`, etc.) — Phase 3 (see §13.2).
+- **Office document tools** (`files.read_docx_to_markdown`, `files.write_pptx`, etc.) — Phase 3 (see §13.2).
 - **Browser automation** (`browser.*`) — Phase 3–5 (see §13.1).
 - **Vision tools** (`vision.*`) — Phase 4 (see §13.3).
 - **Audio transcription** (`audio.*`) — Phase 4 (see §13.4).

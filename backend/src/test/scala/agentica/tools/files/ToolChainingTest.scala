@@ -6,7 +6,7 @@ import agentica.shell.{CommandRegistry, Presentation, ScratchEntry, SessionScrat
 import agentica.tools.{ExecutionContext, ToolBody, ToolStatus}
 import org.scalatest.funsuite.AnyFunSuite
 import java.nio.file.{Files, Paths}
-import java.util.concurrent.SynchronousQueue
+import agentica.permissions.PermissionCoordinator
 
 /**
  *  Integration tests for scratchpad-based tool chaining.
@@ -44,7 +44,7 @@ class ToolChainingTest extends AnyFunSuite
             llmProvider     = null,
             vlmProvider     = None,
             onEvent         = _ => (),
-            permissionLatch = SynchronousQueue[GrantDecision](),
+            permissionCoordinator = new PermissionCoordinator("test-run"),
             debugMode       = false
         )
 

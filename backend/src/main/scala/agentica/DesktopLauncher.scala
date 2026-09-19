@@ -37,7 +37,8 @@ class DesktopLauncher extends Application
         val webView = WebView()
         val root    = BorderPane(webView)
 
-        webView.getEngine.setCreatePopupHandler(new Callback[PopupFeatures, WebEngine] {
+        webView.getEngine.setCreatePopupHandler(new Callback[PopupFeatures, WebEngine]
+        {
             override def call(features: PopupFeatures): WebEngine =
             {
                 val popupView   = WebView()
@@ -56,7 +57,8 @@ class DesktopLauncher extends Application
             alert.showAndWait()
         })
 
-        webView.getEngine.setConfirmHandler(new Callback[String, java.lang.Boolean] {
+        webView.getEngine.setConfirmHandler(new Callback[String, java.lang.Boolean]
+        {
             override def call(message: String): java.lang.Boolean =
             {
                 val alert = Alert(Alert.AlertType.CONFIRMATION, message, ButtonType.OK, ButtonType.CANCEL)

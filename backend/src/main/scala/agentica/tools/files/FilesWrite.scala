@@ -7,7 +7,6 @@ import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionCon
 import agentica.tools.Tool
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, NoSuchFileException, StandardOpenOption}
-import java.util.concurrent.TimeUnit
 
 
 /**
@@ -32,7 +31,7 @@ case class FilesWriteOutput(
 /**
  *  Implements the `files.write` command.
  *  Sensitive tool — requires user permission via the UI modal before executing.
- *  Emits [[AgentEvent.PermissionRequired]] and blocks on `ctx.permissionLatch`
+ *  Uses `ctx.permissionCoordinator` to emit [[AgentEvent.PermissionRequired]] and wait
  *  for up to 60 seconds when no valid grant exists.
  */
 object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
@@ -117,18 +116,16 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
         }
         else
         {
-            ctx.onEvent(AgentEvent.PermissionRequired(
+            ctx.permissionCoordinator.request(
                 tool    = name,
                 path    = Some(sourcePath),
-                options = List("Allow once", "Allow for session", "Allow always", "Deny")
-            ))
-            Option(ctx.permissionLatch.poll(60, TimeUnit.SECONDS)) match
+                options = List("Allow once", "Allow for session", "Allow always", "Deny"),
+                onEvent = ctx.onEvent
+            ) match
             {
-                case None =>
+                case GrantDecision.Denied =>
                     FilesWriteOutput(sourcePath, 0, Some(FilesError.PermissionDenied))
-                case Some(GrantDecision.Denied) =>
-                    FilesWriteOutput(sourcePath, 0, Some(FilesError.PermissionDenied))
-                case Some(granted: GrantDecision.Granted) =>
+                case granted: GrantDecision.Granted =>
                     ctx.scopeStore.addGrant(ctx.session.id, name, granted)
                     writeFile(input, ctx, resolved, sourcePath)
             }

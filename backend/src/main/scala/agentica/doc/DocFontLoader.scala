@@ -2,6 +2,7 @@ package agentica.doc
 
 import agentica.observability.TraceLogger
 import java.io.InputStream
+import scala.collection.concurrent.TrieMap
 
 /**
  *  Loads and registers bundled fonts with the rendering libraries used by the
@@ -70,8 +71,9 @@ object DocFontLoader
      *  Raw font bytes keyed by family name, populated by [[init()]].
      *  Consumed by PDFBox and POI XSLF at render time (Stage B).
      */
-    val loadedFonts: java.util.concurrent.ConcurrentHashMap[String, Array[Byte]] =
-        java.util.concurrent.ConcurrentHashMap()
+    // TrieMap is Scala stdlib's concrete concurrent Map with Option lookups; font bytes
+    // are shared by document renders running across HTTP and agent threads.
+    val loadedFonts: TrieMap[String, Array[Byte]] = TrieMap.empty
 
     /**
      *  Registers bundled fonts with the AWT [[java.awt.GraphicsEnvironment]] (for POI XSLF)
@@ -83,7 +85,7 @@ object DocFontLoader
      */
     def init(): Unit =
     {
-        if (!loadedFonts.isEmpty) return  // already initialised
+        if (loadedFonts.nonEmpty) return  // already initialised
 
         val ge = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment
 

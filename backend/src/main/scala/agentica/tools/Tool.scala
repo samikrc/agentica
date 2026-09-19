@@ -2,10 +2,9 @@ package agentica.tools
 
 import agentica.agent.AgentEvent
 import agentica.llm.LLMProvider
-import agentica.permissions.{GrantDecision, ScopeStore}
+import agentica.permissions.{PermissionCoordinator, ScopeStore}
 import agentica.session.{MemoryStore, Session}
 import agentica.shell.SessionScratchpad
-import java.util.concurrent.SynchronousQueue
 
 // ─── Argument schema ──────────────────────────────────────────────────────────
 
@@ -115,7 +114,7 @@ case class AgentResponse(text: String, durationMs: Long)
  *  @param llmProvider      Primary LLM provider for chat completions.
  *  @param vlmProvider      Optional Vision LLM provider for document ingestion (falls back to llmProvider if None).
  *  @param onEvent          Callback to emit structured [[AgentEvent]] SSE events from within a tool.
- *  @param permissionLatch  Queue on which [[VirtualShell]] blocks awaiting a [[GrantDecision]] from the UI.
+ *  @param permissionCoordinator Coordinates one-shot permission prompts with the UI.
  *  @param debugMode        When true, page images sent to the VLM are saved to a `<stem>_debug/` dir.
  *  @param vlmParallelism   Number of concurrent VLM calls per batch when transcribing document pages.
  */
@@ -128,7 +127,7 @@ case class ExecutionContext(
     llmProvider:      LLMProvider,
     vlmProvider:      Option[LLMProvider],
     onEvent:          AgentEvent => Unit,
-    permissionLatch:  SynchronousQueue[GrantDecision],
+    permissionCoordinator: PermissionCoordinator,
     debugMode:        Boolean = false,
     vlmParallelism:   Int     = 1
 )

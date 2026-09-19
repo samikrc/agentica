@@ -39,9 +39,10 @@ object OpenAIProvider:
         }
 
 class OpenAIProvider(
-    baseURL:         String = "http://localhost:1234",
-    val modelName:   String = "local-model",
-    apiKey:          String = "lm-studio"
+    baseURL:             String = "http://localhost:1234",
+    val modelName:       String = "local-model",
+    apiKey:              String = "lm-studio",
+    requestTimeoutSeconds: Int  = 300
 ) extends LLMProvider
 {
 
@@ -57,6 +58,9 @@ class OpenAIProvider(
             .build()
     }
 
+    private def now(): String =
+        java.time.Instant.now().toString
+
     /**
      *  Sends a POST request to the given path and returns the raw response body.
      *  Also logs the request and response at DEBUG level.
@@ -70,13 +74,16 @@ class OpenAIProvider(
             .uri(URI.create(s"$baseURL$path"))
             .header("Content-Type", "application/json")
             .header("Authorization", s"Bearer $apiKey")
+            .timeout(Duration.ofSeconds(requestTimeoutSeconds))
             .POST(HttpRequest.BodyPublishers.ofString(ujson.write(body)))
             .build()
 
-        System.err.println(s"[DEBUG] OpenAIProvider -> POST $baseURL$path model=$modelName")
+        val t0 = System.currentTimeMillis()
+        System.err.println(s"[${now()}] OpenAIProvider -> POST $baseURL$path model=$modelName timeout=${requestTimeoutSeconds}s")
         val resp    = buildClient().send(req, HttpResponse.BodyHandlers.ofString())
+        val elapsed = System.currentTimeMillis() - t0
         val bodyStr = resp.body()
-        System.err.println(s"[DEBUG] OpenAIProvider <- status=${resp.statusCode()} len=${bodyStr.length}")
+        System.err.println(s"[${now()}] OpenAIProvider <- status=${resp.statusCode()} len=${bodyStr.length} elapsed=${elapsed}ms")
         bodyStr
     }
 

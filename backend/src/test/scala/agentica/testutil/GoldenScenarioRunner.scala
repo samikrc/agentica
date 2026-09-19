@@ -10,7 +10,7 @@ import agentica.tools.files.{FilesRead, FilesWrite, FilesList, FilesSearch, File
 import agentica.tools.memory.{MemorySet, MemoryGet, MemoryList}
 import agentica.permissions.{GrantDecision, GrantTTL, ScopeStore}
 import java.nio.file.{Files, Path}
-import java.util.concurrent.SynchronousQueue
+import agentica.permissions.PermissionCoordinator
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.mutable
 
@@ -160,7 +160,7 @@ class GoldenScenarioRunner(scenarioPath: Path, workspaceFiles: Map[String, Strin
             userMsg         = userMsg,
             traceId         = "golden-trace",
             cancelFlag      = new AtomicBoolean(false),
-            permissionLatch = new SynchronousQueue[GrantDecision](),
+            permissionCoordinator = new PermissionCoordinator("test-run"),
             emitToken       = _ => (),
             emitEvent  = evt =>
             {
