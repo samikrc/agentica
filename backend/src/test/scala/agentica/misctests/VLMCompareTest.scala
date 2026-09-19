@@ -3,8 +3,7 @@ package agentica.misctests
 import agentica.doc.{DocFontLoader, PDFPageRenderer, PageVisionTranscriber}
 import agentica.doc.PageVisionTranscriber.PageTimeoutException
 import agentica.llm.OpenAIProvider
-import java.net.URI
-import java.net.http.{HttpClient, HttpRequest, HttpResponse}
+import agentica.testutil.LMStudioClient
 import java.nio.file.{Files, Path, StandardCopyOption}
 
 /**
@@ -70,110 +69,6 @@ object VLMCompareTest
     val sweepPageTimeoutMs: Long = 180000L
 
     /**
-     *  Returns true if the server URL targets a local LM Studio instance.
-     *  Detects by presence of `192.` or `172.` or `localhost` / `127.` in the host part.
-     *
-     *  @param serverURL  Full server URL string.
-     *  @return           `true` if the host is considered local.
-     */
-    private def isLocal(serverURL: String): Boolean =
-    {
-        val host = try { URI.create(serverURL).getHost } catch { case _: Throwable => "" }
-        host != null && (
-            host.startsWith("192.") ||
-            host.startsWith("172.") ||
-            host == "localhost"      ||
-            host.startsWith("127.")
-        )
-    }
-
-    /**
-     *  Asks LM Studio to unload the given model instance.
-     *  Silently swallows all errors — if LM Studio is not running or the
-     *  endpoint is unavailable this becomes a no-op.
-     *
-     *  @param serverURL  Base URL of the LM Studio server (e.g. `http://localhost:1234/v1`).
-     *  @param modelName  Model identifier to unload (used as `instance_id`).
-     *  @param apiKey     Bearer token for authentication.
-     */
-    private def unloadLocalModel(serverURL: String, modelName: String, apiKey: String): Unit =
-    {
-        try
-        {
-            // Derive the unload endpoint: strip trailing /v1 if present, append /api/v1/models/unload
-            val base       = serverURL.stripSuffix("/v1").stripSuffix("/")
-            val unloadURL  = s"$base/api/v1/models/unload"
-            val body       = s"""{"instance_id": "$modelName"}"""
-            val request    = HttpRequest.newBuilder()
-                .uri(URI.create(unloadURL))
-                .header("Authorization", s"Bearer $apiKey")
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .build()
-            val response   = HttpClient.newHttpClient()
-                .send(request, HttpResponse.BodyHandlers.ofString())
-            println(s"  [unload] $modelName → HTTP ${response.statusCode()}")
-        }
-        catch
-        {
-            case t: Throwable =>
-                println(s"  [unload] no-op (${t.getClass.getSimpleName}: ${t.getMessage})")
-        }
-    }
-
-    /**
-     *  Queries the LM Studio `/v1/models` endpoint for all loaded models and
-     *  unloads each one.  Used as a pre-run cleanup so we start from a clean
-     *  state regardless of what was loaded by a previous run or external
-     *  activity.  Silently swallows all errors.
-     *
-     *  @param serverURL  Base URL of the LM Studio server.
-     *  @param apiKey     Bearer token for authentication.
-     */
-    private def unloadAllLocalModels(serverURL: String, apiKey: String): Unit =
-    {
-        try
-        {
-            val base      = serverURL.stripSuffix("/v1").stripSuffix("/")
-            val modelsURL = s"$base/v1/models"
-            val request   = HttpRequest.newBuilder()
-                .uri(URI.create(modelsURL))
-                .header("Authorization", s"Bearer $apiKey")
-                .GET()
-                .build()
-            val response  = HttpClient.newHttpClient()
-                .send(request, HttpResponse.BodyHandlers.ofString())
-
-            if (response.statusCode() == 200)
-            {
-                // Parse model IDs from the JSON response (simple regex — avoids a JSON lib dependency)
-                val modelIds = """"id"\s*:\s*"([^"]+)"""".r.findAllMatchIn(response.body()).map(_.group(1)).toList
-                if (modelIds.isEmpty)
-                {
-                    println(s"  [unload-all] No models currently loaded on $serverURL")
-                }
-                else
-                {
-                    println(s"  [unload-all] Found ${modelIds.size} loaded model(s): ${modelIds.mkString(", ")}")
-                    for (id <- modelIds)
-                    {
-                        unloadLocalModel(serverURL, id, apiKey)
-                    }
-                }
-            }
-            else
-            {
-                println(s"  [unload-all] /v1/models returned HTTP ${response.statusCode()} — skipping")
-            }
-        }
-        catch
-        {
-            case t: Throwable =>
-                println(s"  [unload-all] no-op (${t.getClass.getSimpleName}: ${t.getMessage})")
-        }
-    }
-
-    /**
      *  Entry point: dispatches to either the fixed single-pass run or the
      *  DPI×maxDim parameter sweep based on [[runSweepMode]].
      *
@@ -215,10 +110,10 @@ object VLMCompareTest
         }
 
         // Pre-run cleanup: unload any models already loaded on local servers
-        for ((_, serverURL, _, apiKey) <- providers if isLocal(serverURL))
+        for ((_, serverURL, _, apiKey) <- providers if LMStudioClient.isLocal(serverURL))
         {
             println(s"\nPre-run cleanup: unloading any loaded models on $serverURL...")
-            unloadAllLocalModels(serverURL, apiKey)
+            LMStudioClient.unloadAllLocalModels(serverURL, apiKey)
         }
         println("Waiting 10s for cleanup to settle...")
         Thread.sleep(10000)
@@ -295,10 +190,10 @@ object VLMCompareTest
             }
 
             // Unload local model after all PDFs for this provider are done (or timeout)
-            if (isLocal(serverURL))
+            if (LMStudioClient.isLocal(serverURL))
             {
                 println(s"  Unloading local model: $modelName")
-                unloadLocalModel(serverURL, modelName, apiKey)
+                LMStudioClient.unloadLocalModel(serverURL, modelName, apiKey)
                 println(s"  Waiting 15s for model to fully unload...")
                 Thread.sleep(15000)
                 println(s"  Done waiting.")
@@ -341,10 +236,10 @@ object VLMCompareTest
         val allResults = scala.collection.mutable.ArrayBuffer.empty[SweepResult]
 
         // Pre-run cleanup: unload any models already loaded on local servers
-        for ((_, serverURL, _, apiKey) <- providers if isLocal(serverURL))
+        for ((_, serverURL, _, apiKey) <- providers if LMStudioClient.isLocal(serverURL))
         {
             println(s"\nPre-run cleanup: unloading any loaded models on $serverURL...")
-            unloadAllLocalModels(serverURL, apiKey)
+            LMStudioClient.unloadAllLocalModels(serverURL, apiKey)
         }
         println("Waiting 10s for cleanup to settle...")
         Thread.sleep(10000)
@@ -524,10 +419,10 @@ object VLMCompareTest
                 }
 
                 // Unload local model after all PDFs and DPI/maxDim combos for this provider are done
-                if (isLocal(serverURL))
+                if (LMStudioClient.isLocal(serverURL))
                 {
                     println(s"  Unloading local model: $modelName")
-                    unloadLocalModel(serverURL, modelName, apiKey)
+                    LMStudioClient.unloadLocalModel(serverURL, modelName, apiKey)
                     println(s"  Waiting 15s for model to fully unload...")
                     Thread.sleep(15000)
                     println(s"  Done waiting.")

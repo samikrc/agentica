@@ -6,7 +6,7 @@ import agentica.session.{MemoryStore, Session}
 import agentica.shell.{PathSandbox, SessionScratchpad}
 import agentica.tools.{ExecutionContext, ToolResult, ToolStatus, FilesError}
 import org.scalatest.funsuite.AnyFunSuite
-import java.util.concurrent.SynchronousQueue
+import agentica.permissions.PermissionCoordinator
 
 /**
  *  Verifies that all `files.*` tools enforce the workspace sandbox at the `execute` stage.
@@ -47,7 +47,7 @@ class FilesToolSandboxTest extends AnyFunSuite
             llmProvider     = null,
             vlmProvider     = None,
             onEvent         = _ => (),
-            permissionLatch = SynchronousQueue[GrantDecision](),
+            permissionCoordinator = new PermissionCoordinator("test-run"),
             debugMode       = false
         )
 

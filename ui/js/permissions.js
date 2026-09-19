@@ -13,6 +13,7 @@ const Permissions = (() => {
   const btnAlways = document.getElementById('btn-permission-always');
 
   let currentRunId = null;
+  let currentRequestId = null;
   let isResolving = false;
 
   /**
@@ -25,6 +26,7 @@ const Permissions = (() => {
    */
   function show(data, runId) {
     currentRunId = runId;
+    currentRequestId = data.requestId;
     isResolving = false;
 
     toolSpan.textContent = data.tool || 'unknown';
@@ -39,6 +41,7 @@ const Permissions = (() => {
   function hide() {
     modal.classList.remove('open');
     currentRunId = null;
+    currentRequestId = null;
   }
 
   /**
@@ -47,11 +50,12 @@ const Permissions = (() => {
    * @param {string} ttl - 'Once', 'ForSession', or 'Always'
    */
   async function sendDecision(decision, ttl) {
-    if (!currentRunId || isResolving) return;
+    if (!currentRunId || !currentRequestId || isResolving) return;
     isResolving = true;
 
     try {
       await Api.post(`/permissions/${currentRunId}`, {
+        requestId: currentRequestId,
         decision: decision,
         ttl: ttl,
         pathPrefix: null

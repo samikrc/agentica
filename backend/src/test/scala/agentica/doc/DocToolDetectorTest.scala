@@ -53,19 +53,22 @@ class DocToolDetectorTest extends AnyFunSuite
     // ── DocFontLoader ──────────────────────────────────────────────────────────
 
     test("DocFontLoader.init() does not throw") {
-        try {
+        try
+        {
             DocFontLoader.init()
             // Success - no exception thrown
-        } catch {
+        }
+        catch
+        {
             case ex: Exception => fail(s"DocFontLoader.init() threw an exception: ${ex.getMessage}")
         }
     }
 
     test("DocFontLoader.init() is idempotent — second call is a no-op") {
         DocFontLoader.init()
-        val sizeAfterFirst = DocFontLoader.loadedFonts.size()
+        val sizeAfterFirst = DocFontLoader.loadedFonts.size
         DocFontLoader.init()
-        val sizeAfterSecond = DocFontLoader.loadedFonts.size()
+        val sizeAfterSecond = DocFontLoader.loadedFonts.size
         assert(sizeAfterFirst == sizeAfterSecond,
             "second init() must not change the number of loaded fonts")
     }
@@ -82,16 +85,16 @@ class DocToolDetectorTest extends AnyFunSuite
             "Liberation Mono"
         )
         expectedFamilies.foreach { family =>
-            assert(loaded.containsKey(family),
+            assert(loaded.contains(family),
                 s"expected '$family' to be loaded from classpath resources")
-            assert(loaded.get(family).length > 0,
+            assert(loaded.get(family).exists(_.nonEmpty),
                 s"font bytes for '$family' must not be empty")
         }
     }
 
     test("DocFontLoader loaded font bytes look like TTF (magic bytes 0x00 0x01 0x00 0x00 or 'true' / 'OTTO')") {
         DocFontLoader.init()
-        DocFontLoader.loadedFonts.values().forEach { bytes =>
+        DocFontLoader.loadedFonts.values.foreach { bytes =>
             assert(bytes.length >= 4, "font bytes must be at least 4 bytes long")
             val magic = bytes.take(4)
             val isTtf  = magic(0) == 0x00.toByte && magic(1) == 0x01.toByte

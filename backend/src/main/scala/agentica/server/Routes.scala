@@ -2,15 +2,16 @@ package agentica.server
 
 import agentica.agent.{AgentEngine, AgentEvent, ContextManager}
 import agentica.observability.TraceLogger
-import agentica.permissions.{GrantDecision, GrantTTL, ScopeStore}
+import agentica.permissions.{GrantDecision, GrantTTL, PermissionCoordinator, ScopeStore}
 import agentica.session.{AgentTurn, AgentTurnStore, MemoryStore, MessageRole, MessageStore, RunStore, Session, SessionStore}
 import agentica.settings.{AppSettings, SettingsStore}
 import agentica.shell.CommandRegistry
 import cask.*
 import upickle.default.*
 import java.util.UUID
-import java.util.concurrent.{ConcurrentHashMap, Executors, SynchronousQueue}
+import java.util.concurrent.Executors
 import java.nio.file.{Files, Paths}
+import scala.collection.concurrent.TrieMap
 import scala.jdk.CollectionConverters.*
 
 /**
@@ -44,12 +45,15 @@ class Routes(
 ) extends MainRoutes
 {
 
-    // Maps runId → cancellation flag (set to true to request cancellation)
-    private val cancelFlags      = ConcurrentHashMap[String, java.util.concurrent.atomic.AtomicBoolean]()
-    // Maps runId → SSE event queue (bounded, thread-safe)
-    private val sseQueues        = ConcurrentHashMap[String, java.util.concurrent.LinkedBlockingQueue[String]]()
-    // Maps runId → permission latch (rendez-vous with POST /permissions/:runId)
-    private val permissionQueues = ConcurrentHashMap[String, SynchronousQueue[GrantDecision]]()
+    // TrieMap is Scala stdlib's concrete concurrent Map with Option lookups; this registry
+    // is shared across HTTP and agent threads. Maps runId → cancellation flag.
+    private val cancelFlags = TrieMap.empty[String, java.util.concurrent.atomic.AtomicBoolean]
+    // TrieMap is Scala stdlib's concrete concurrent Map with Option lookups; this registry
+    // is shared across HTTP and agent threads. Values remain buffered blocking SSE streams.
+    private val sseQueues = TrieMap.empty[String, java.util.concurrent.LinkedBlockingQueue[String]]
+    // TrieMap is Scala stdlib's concrete concurrent Map with Option lookups; this registry
+    // is shared across HTTP and agent threads. Maps runId → PermissionCoordinator instance.
+    private val permissionCoordinators = TrieMap.empty[String, PermissionCoordinator]
 
     private val virtualThreadPool = Executors.newVirtualThreadPerTaskExecutor()
 
@@ -127,10 +131,14 @@ class Routes(
      */
     private def withAuth(request: Request)(body: => Response[Response.Data]): Response[Response.Data] =
     {
-        if (request.exchange.getRequestMethod.toString == "OPTIONS") {
+        if (request.exchange.getRequestMethod.toString == "OPTIONS")
+        {
             Response("", statusCode = 204, headers = corsHeaders)
-        } else {
-            Auth.validate(request) match {
+        }
+        else
+        {
+            Auth.validate(request) match
+            {
                 case Left(err) => withCors(Response(s"""{"error":"$err"}""", statusCode = 401,
                                 headers = Seq("Content-Type" -> "application/json")))
                 case Right(_)  => withCors(body)
@@ -180,9 +188,12 @@ class Routes(
     @cask.route("/health", methods = Seq("get", "options"))
     def health(request: Request): Response[Response.Data] =
     {
-        if (request.exchange.getRequestMethod.toString == "OPTIONS") {
+        if (request.exchange.getRequestMethod.toString == "OPTIONS")
+        {
             Response("", statusCode = 204, headers = corsHeaders)
-        } else {
+        }
+        else
+        {
             withCors(Response("""{"status":"ok"}""", headers = Seq("Content-Type" -> "application/json")))
         }
     }
@@ -337,10 +348,10 @@ class Routes(
                     val history   = messageStore.listForSession(id).dropRight(1)
                     val cancel          = java.util.concurrent.atomic.AtomicBoolean(false)
                     val queue           = java.util.concurrent.LinkedBlockingQueue[String](1024)
-                    val permLatch       = SynchronousQueue[GrantDecision]()
+                    val permissionCoordinator = new PermissionCoordinator(runId)
                     cancelFlags.put(runId, cancel)
                     sseQueues.put(runId, queue)
-                    permissionQueues.put(runId, permLatch)
+                    permissionCoordinators.put(runId, permissionCoordinator)
                     TraceLogger.info(traceId, "run_start", Map("sessionId" -> id, "runId" -> runId))
                     virtualThreadPool.submit(new Runnable
                     {
@@ -354,7 +365,7 @@ class Routes(
                                     userMsg         = userMsg,
                                     traceId         = traceId,
                                     cancelFlag      = cancel,
-                                    permissionLatch = permLatch,
+                                    permissionCoordinator = permissionCoordinator,
                                     emitToken       = tok => if !cancel.get() then queue.offer(sseEvent("token", tok)),
                                     emitEvent  = ev =>
                                     {
@@ -385,11 +396,12 @@ class Routes(
                                             case AgentEvent.AgentError(msg) =>
                                                 val msgJson = ujson.Str(msg).render()
                                                 sseEvent("error", s"""{"message":$msgJson}""")
-                                            case AgentEvent.PermissionRequired(tool, path, opts) =>
-                                                val toolJson = ujson.Str(tool).render()
-                                                val pathStr  = path.map(p => ",\"path\":" + ujson.Str(p).render()).getOrElse("")
-                                                val optsJson = opts.map(o => ujson.Str(o).render()).mkString("[", ",", "]")
-                                                sseEvent("permission_required", s"""{"tool":$toolJson$pathStr,"options":$optsJson,"runId":"$runId"}""")
+                                            case AgentEvent.PermissionRequired(requestId, tool, path, opts) =>
+                                                val requestJson = ujson.Str(requestId).render()
+                                                val toolJson    = ujson.Str(tool).render()
+                                                val pathStr     = path.map(p => ",\"path\":" + ujson.Str(p).render()).getOrElse("")
+                                                val optsJson    = opts.map(o => ujson.Str(o).render()).mkString("[", ",", "]")
+                                                sseEvent("permission_required", s"""{"requestId":$requestJson,"tool":$toolJson$pathStr,"options":$optsJson,"runId":"$runId"}""")
                                             case AgentEvent.ToolProgress(tool, msg, cur, total) =>
                                                 val toolJson = ujson.Str(tool).render()
                                                 val msgJson  = ujson.Str(msg).render()
@@ -400,7 +412,7 @@ class Routes(
                                         {
                                             case AgentEvent.Final(_, _) | AgentEvent.Cancelled | AgentEvent.AgentError(_) =>
                                                 queue.offer(sseEvent("done", "{}"))
-                                            case AgentEvent.PermissionRequired(_, _, _) => ()
+                                            case AgentEvent.PermissionRequired(_, _, _, _) => ()
                                             case _ => ()
                                         }
                                     }
@@ -416,6 +428,8 @@ class Routes(
                             }
                             finally
                             {
+                                permissionCoordinator.close()
+                                permissionCoordinators.remove(runId)
                                 cancelFlags.remove(runId)
                                 sseQueues.remove(runId)
                             }
@@ -449,38 +463,36 @@ class Routes(
                 Response(s"""{"error":"$err"}""", statusCode = 401,
                     headers = Seq("Content-Type" -> "application/json"))
             case Right(_) =>
-                val queue = sseQueues.get(runId)
-                if (queue == null)
+                sseQueues.get(runId) match
                 {
-                    Response("""{"error":"run not found"}""", statusCode = 404,
-                        headers = Seq("Content-Type" -> "application/json"))
-                }
-                else
-                {
-                    val writable: geny.Writable = (out: java.io.OutputStream) =>
-                    {
-                        var done = false
-                        while !done do
+                    case None =>
+                        Response("""{"error":"run not found"}""", statusCode = 404,
+                            headers = Seq("Content-Type" -> "application/json"))
+                    case Some(queue) =>
+                        val writable: geny.Writable = (out: java.io.OutputStream) =>
                         {
-                            val ev = queue.take()  // blocks on virtual thread — safe with Loom
-                            out.write(ev.getBytes("UTF-8"))
-                            out.flush()
-                            if (ev.contains("event: done") || ev.contains("event: final") || ev.contains("event: cancelled"))
+                            var done = false
+                            while !done do
                             {
-                                done = true
+                                val ev = queue.take()  // blocks on virtual thread — safe with Loom
+                                out.write(ev.getBytes("UTF-8"))
+                                out.flush()
+                                if (ev.contains("event: done") || ev.contains("event: final") || ev.contains("event: cancelled"))
+                                {
+                                    done = true
+                                }
                             }
+                            sseQueues.remove(runId)
                         }
-                        sseQueues.remove(runId)
-                    }
-                    withCors(Response(
-                        writable,
-                        headers = Seq(
-                            "Content-Type"      -> "text/event-stream",
-                            "Cache-Control"     -> "no-cache",
-                            "Connection"        -> "keep-alive",
-                            "X-Accel-Buffering" -> "no"
-                        )
-                    ))
+                        withCors(Response(
+                            writable,
+                            headers = Seq(
+                                "Content-Type"      -> "text/event-stream",
+                                "Cache-Control"     -> "no-cache",
+                                "Connection"        -> "keep-alive",
+                                "X-Accel-Buffering" -> "no"
+                            )
+                        ))
                 }
         }
     }
@@ -495,11 +507,8 @@ class Routes(
     def cancelRun(runId: String, request: Request): Response[Response.Data] =
     {
         withAuth(request) {
-            val flag = cancelFlags.get(runId)
-            if (flag != null)
-            {
-                flag.set(true)
-            }
+            cancelFlags.get(runId).foreach(_.set(true))
+            permissionCoordinators.get(runId).foreach(_.close())
             Response("", statusCode = 204)
         }
     }
@@ -508,43 +517,40 @@ class Routes(
 
     /**
      *  Receives a permission decision from the UI modal and unblocks the suspended agent run.
-     *  Request body JSON: `{"decision":"granted"|"denied", "ttl":"Once"|"ForSession"|"Always", "pathPrefix":"..."|null}`.
-     *  Returns 204 on success, 404 if the run is not awaiting a decision.
+     *  Request body JSON: `{"requestId":"...", "decision":"granted"|"denied", "ttl":"Once"|"ForSession"|"Always", "pathPrefix":"..."|null}`.
+     *  Returns 204 on success, 404 for an unknown request, or 409 if already completed.
      */
     @cask.route("/permissions/:runId", methods = Seq("post", "options"))
     def resolvePermission(runId: String, request: Request): Response[Response.Data] =
     {
         withAuth(request) {
-            val latch = permissionQueues.get(runId)
-            if (latch == null)
+            val body      = ujson.read(request.text())
+            val requestId = body.obj.get("requestId").map(_.str).getOrElse("")
+            val decision  = body.obj.get("decision").map(_.str).getOrElse("denied") match
             {
-                Response("""{"error":"run not found or not awaiting permission"}""", statusCode = 404,
-                    headers = Seq("Content-Type" -> "application/json"))
+                case "granted" =>
+                    val ttl = body.obj.get("ttl").map(_.str).getOrElse("Once") match
+                    {
+                        case "ForSession" => GrantTTL.ForSession
+                        case "Always"     => GrantTTL.Always
+                        case _            => GrantTTL.Once
+                    }
+                    val pathPrefix = body.obj.get("pathPrefix").flatMap(v =>
+                        if v.isNull then None else Some(v.str)
+                    )
+                    GrantDecision.Granted(ttl = ttl, pathPrefix = pathPrefix)
+                case _ => GrantDecision.Denied
             }
-            else
+            PermissionCoordinator.resolve(runId, requestId, decision) match
             {
-                val body       = ujson.read(request.text())
-                val decisionStr = body.obj.get("decision").map(_.str).getOrElse("denied")
-                val decision = decisionStr match
-                {
-                    case "granted" =>
-                        val ttlStr = body.obj.get("ttl").map(_.str).getOrElse("Once")
-                        val ttl = ttlStr match
-                        {
-                            case "ForSession" => GrantTTL.ForSession
-                            case "Always"     => GrantTTL.Always
-                            case _            => GrantTTL.Once
-                        }
-                        val pathPrefix = body.obj.get("pathPrefix").flatMap(v =>
-                            if (v.isNull) None else Some(v.str)
-                        )
-                        GrantDecision.Granted(ttl = ttl, pathPrefix = pathPrefix)
-                    case _ =>
-                        GrantDecision.Denied
-                }
-                latch.offer(decision)
-                permissionQueues.remove(runId)
-                Response("", statusCode = 204)
+                case PermissionCoordinator.ResolveResult.Completed =>
+                    Response("", statusCode = 204)
+                case PermissionCoordinator.ResolveResult.Unknown =>
+                    Response("""{"error":"permission request not found"}""", statusCode = 404,
+                        headers = Seq("Content-Type" -> "application/json"))
+                case PermissionCoordinator.ResolveResult.AlreadyCompleted =>
+                    Response("""{"error":"permission request already completed"}""", statusCode = 409,
+                        headers = Seq("Content-Type" -> "application/json"))
             }
         }
     }

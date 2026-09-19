@@ -1,0 +1,55 @@
+{
+  "file": "/files/Even OPD Policy Document.pdf",
+  "qset": [
+    {
+      "question": "What is the annual OPD cover amount under the Even membership?",
+      "answer": "₹10 lakh a year",
+      "category": "direct"
+    },
+    {
+      "question": "Does the Even OPD plan have a waiting period?",
+      "answer": "No",
+      "category": "direct"
+    },
+    {
+      "question": "What is the co-pay amount for the Even OPD plan?",
+      "answer": "₹0",
+      "category": "direct"
+    },
+    {
+      "question": "What is the deductible under the Even OPD plan?",
+      "answer": "None",
+      "category": "direct"
+    },
+    {
+      "question": "What type of claims process does the Even OPD plan use?",
+      "answer": "Cashless",
+      "category": "direct"
+    },
+    {
+      "question": "How can a member contact Even if they have questions?",
+      "answer": "080 4749 5555, hello@even.in, +91 - 8867900461",
+      "category": "rephrase"
+    },
+    {
+      "question": "What does the managed care benefit include according to the document?",
+      "answer": "Even doctors create your unique health profile and design specialised programs to manage your health risks and wellness goals with in-house specialists",
+      "category": "rephrase"
+    },
+    {
+      "question": "What happens during physiotherapy if satisfactory ADL is achieved after five sessions?",
+      "answer": "Physiotherapy will stop if satisfactory ADL is achieved after the condition is reviewed following five sessions",
+      "category": "rephrase"
+    },
+    {
+      "question": "Which dental services are excluded, and what is the only dental diagnostic exception?",
+      "answer": "Diagnostics or treatment related to teeth or structures supporting teeth are not covered; dental X-rays are the exception",
+      "category": "rephrase"
+    },
+    {
+      "question": "What is the first step a member should follow to use Even for consultations or lab tests?",
+      "answer": "Book a quick video consultation with our in-house doctors on the Even app, by calling our support number or texting your Even Care team",
+      "category": "rephrase"
+    }
+  ]
+}

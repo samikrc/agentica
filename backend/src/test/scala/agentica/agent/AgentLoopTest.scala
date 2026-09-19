@@ -9,7 +9,7 @@ import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
 import agentica.testutil.ScriptedLLMProvider
 import agentica.tools.ExecutionContext
 import org.scalatest.funsuite.AnyFunSuite
-import java.util.concurrent.SynchronousQueue
+import agentica.permissions.PermissionCoordinator
 import java.util.concurrent.atomic.AtomicBoolean
 import scala.collection.mutable
 
@@ -163,7 +163,7 @@ class AgentLoopTest extends AnyFunSuite
         val (loop, store, _, _, _) = makeLoop(List("Here is my answer.\n<done>"))
         var finalId: Option[String] = None
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.Final(id, _) => finalId = Some(id)
@@ -184,7 +184,7 @@ class AgentLoopTest extends AnyFunSuite
         val store = new StubMessageStore()
         val (loop, _, _, _, _) = makeLoop(List("Here is my answer.<done>"), store = store)
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -198,7 +198,7 @@ class AgentLoopTest extends AnyFunSuite
         val store = new StubMessageStore()
         val (loop, _, _, _, _) = makeLoop(List("Answer.\n<done>\n<done>"), store = store)
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -212,7 +212,7 @@ class AgentLoopTest extends AnyFunSuite
         val (loop, _, _, _, _) = makeLoop(List("Plain answer with no marker."))
         var finalEmitted = false
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.Final(_, _) => finalEmitted = true
@@ -227,7 +227,7 @@ class AgentLoopTest extends AnyFunSuite
         val (loop, _, _, _, _) = makeLoop(List("token-by-token\n<done>"))
         val received = mutable.ListBuffer.empty[String]
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = tok => received.append(tok),
             emitEvent = _ => ()
         )
@@ -244,7 +244,7 @@ class AgentLoopTest extends AnyFunSuite
             "Done.\n<done>"
         ))
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -267,7 +267,7 @@ class AgentLoopTest extends AnyFunSuite
         var toolStartCount  = 0
         var toolResultCount = 0
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.Final(_, _)             => finalEmitted    = true
@@ -293,7 +293,7 @@ class AgentLoopTest extends AnyFunSuite
             shell = shell
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -307,7 +307,7 @@ class AgentLoopTest extends AnyFunSuite
         val (loop, _, _, shell, _) = makeLoop(List("Should never be called.\n<done>"))
         var cancelledEmitted = false
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(true), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(true), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.Cancelled => cancelledEmitted = true
@@ -328,7 +328,7 @@ class AgentLoopTest extends AnyFunSuite
         val (loop, _, _, shell, _) = makeLoop(infiniteToolCalls, settings = settings)
 
         var errorEmitted = false
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.AgentError("max_iterations_exceeded") => errorEmitted = true
@@ -355,7 +355,7 @@ class AgentLoopTest extends AnyFunSuite
             store = store
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -377,7 +377,7 @@ class AgentLoopTest extends AnyFunSuite
         val (loop, _, _, _, _) = makeLoop(List(""), store = store)
         var finalEmitted = false
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.Final(_, _) => finalEmitted = true
@@ -413,7 +413,7 @@ class AgentLoopTest extends AnyFunSuite
         var finalEmitted    = false
         var iterationCount  = 0
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.Final(_, _)          => finalEmitted   = true
@@ -455,7 +455,7 @@ class AgentLoopTest extends AnyFunSuite
         val loop = new TestableAgentLoop(llm, store, new StubRunStore(), new StubTokenAccounting(), shell, responsesSettings)
 
         var errorEmitted = false
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.AgentError(_) => errorEmitted = true
@@ -481,7 +481,7 @@ class AgentLoopTest extends AnyFunSuite
         )
         var finalEmitted = false
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.Final(_, _) => finalEmitted = true
@@ -500,7 +500,7 @@ class AgentLoopTest extends AnyFunSuite
         val (loop, _, _, _, _) = makeLoop(List("Answer.\n<done>"))
         val boundaries = mutable.ListBuffer.empty[Int]
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.IterationBoundary(i) => boundaries.append(i)
@@ -518,7 +518,7 @@ class AgentLoopTest extends AnyFunSuite
         ))
         val boundaries = mutable.ListBuffer.empty[Int]
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.IterationBoundary(i) => boundaries.append(i)
@@ -541,7 +541,7 @@ class AgentLoopTest extends AnyFunSuite
             runStore = rs
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -565,7 +565,7 @@ class AgentLoopTest extends AnyFunSuite
             runStore = rs
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -586,7 +586,7 @@ class AgentLoopTest extends AnyFunSuite
             runStore = rs
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -605,7 +605,7 @@ class AgentLoopTest extends AnyFunSuite
             runStore = rs
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -629,7 +629,7 @@ class AgentLoopTest extends AnyFunSuite
             shell    = shell
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -652,7 +652,7 @@ class AgentLoopTest extends AnyFunSuite
             shell    = shell
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -674,7 +674,7 @@ class AgentLoopTest extends AnyFunSuite
             shell    = shell
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -693,7 +693,7 @@ class AgentLoopTest extends AnyFunSuite
         )
         val loop = makeLoopWithCapturing(provider)
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -717,7 +717,7 @@ class AgentLoopTest extends AnyFunSuite
             runStore = rs
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -796,7 +796,7 @@ class AgentLoopTest extends AnyFunSuite
             new StubTokenAccounting(), capturingShell, defaultSettings
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -863,7 +863,7 @@ class AgentLoopTest extends AnyFunSuite
     test("single-shot response: AgentTurn is persisted with empty steps") {
         val (loop, msgStore, turnStore, _) = makeLoopWithTurns(List("Direct answer.\n<done>"))
 
-        loop.run(session, Nil, userMsg, "trace-1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "trace-1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -887,7 +887,7 @@ class AgentLoopTest extends AnyFunSuite
             )
         )
 
-        loop.run(session, Nil, userMsg, "trace-2", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "trace-2", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -912,7 +912,7 @@ class AgentLoopTest extends AnyFunSuite
             )
         )
 
-        loop.run(session, Nil, userMsg, "trace-3", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "trace-3", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -935,7 +935,7 @@ class AgentLoopTest extends AnyFunSuite
             )
         )
 
-        loop.run(session, Nil, userMsg, "trace-4", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "trace-4", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -969,7 +969,7 @@ class AgentLoopTest extends AnyFunSuite
             shell = fixedShell
         )
 
-        loop.run(session, Nil, userMsg, "trace-5", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "trace-5", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -987,7 +987,7 @@ class AgentLoopTest extends AnyFunSuite
             llmResponses = List("This won't reach Final.\n<done>")
         )
 
-        loop.run(session, Nil, userMsg, "trace-6", cancelFlag, new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "trace-6", cancelFlag, new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -1019,7 +1019,7 @@ class AgentLoopTest extends AnyFunSuite
             runStore = rs
         )
 
-        loop.run(session, Nil, userMsg, "t1", cancelFlag, new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", cancelFlag, new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -1113,7 +1113,7 @@ class AgentLoopTest extends AnyFunSuite
             Nil, // Empty history = first turn
             userMsg,
             "t1",
-            new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+            new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.Final(_, sessionTitle) =>
@@ -1153,7 +1153,7 @@ class AgentLoopTest extends AnyFunSuite
             history, // Non-empty history = subsequent turn
             userMsg,
             "t2",
-            new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+            new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.Final(_, sessionTitle) =>
@@ -1187,7 +1187,7 @@ class AgentLoopTest extends AnyFunSuite
             Nil, // First turn
             userMsg,
             "t1",
-            new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+            new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
                 case AgentEvent.Final(_, sessionTitle) =>
@@ -1290,7 +1290,7 @@ class AgentLoopTest extends AnyFunSuite
         val provider = CapturingResponsesProvider(List("Answer.\n<done>"))
         val loop     = makeLoopWithCapturing(provider)
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -1307,7 +1307,7 @@ class AgentLoopTest extends AnyFunSuite
         val loop        = makeLoopWithCapturing(provider)
         val priorAssist = Message("prior-1", session.id, MessageRole.Assistant, "Prior answer.", "")
 
-        loop.run(session, List(priorAssist), userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, List(priorAssist), userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -1329,7 +1329,7 @@ class AgentLoopTest extends AnyFunSuite
         )
         val loop = makeLoopWithCapturing(provider)
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -1345,7 +1345,7 @@ class AgentLoopTest extends AnyFunSuite
         val provider = CapturingResponsesProvider(List("Answer.\n<done>"))
         val loop     = makeLoopWithCapturing(provider)
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -1363,7 +1363,7 @@ class AgentLoopTest extends AnyFunSuite
         )
         val loop = makeLoopWithCapturing(provider)
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -1378,7 +1378,7 @@ class AgentLoopTest extends AnyFunSuite
         val provider           = CapturingResponsesProvider(List("Answer.\n<done>"))
         val loop               = makeLoopWithCapturing(provider)
 
-        loop.run(sessionWithPriorId, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(sessionWithPriorId, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -1394,7 +1394,7 @@ class AgentLoopTest extends AnyFunSuite
         val provider           = CapturingResponsesProvider(List("Answer.\n<done>"))
         val loop               = makeLoopWithCapturing(provider)
 
-        loop.run(sessionWithPriorId, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(sessionWithPriorId, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -1424,7 +1424,7 @@ class AgentLoopTest extends AnyFunSuite
             new StubSessionStore()
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )
@@ -1459,7 +1459,7 @@ class AgentLoopTest extends AnyFunSuite
             new StubSessionStore()
         )
 
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new SynchronousQueue[GrantDecision](),
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = _ => ()
         )

@@ -124,7 +124,8 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
                 .relativize(mdPath).toString
 
             // Check if cached Markdown is fresh
-            val cachedMdFresh = Files.exists(mdPath) && {
+            val cachedMdFresh = Files.exists(mdPath) &&
+            {
                 val mdAttrs = Files.readAttributes(mdPath, classOf[BasicFileAttributes])
                 val mdMtime = mdAttrs.lastModifiedTime().toMillis
                 mdMtime >= sourceMtime && mdAttrs.size() > 100
@@ -132,10 +133,13 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
 
             if (cachedMdFresh)
             {
-                val pageCount = try {
+                val pageCount = try
+                {
                     val content = Files.readString(mdPath)
                     content.split("\n---\n").length
-                } catch {
+                }
+                catch
+                {
                     case _: Throwable => 0
                 }
                 return FilesReadDOCXToMarkdownOutput(mdRelPath, pageCount, sizeBytes, sourcePath, false)
@@ -175,24 +179,19 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
             val hasGrant = ctx.scopeStore.hasGrant(ctx.session.id, name, parentRelPath)
             if (!hasGrant)
             {
-                ctx.onEvent(AgentEvent.PermissionRequired(
+                ctx.permissionCoordinator.request(
                     tool    = name,
                     path    = Some(parentRelPath),
-                    options = List("Allow once", "Allow for session", "Allow always", "Deny")
-                ))
-                Option(ctx.permissionLatch.poll(60, java.util.concurrent.TimeUnit.SECONDS)) match
+                    options = List("Allow once", "Allow for session", "Allow always", "Deny"),
+                    onEvent = ctx.onEvent
+                ) match
                 {
-                    case None =>
+                    case GrantDecision.Denied =>
                         return FilesReadDOCXToMarkdownOutput(
                             "", 0, sizeBytes, sourcePath, false,
                             Some(FilesError.IoError("Permission denied to write Markdown file to workspace"))
                         )
-                    case Some(GrantDecision.Denied) =>
-                        return FilesReadDOCXToMarkdownOutput(
-                            "", 0, sizeBytes, sourcePath, false,
-                            Some(FilesError.IoError("Permission denied to write Markdown file to workspace"))
-                        )
-                    case Some(granted: GrantDecision.Granted) =>
+                    case granted: GrantDecision.Granted =>
                         ctx.scopeStore.addGrant(ctx.session.id, name, granted)
                 }
             }

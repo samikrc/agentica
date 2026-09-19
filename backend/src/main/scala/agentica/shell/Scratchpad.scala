@@ -32,7 +32,7 @@ case class ScratchEntry(
  *  The ref format is `$scratch/<sourcePath>`, e.g. `$scratch/data/report.txt`.
  *
  *  One [[SessionScratchpad]] is held per active session in `BackendServer`
- *  (`ConcurrentHashMap[sessionId, SessionScratchpad]`) and removed when the
+ *  (`TrieMap[sessionId, SessionScratchpad]`) and removed when the
  *  session is deleted.  Lost on backend restart — the agent gracefully re-reads
  *  files on the next turn.
  *

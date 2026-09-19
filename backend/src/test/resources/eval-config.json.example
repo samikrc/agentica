@@ -1,0 +1,22 @@
+[
+  {
+    "label": "local-qwen-vlm",
+    "llmBaseURL": "http://localhost:1234/v1",
+    "llmModel": "mistralai/ministral-3-14b-reasoning",
+    "llmAPIKey": "lm-studio",
+    "vlmBaseURL": "http://localhost:1234/v1",
+    "vlmModel": "qwen2.5-vl-7b-instruct",
+    "vlmAPIKey": "lm-studio",
+    "judgeBaseURL": "http://localhost:1234/v1",
+    "judgeModel": "claude-3-5-sonnet",
+    "judgeAPIKey": "lm-studio",
+    "pauseBetweenPhasesMs": 30000,
+    "sessionTypes": ["all-questions-per-session", "all-questions-per-session-shuffled", "one-question-per-session"]
+  },
+  {
+    "label": "local-llm-only",
+    "llmBaseURL": "http://localhost:1234/v1",
+    "llmModel": "mistralai/ministral-3-14b-reasoning",
+    "llmAPIKey": "lm-studio"
+  }
+]

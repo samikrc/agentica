@@ -3,14 +3,13 @@ package agentica.agent
 import agentica.agent.AgentEvent
 import agentica.llm.{LLMProvider, LLMResponse}
 import agentica.observability.{TokenAccounting, TraceLogger}
-import agentica.permissions.{GrantDecision, ScopeStore}
+import agentica.permissions.{PermissionCoordinator, ScopeStore}
 import agentica.session.{AgentTurn, AgentTurnStep, AgentTurnStore, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, SessionStore, ToolRun}
 import agentica.settings.{APIMode, AppSettings}
 import agentica.shell.{SessionScratchpad, VirtualShell}
 import agentica.tools.ExecutionContext
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.{SynchronousQueue}
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -72,7 +71,7 @@ class AgentLoop(
      *  @param userMsg     New user message appended to the history.
      *  @param traceId     Trace ID for this run.
      *  @param cancelFlag       Polled between iterations and tool calls for external cancellation.
-     *  @param permissionLatch  Rendez-vous queue shared with [[agentica.server.Routes]]; tools block on this.
+     *  @param permissionCoordinator  Coordinates one-shot UI permission requests for this run.
      *  @param emitToken        Called to emit each streamed text token from the LLM.
      *  @param emitEvent        Called to emit structured lifecycle SSE events.
      */
@@ -82,7 +81,7 @@ class AgentLoop(
         userMsg:         Message,
         traceId:         String,
         cancelFlag:      AtomicBoolean,
-        permissionLatch: SynchronousQueue[GrantDecision],
+        permissionCoordinator: PermissionCoordinator,
         emitToken:       String => Unit,
         emitEvent:       AgentEvent => Unit
     ): Unit =
@@ -115,7 +114,7 @@ class AgentLoop(
             llmProvider     = llmProvider,
             vlmProvider     = vlmProvider,
             onEvent         = emitEvent,
-            permissionLatch = permissionLatch,
+            permissionCoordinator = permissionCoordinator,
             debugMode       = settings.debugMode,
             vlmParallelism  = settings.vlmParallelism
         )

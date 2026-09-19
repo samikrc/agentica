@@ -1,0 +1,55 @@
+{
+  "file": "/files/IT Support Analyst - India.pdf",
+  "qset": [
+    {
+      "question": "What is the exact job title mentioned in the document?",
+      "answer": "Desktop Support Analyst, IT Operations (India)",
+      "category": "direct"
+    },
+    {
+      "question": "Where is the Desktop Support Analyst role based?",
+      "answer": "Bangalore, India",
+      "category": "direct"
+    },
+    {
+      "question": "Which team in Houston does the analyst coordinate with?",
+      "answer": "IT Operations team",
+      "category": "direct"
+    },
+    {
+      "question": "Is this position based out of Hyderabad, India?",
+      "answer": "No, it is based out of Bangalore, India",
+      "category": "direct"
+    },
+    {
+      "question": "What is the minimum number of years of experience required for the role?",
+      "answer": "3 – 5+ years’ experience",
+      "category": "direct"
+    },
+    {
+      "question": "What educational background is expected for the Desktop Support Analyst position?",
+      "answer": "BS or MS in Information Technology related field or equivalent experience of knowledge and experience",
+      "category": "rephrase"
+    },
+    {
+      "question": "Which operating systems and device platforms must the analyst be able to support?",
+      "answer": "Windows, macOS, iOS, and Android",
+      "category": "rephrase"
+    },
+    {
+      "question": "Are there any certification requirements mentioned for the role?",
+      "answer": "Nothing as required. Preferred certifications include CompTIA, Microsoft, ITIL/HDI, Customer Service",
+      "category": "rephrase"
+    },
+    {
+      "question": "What cloud and enterprise technology experience is listed as a requirement?",
+      "answer": "Required cloud experience: Azure. Working knowledge and experience with other enterprise technologies such as MS 365, BMS Kaseya, ADO, Ticketing, Teams and Zoom, and Conference room technologies.",
+      "category": "rephrase"
+    },
+    {
+      "question": "What are some of the soft skills mentioned as important for the role?",
+      "answer": "Here are some of the mentioned ones: Strong organizational and communications skills, attention to detail, drive to solve issues with technology, customer-first mentality, work collaboratively with team members, critical thinking, and eagerness to learn and advance his/her career, ability to deal with multiple, competing objectives, ability to stay flexible and shift focus based on high priority items.",
+      "category": "rephrase"
+    }
+  ]
+}
