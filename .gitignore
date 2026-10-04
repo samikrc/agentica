@@ -18,4 +18,6 @@ restserver/src/main/scripts/
 # Files
 *.iml
 *.jar
+*.pdf
 dev.conf
+eval-config.json

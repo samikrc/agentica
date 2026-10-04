@@ -257,12 +257,12 @@ The system uses a **custom Scala agent loop** rather than a third-party framewor
 
 ### Rationale
 
-- The exposed tool surface is deliberately minimal (a single `run(command=...)` against the virtual shell — see §10). A general-purpose framework adds abstraction layers with little payoff at this scope.
+- The exposed tool surface is deliberately minimal (provider-native function calls dispatched to the virtual shell — see §10 and `agent_loop_runtime.md` §3.5). A general-purpose framework adds abstraction layers with little payoff at this scope.
 - A hand-written loop of ~300 LOC is small enough to read, debug, and evolve as prompting/tooling research progresses.
 - Avoids pulling in heavy transitive dependencies (gRPC, Guava, Protobuf) that Google ADK would introduce.
 - Keeps the project aligned with the local-first, dependency-light design ethos.
 
-> **Status:** Phase 1 implements a single streaming LLM turn so the UI, persistence, observability, and SSE pipeline are exercised. **Phase 2 is fully implemented** — multi-iteration plan→act→observe loop, virtual shell dispatch, `files.*` / `memory.*` tools, permission model, context management, system prompt, and debug log viewer. See `agent_loop_runtime.md` for the complete technical spec. **Phase 2.5** adds agent turn trajectory persistence, collapsible step rendering in the UI, session title auto-generation, message action buttons (copy, restart, token stats), and the per-turn token stats panel.
+> **Status:** Phase 1 implements a single streaming LLM turn so the UI, persistence, observability, and SSE pipeline are exercised. **Phase 2 is fully implemented** — multi-iteration plan→act→observe loop, virtual shell dispatch, `files_*` / `memory_*` tools, permission model, context management, system prompt, and debug log viewer. See `agent_loop_runtime.md` for the complete technical spec. **Phase 2.5** adds agent turn trajectory persistence, collapsible step rendering in the UI, session title auto-generation, message action buttons (copy, restart, token stats), and the per-turn token stats panel.
 
 ### Responsibilities of the Agent Loop
 
@@ -302,7 +302,7 @@ Although ADK is dropped for v1, the loop should live behind an `AgentEngine` tra
 
 ## 10. Virtual Shell Runtime (Core Design)
 
-Inspired by emerging agent design patterns, the system will implement a **virtual shell abstraction** where the agent interacts using command-like text, but execution is fully controlled and safe.
+Inspired by emerging agent design patterns, the system implements a **virtual shell abstraction** where commands retain a compact internal namespace and controlled execution semantics. Models invoke those commands through provider-native structured function calls rather than command-like free text.
 
 ### Design Goals
 - Align with LLM training (CLI-style interaction)  
@@ -319,8 +319,8 @@ The runtime is split into two cleanly separated layers. This is a deliberate bor
 
 ```text
 [ Agent Loop (custom Scala, §9) ]
-     ↓  run(command="...")
-[ Command Tokenizer ]
+     ↓  native function name + JSON arguments
+[ Command Registry ]
      ↓  Single-Command AST
 [ Execution Layer ] — typed Scala tool, deterministic, returns structured value
      ↓  raw structured result
@@ -347,28 +347,28 @@ Rationale: agent-UX (terse, parseable, recoverable) and tool semantics (correct,
 
 ### Command Interface
 
-Single exposed tool in v1:
+Each registered command is exposed as a native function generated from the same schema used for validation and help:
 
 ```text
-run(command="files.read path=foo.txt")
+files_read({"path":"foo.txt"})
 ```
 
-A second tool, `commit(...)`, is **deferred** (see "Future: Typed Commits at Transactional Edges" below).
+The canonical name is `files_read` across the provider wire, registry, help, events, persistence, and evaluation output. Family (`files`) and verb (`read`) remain structured metadata. A separate `commit(...)` tool remains **deferred** (see "Future: Typed Commits at Transactional Edges" below).
 
-### Command Language (DSL)
+### Canonical Tool Identifiers
 
 A constrained CLI-like syntax (not full bash). Commands are namespaced by **action family** (see next subsection):
 
 ```text
-files.read path=foo.txt
-files.search query="revenue" path=reports/
-llm.summarize text="..."
-files.write path=out.txt content="..."
+files_read path=foo.txt
+files_search query="revenue" path=reports/
+llm_summarize text="..."
+files_write path=out.txt content="..."
 ```
 
 **Pipelines are NOT supported in v1.** The agent issues successive `run()` calls and the loop carries intermediate values across iterations as part of the conversation.
 
-Rationale: piping between tools forces a common intermediate representation (text vs structured values), which causes lossy conversions (e.g., Apache POI cell objects stringified into a `summarize` stage). Requiring explicit steps keeps each tool's I/O type clean and defers the pipeline/typed-value design to a later revision.
+Rationale: piping between tools forces a common intermediate representation (text vs structured values), which causes lossy conversions (e.g., Apache POI cell objects stringified into a `summarize` stage). Requiring explicit steps keeps each tool's I/O type clean and defers the pipeline/typed-value design to a later revision_
 
 **Output-capture variables (`$last`, `$1`, `$2`, ...) remain deferred beyond Phase 2.** Phase 2 implemented a more focused solution for the primary use case — large-output handling — via the **`$scratch/<path>` ref system** (`SessionScratchpad`):
 
@@ -380,10 +380,10 @@ Rationale: piping between tools forces a common intermediate representation (tex
 Example with scratchpad:
 
 ```text
-run(command="files.read path=big_report.txt")
+files_read({"path":"big_report.txt"})
    → ─ stored: $scratch/big_report.txt   [content in SessionScratchpad, not in context]
 
-run(command="llm.summarize text=$scratch/big_report.txt")
+llm_summarize({"text":"$scratch/big_report.txt"})
    → [$scratch/... resolved by substitution pass; full content passed directly to LLM]
 ```
 
@@ -418,15 +418,15 @@ Rationale: this directly addresses the "40 overlapping tools" sprawl pattern obs
 
 - Each command maps to a typed tool in the execution layer.
 - No shell execution or subprocess calls (except sealed external tools, e.g., `soffice` — see §11.4).
-- One `run()` invocation = one tool execution. Multi-step workflows are achieved by the agent loop issuing successive `run()` calls (e.g., `files.read` → `llm.summarize` → `files.write` as three separate iterations), not by chaining inside a single command.
+- One native function call = one tool execution. Multi-step workflows are achieved by the agent loop issuing successive calls (e.g., `files_read` → `llm_summarize` → `files_write` as three separate iterations), not by chaining inside a single command.
 - Every tool resolves `path=` arguments against the session's `root_path` (§6) and rejects any path that escapes it. This is a stated invariant of every file-touching tool, not per-tool boilerplate.
 
 Example (three successive agent iterations):
 
 ```text
-run(command="files.read path=foo.txt")
-run(command="llm.summarize text=\"...contents from previous step...\"")
-run(command="files.write path=out.txt content=\"...summary...\"")
+files_read({"path":"foo.txt"})
+llm_summarize({"text":"...contents from previous step..."})
+files_write({"path":"out.txt","content":"...summary..."})
 ```
 
 ### AgentResponse Envelope
@@ -436,7 +436,7 @@ Every command result — success or error — is rendered by the presentation la
 **Success:**
 
 ```text
-$ files.read path=foo.txt
+$ files_read path=foo.txt
 ok
 ─ size: 1.2 KB · lines: 47 · truncated: false
 ─────
@@ -446,10 +446,10 @@ ok
 **Error:**
 
 ```text
-$ files.read path=foo.txt
+$ files_read path=foo.txt
 error: not_found
 ─ hint: did you mean data/foo.txt? (3 candidates)
-─ try: files.search query=foo
+─ try: files_search query=foo
 ```
 
 **Long-running progress (streamed over SSE between start and final):**
@@ -492,7 +492,7 @@ The production pattern recommended in the references (§20) is a **hybrid**: kee
 The planned mechanism is a second tool alongside `run()`:
 
 ```text
-commit(action="files.write", path="...", content="...", reason="...")
+commit(action="files_write", path="...", content="...", reason="...")
 ```
 
 `commit()` would differ from `run()` in three ways: mandatory permission-scope check (§12.6), full `reason` text logged for audit, and a strictly typed (not presentation-fuzzed) result. **Deferred from v1**; v1 enforces the same gates inline within `run()` for sensitive commands. Reintroduce `commit()` when the cloud-LLM and broader-mutation surfaces arrive.
@@ -525,7 +525,7 @@ The system will support reading, writing, and updating Microsoft Office document
 
 **Excel support is explicitly dropped from v1.**
 
-Rationale: Excel is the richest of the three formats (formulas, multiple data types per cell, ranges, formatting, pivot tables). Exposing it safely to an agent requires careful design of the tool surface — in particular, avoiding mini-languages embedded in tool arguments (e.g., `operation="add column total = a + b"`) that would re-introduce the very eval-on-LLM-output risk the architecture is built to prevent. Excel tooling will be designed properly in a later revision.
+Rationale: Excel is the richest of the three formats (formulas, multiple data types per cell, ranges, formatting, pivot tables). Exposing it safely to an agent requires careful design of the tool surface — in particular, avoiding mini-languages embedded in tool arguments (e.g., `operation="add column total = a + b"`) that would re-introduce the very eval-on-LLM-output risk the architecture is built to prevent. Excel tooling will be designed properly in a later revision_
 
 ---
 
@@ -838,11 +838,11 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 - Per-OS packaging exploration deferred until Phase 5
 
 ### Phase 2 *(Complete)*
-- Full plan→act→observe agent loop with `ToolCallParser`, cancellation, and `maxIterations` cap — see `agent_loop_runtime.md` §3
+- Full plan→act→observe agent loop with native `tool_calls` dispatch (`ToolCallParser` from the initial text protocol has since been removed), cancellation, and `maxIterations` cap — see `agent_loop_runtime.md` §3
 - Context management: token-budget-aware sliding window, newest-first truncation, system prompt with `{{TOOL_INDEX}}` / `{{ROOT_PATH}}` / `{{TODAY}}` substitution
 - Virtual shell runtime: `Tokenizer`, `CommandRegistry`, `VirtualShell`, `Presentation` layer (8000-char body budget, `$scratch/<path>` scratchpad for overflow)
-- Action families implemented: `files.*` (`read`, `write`, `list`, `search`, `stat`), `memory.*` (`get`, `set`, `list`). `llm.*` (`summarize`, `extract`, `classify`) remain stubs — Phase 2 Step 5 incomplete
-- Scoped permission model (`Once`/`ForSession`/`Always`) + UI modal for `files.write`
+- Action families implemented: `files_*` (`read`, `write`, `list`, `search`, `stat`), `memory_*` (`get`, `set`, `list`). `llm_*` (`summarize`, `extract`, `classify`) remain stubs — Phase 2 Step 5 incomplete
+- Scoped permission model (`Once`/`ForSession`/`Always`) + UI modal for `files_write`
 - Debug log viewer: `GET /log/stream` WebSocket endpoint + `log-viewer.html` + "Debug log" button
 - Golden scenarios catalog: 8 scenarios with `JSONFileLLMProvider` replay; full integration test suite
 
@@ -857,12 +857,12 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 - Office document tools (Word, PowerPoint via POI; Pandoc markdown-first approach; LibreOffice sealed wrapper)
 - llama.cpp provider as power-user option
 - Cloud LLM providers (OpenAI, Anthropic) + OS-keychain secrets
-- Browser tools (`browser.open`, `browser.select` via Playwright)
+- Browser tools (`browser_open`, `browser_select` via Playwright)
 - Native packaging + signing/notarization exploration after JavaFX launcher stabilizes
 
 ### Phase 4
-- Vision tools (`vision.describe`, `vision.extract_text` via multimodal LLM)
-- Audio transcription (`audio.transcribe` via Whisper CLI)
+- Vision tools (`vision_describe`, `vision_extract_text` via multimodal LLM)
+- Audio transcription (`audio_transcribe` via Whisper CLI)
 - RAG (file indexing + retrieval)
 
 ### Phase 5
@@ -879,6 +879,9 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 
 - Reddit discussion on agent architecture and command-based interfaces:  
   https://www.reddit.com/r/LocalLLaMA/comments/1rrisqn/i_was_backend_lead_at_manus_after_building_agents/
+
+- Surviving mirror of the Manus backend-lead post:
+  https://gist.github.com/thoroc/973bef1770387e1986876ab6c6d20947
 
 - Command-layer vs function-calling discussion:  
   https://cloudai.pt/the-post-function-calling-ai-stack-why-more-agent-builders-are-turning-to-command-layers/
