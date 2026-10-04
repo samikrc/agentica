@@ -1,7 +1,7 @@
 package agentica.agent
 
 import agentica.agent.AgentEvent
-import agentica.llm.{LLMProvider, LLMResponse}
+import agentica.llm.{LLMProvider, LLMResponse, NativeToolCall}
 import agentica.observability.{TokenAccounting, TraceLogger}
 import agentica.permissions.{PermissionCoordinator, ScopeStore}
 import agentica.session.{AgentTurn, AgentTurnStep, AgentTurnStore, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, SessionStore, ToolRun}
@@ -14,9 +14,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  *  Full Phase 2 plan→act→observe agent loop.
- *  Iterates up to `settings.maxIterations` times, dispatching all `run(command="...")` calls
- *  found in each LLM response through [[VirtualShell]], injecting results as `user`-role
- *  `[TOOL RESULT]` turns, until the model emits `<done>` or no further tool calls.
+ *  Iterates up to `settings.maxIterations` times, dispatching the native function
+ *  calls (`tool_calls`) in each LLM response through [[VirtualShell]], injecting
+ *  results as `tool`-role messages correlated by `tool_call_id`, until the model
+ *  responds with no further tool calls.
  *  @param initialLLMProvider      Initial LLM provider for streaming; replaceable via [[updateProviders]].
  *  @param initialVLMProvider      Initial optional Vision LLM provider; replaceable via [[updateProviders]].
  *  @param messageStore             Persistence layer for chat messages.
@@ -97,10 +98,13 @@ class AgentLoop(
                 "vlmModel" -> vlmModel
             ))
 
-        // Accumulates assistant + [TOOL RESULT] turn pairs added during the current run.
-        // These are appended after the budget-windowed history on every buildContext() call
-        // so the model always sees the full in-flight tool exchange, regardless of budget.
+        // Accumulates assistant tool-call turns + tool-result messages added during the
+        // current run. These are appended after the budget-windowed history on every
+        // buildContext() call so the model always sees the full in-flight tool exchange.
         val toolResultTurns = scala.collection.mutable.ListBuffer.empty[Message]
+        // Messages added by the most recent tool-dispatch iteration — the delta sent
+        // to the Responses API on warm continuations.
+        var lastTurnDelta: List[Message] = Nil
         // Accumulates ordered trajectory steps for AgentTurn persistence.
         val turnSteps       = scala.collection.mutable.ListBuffer.empty[AgentTurnStep]
         // Shared context for all tool calls within this run
@@ -145,7 +149,7 @@ class AgentLoop(
 
             if (iteration > settings.maxIterations)
             {
-                // Hard cap: prevents runaway loops on models that never emit <done>.
+                // Hard cap: prevents runaway loops on models that keep requesting tools.
                 TraceLogger.warn(traceId, "max_iterations_exceeded",
                     Map("maxIterations" -> settings.maxIterations.toString))
                 emitEvent(AgentEvent.AgentError("max_iterations_exceeded"))
@@ -186,34 +190,24 @@ class AgentLoop(
                 //  - Warm continuation, first iteration: the server already has all prior
                 //    state — send only the new user message.
                 //  - Warm continuation, subsequent iterations: the server retains the prior
-                //    response — send only the tool result block as a new user message.
+                //    assistant function-call items — send only the correlated tool outputs.
                 val llmInput: List[Message] = lastResponseId match
                 {
                     case None    => context
                     case Some(_) =>
-                        if (iteration == 1)
-                        {
-                            List(userMsg)
-                        }
-                        else
-                        {
-                            List(Message(
-                                id        = "",
-                                sessionId = session.id,
-                                role      = MessageRole.User,
-                                content   = toolResultTurns.last.content,
-                                timestamp = ""
-                            ))
-                        }
+                        if (iteration == 1) List(userMsg)
+                        else lastTurnDelta.filter(_.role == MessageRole.Tool)
                 }
 
                 val llmResponseOpt: Option[LLMResponse] = try
                 {
                     val response = settings.apiMode match
                         case APIMode.Responses =>
-                            llmProvider.streamResponses(llmInput, wrappedEmitToken, lastResponseId)
+                            llmProvider.streamResponses(llmInput, wrappedEmitToken, lastResponseId,
+                                virtualShell.toolSchemas)
                         case APIMode.ChatCompletions =>
-                            llmProvider.streamChatCompletions(context, wrappedEmitToken)
+                            llmProvider.streamChatCompletions(context, wrappedEmitToken,
+                                virtualShell.toolSchemas)
                     Some(response)
                 }
                 catch
@@ -241,38 +235,39 @@ class AgentLoop(
                         "response"  -> responseText
                     ))
 
-                    // --- ACT: scan the full response for tool calls ---
-                    // Deduplicate by rawCommand to guard against models repeating the same call.
-                    val toolCalls = ToolCallParser.parse(responseText, traceId)
-                        .distinctBy {
-                            case ToolCallResult.Success(tc) => tc.rawCommand
-                            case ToolCallResult.Failure(e)  => e.reason
-                        }
+                    // --- ACT: read native tool calls from the structured response ---
+                    // Deduplicate to guard against models repeating the same call.
+                    val toolCalls = llmResponse.toolCalls
+                        .distinctBy(c => (c.name, c.argumentsJson))
 
                     if (toolCalls.nonEmpty)
                     {
-                        val calls = toolCalls.collect {
-                            case ToolCallResult.Success(tc) => tc.rawCommand
-                            case ToolCallResult.Failure(e)  => s"[parse_failed: ${e.reason}]"
-                        }.mkString(" | ")
-                        TraceLogger.info(traceId, "tool_calls_parsed", Map(
+                        TraceLogger.info(traceId, "tool_calls_received", Map(
                             "iteration" -> iteration.toString,
                             "count"     -> toolCalls.length.toString,
-                            "calls"     -> calls
+                            "calls"     -> toolCalls.map(c => s"${c.name}(${c.argumentsJson})").mkString(" | ")
                         ))
                     }
 
-                    if (toolCalls.isEmpty)
+                    if (toolCalls.isEmpty && responseText.trim.isEmpty)
                     {
-                        // No run() calls → the model is done. Look for the <done> marker;
-                        // accept the response regardless (soft fallback if marker is absent).
-                        val hasDone = responseText.contains("<done>")
-                        if (!hasDone)
-                        {
-                            TraceLogger.warn(traceId, "missing_terminator",
-                                Map("iteration" -> iteration.toString))
-                        }
-                        val finalText    = responseText.replace("<done>", "").trim
+                        val diagnostic =
+                            s"empty_llm_response finishReason=${llmResponse.finishReason.getOrElse("unknown")} " +
+                            s"reasoningChars=${llmResponse.reasoningContent.fold(0)(_.length)} " +
+                            s"completionTokens=${llmResponse.completionTokens}"
+                        TraceLogger.error(traceId, "empty_llm_response", Map(
+                            "iteration"        -> iteration.toString,
+                            "finishReason"     -> llmResponse.finishReason.getOrElse("unknown"),
+                            "reasoningChars"   -> llmResponse.reasoningContent.fold(0)(_.length).toString,
+                            "completionTokens" -> llmResponse.completionTokens.toString
+                        ))
+                        emitEvent(AgentEvent.AgentError(diagnostic))
+                        running = false
+                    }
+                    else if (toolCalls.isEmpty)
+                    {
+                        // No tool calls and non-empty content → the model is done.
+                        val finalText    = responseText.trim
                         val assistantMsg = messageStore.append(session.id, MessageRole.Assistant, finalText)
                         agentTurnStore.insert(AgentTurn(
                             id             = java.util.UUID.randomUUID().toString,
@@ -303,81 +298,87 @@ class AgentLoop(
                     }
                     else
                     {
-                        // --- OBSERVE: dispatch each tool call and collect results ---
+                        // --- OBSERVE: dispatch each native tool call and emit tool results ---
 
-                        // All results for this iteration are concatenated into one [TOOL RESULT] block
-                        // and injected as a user-role turn so the model can observe them together.
-                        val resultLines = StringBuilder()
-                        resultLines.append("[TOOL RESULT]\n")
+                        // The assistant turn carries the model's verbatim tool_calls payload so
+                        // providers can correlate each role=tool result with its tool_call_id.
+                        val assistantTurnMsg = messageStore.appendMessage(Message(
+                            id            = "",
+                            sessionId     = session.id,
+                            role          = MessageRole.Assistant,
+                            content       = responseText,
+                            timestamp     = "",
+                            toolCallsJson = Some(nativeCallsJson(toolCalls))
+                        ))
+                        toolResultTurns.append(assistantTurnMsg)
+
+                        val newTurns = scala.collection.mutable.ListBuffer(assistantTurnMsg)
 
                         var cancelled = false
                         val callIter  = toolCalls.iterator
                         while (callIter.hasNext && !cancelled)
                         {
-                            callIter.next() match
+                            val tc = callIter.next()
+                            if (cancelFlag.get())
                             {
-                                case ToolCallResult.Failure(err) =>
-                                    // Inject a structured error so the model can observe and self-correct.
-                                    // Silently dropping would corrupt the model's reasoning chain.
-                                    // Note: cancelFlag is not checked here — Failure injection is an
-                                    // instant in-memory operation with no I/O, so the overhead is negligible.
-                                    TraceLogger.warn(traceId, "tool_parse_failure_injected",
-                                        Map("iteration" -> iteration.toString, "parseError" -> err.reason))
-                                    val errText =
-                                        s"$$ ${err.rawSnippet}\n" +
-                                        s"error: parse_failed\n" +
-                                        s"─ message: ${err.reason}\n" +
-                                        s"─ hint: check quoting — command= value must be a double-quoted string\n"
-                                    resultLines.append(errText)
+                                // Check for cancellation between individual tool dispatches.
+                                TraceLogger.info(traceId, "agent_cancelled_in_tool",
+                                    Map("iteration" -> iteration.toString))
+                                emitEvent(AgentEvent.Cancelled)
+                                cancelled = true
+                                running   = false
+                            }
+                            else
+                            {
+                                val nativeDisplay = virtualShell.describeNative(tc.name, tc.argumentsJson)
+                                emitEvent(AgentEvent.ToolCallStart(nativeDisplay, ""))
+                                val t0 = System.currentTimeMillis()
+                                // Dispatch: function name + JSON args → Command → registry → Presentation.
+                                // Malformed names/args come back as an error AgentResponse so the
+                                // model can observe and self-correct (never silently dropped).
+                                val (displayCmd, response) = virtualShell.executeNative(
+                                    tc.name, tc.argumentsJson, sharedCtx)
+                                val durMs = System.currentTimeMillis() - t0
+                                emitEvent(AgentEvent.ToolCallResult(displayCmd, response.text, durMs))
 
-                                case ToolCallResult.Success(tc) =>
-                                    if (cancelFlag.get())
-                                    {
-                                        // Check for cancellation between individual tool dispatches.
-                                        TraceLogger.info(traceId, "agent_cancelled_in_tool",
-                                            Map("iteration" -> iteration.toString))
-                                        emitEvent(AgentEvent.Cancelled)
-                                        cancelled = true
-                                        running   = false
-                                    }
-                                    else
-                                    {
-                                        emitEvent(AgentEvent.ToolCallStart(tc.rawCommand, ""))
-                                        val t0       = System.currentTimeMillis()
-                                        // Dispatch through VirtualShell: Tokenizer → CommandRegistry → Presentation.
-                                        val response = virtualShell.execute(tc.rawCommand, sharedCtx)
-                                        val durMs    = System.currentTimeMillis() - t0
-                                        emitEvent(AgentEvent.ToolCallResult(tc.rawCommand, response.text, durMs))
-                                        resultLines.append(response.text)
-                                        resultLines.append("\n")
-                                        // Persist the tool run immediately (per-call, not end-of-run)
-                                        // so partial runs survive cancellation or JVM crash.
-                                        val toolName = tc.rawCommand.split(' ').headOption.getOrElse(tc.rawCommand)
-                                        val isErr    = response.text.contains("\nerror:")
-                                        runStore.insertRun(ToolRun(
-                                            id         = UUID.randomUUID().toString,
-                                            sessionId  = session.id,
-                                            tool       = toolName,
-                                            input      = s"""${tc.rawCommand}""",
-                                            output     = response.text,
-                                            status     = if isErr then RunStatus.Error else RunStatus.Success,
-                                            traceId    = traceId,
-                                            durationMs = durMs
-                                        ))
-                                        turnSteps.append(AgentTurnStep(
-                                            stepType   = agentica.session.StepType.ToolCall,
-                                            iteration  = iteration,
-                                            content    = "",
-                                            command    = tc.rawCommand,
-                                            result     = response.text,
-                                            durationMs = durMs
-                                        ))
-                                        TraceLogger.info(traceId, agentica.session.StepType.ToolCall.value, Map(
-                                            "iteration"  -> iteration.toString,
-                                            "command"    -> tc.rawCommand,
-                                            "durationMs" -> durMs.toString
-                                        ))
-                                    }
+                                val toolMsg = messageStore.appendMessage(Message(
+                                    id         = "",
+                                    sessionId  = session.id,
+                                    role       = MessageRole.Tool,
+                                    content    = response.text,
+                                    timestamp  = "",
+                                    toolCallId = Some(tc.id)
+                                ))
+                                toolResultTurns.append(toolMsg)
+                                newTurns.append(toolMsg)
+
+                                // Persist the tool run immediately (per-call, not end-of-run)
+                                // so partial runs survive cancellation or JVM crash.
+                                val toolName = tc.name
+                                val isErr    = response.text.contains("\nerror:")
+                                runStore.insertRun(ToolRun(
+                                    id         = UUID.randomUUID().toString,
+                                    sessionId  = session.id,
+                                    tool       = toolName,
+                                    input      = displayCmd,
+                                    output     = response.text,
+                                    status     = if isErr then RunStatus.Error else RunStatus.Success,
+                                    traceId    = traceId,
+                                    durationMs = durMs
+                                ))
+                                turnSteps.append(AgentTurnStep(
+                                    stepType   = agentica.session.StepType.ToolCall,
+                                    iteration  = iteration,
+                                    content    = "",
+                                    command    = displayCmd,
+                                    result     = response.text,
+                                    durationMs = durMs
+                                ))
+                                TraceLogger.info(traceId, agentica.session.StepType.ToolCall.value, Map(
+                                    "iteration"  -> iteration.toString,
+                                    "command"    -> displayCmd,
+                                    "durationMs" -> durMs.toString
+                                ))
                             }
                         }
 
@@ -392,23 +393,30 @@ class AgentLoop(
                                 result     = "",
                                 durationMs = 0L
                             ))
-                            // Inject the assistant turn and the tool results as a user turn
-                            // so the next buildContext() includes them after the budget window.
-                            toolResultTurns.append(
-                                Message(id = "", sessionId = session.id, role = MessageRole.Assistant,
-                                        content = responseText, timestamp = "")
-                            )
-                            toolResultTurns.append(
-                                Message(id = "", sessionId = session.id, role = MessageRole.User,
-                                        content = resultLines.toString, timestamp = "")
-                            )
+                            lastTurnDelta = newTurns.toList
                             iteration += 1
-                            // Loop back to PLAN: the model will read the results and decide next action.
+                            // Loop back to PLAN: the model will read the tool results and decide next action.
                         }
                     }
                 }
             }
         }
+    }
+
+    /**
+     *  Serialises native tool calls into the OpenAI `tool_calls` wire shape, stored on
+     *  the assistant message so it can be echoed verbatim to providers on resend.
+     */
+    private def nativeCallsJson(calls: List[NativeToolCall]): String =
+    {
+        val arr: ujson.Arr = ujson.Arr.from(calls.map { c =>
+            ujson.Obj(
+                "id"       -> c.id,
+                "type"     -> "function",
+                "function" -> ujson.Obj("name" -> c.name, "arguments" -> c.argumentsJson)
+            )
+        })
+        ujson.write(arr)
     }
 
     /**
@@ -487,9 +495,7 @@ class AgentLoop(
     private def cleanTitleText(text: String): String =
     {
         Option(text).getOrElse("")
-            .replace("<done>", "")
             .replaceAll("`[^`]*`", "")
-            .replaceAll("run\\([^)]*\\)", "")
             .replaceAll("^[\\s#>*\\-]+", "")
             .replaceAll("\\*\\*", "")
             .replaceAll("\\s+", " ")

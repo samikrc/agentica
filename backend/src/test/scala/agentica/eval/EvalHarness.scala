@@ -1,23 +1,26 @@
-package agentica.testutil
+package agentica.eval
 
 import agentica.agent.{AgentEvent, AgentLoop, ContextManager}
 import agentica.doc.{PDFPageRenderer, PageVisionTranscriber}
 import agentica.llm.{LLMProvider, LLMResponse, OpenAIProvider}
 import agentica.misctests.{MarkdownScore, MarkdownScorer}
 import agentica.observability.TokenAccounting
+import agentica.platform.AppDirs
 import agentica.permissions.{GrantDecision, GrantTTL, PermissionCoordinator, ScopeStore}
 import agentica.session.{AgentTurn, AgentTurnStore, MemoryEntry, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, SessionStore, ToolRun}
 import agentica.settings.AppSettings
 import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
+import agentica.testutil.LMStudioClient
 import agentica.tools.{AgentResponse, ExecutionContext, ToolBody}
 import agentica.tools.files.{FilesList, FilesRead, FilesReadDOCXToMarkdown, FilesReadPDFToMarkdown, FilesReadPDFToMarkdownInput, FilesReadPPTXToMarkdown, FilesSearch, FilesStat, FilesWrite}
 import agentica.tools.memory.{MemoryGet, MemoryList, MemorySet}
 import ujson.*
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
 import java.time.Instant
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.{TimeUnit, TimeoutException}
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 import scala.collection.mutable
 
 /**
@@ -39,6 +42,7 @@ import scala.collection.mutable
  *                                for local endpoints if not specified.
  *  @param sessionTypes           Session modes to run for this provider. Defaults to
  *                                `List(AllQuestionsPerSession)`.
+ *  @param reuseMarkdownCache     Whether matching cached Markdown may skip PDF conversion.
  */
 case class EvalProviderConfig(
     label:                String,
@@ -52,7 +56,59 @@ case class EvalProviderConfig(
     judgeModel:           Option[String]          = None,
     judgeAPIKey:          Option[String]          = None,
     pauseBetweenPhasesMs: Option[Long]            = None,
-    sessionTypes:         List[EvalSessionType]   = List(EvalSessionType.AllQuestionsPerSession)
+    sessionTypes:         List[EvalSessionType]   = List(EvalSessionType.AllQuestionsPerSession),
+    reuseMarkdownCache:   Boolean                 = true
+)
+
+/**
+ *  Non-sensitive metadata about a provider sweep, persisted alongside results
+ *  so downstream reporting tools can recover which models and session types
+ *  were used without re-parsing the provider configuration.
+ *
+ *  @param providerLabel     Display name for the provider entry.
+ *  @param llmBaseURL        Base URL of the primary LLM endpoint.
+ *  @param llmModel          Model identifier used for the primary LLM.
+ *  @param vlmBaseURL        Optional VLM endpoint URL.
+ *  @param vlmModel          Optional VLM model identifier.
+ *  @param judgeBaseURL      Optional judge endpoint URL.
+ *  @param judgeModel        Optional judge model identifier.
+ *  @param sessionTypes      Session modes executed for this provider.
+ *  @param questionTimeoutMs Timeout applied to each QA agent turn.
+ *  @param pdfTimeoutMs      Timeout applied to PDF-to-Markdown conversion.
+ *  @param reuseMarkdownCache Whether matching cached Markdown may skip conversion.
+ *  @param markdownCache     Cache decision details; `None` when conversion never ran.
+ */
+case class ProviderManifest(
+    providerLabel:      String,
+    llmBaseURL:         String,
+    llmModel:           String,
+    vlmBaseURL:         Option[String],
+    vlmModel:           Option[String],
+    judgeBaseURL:       Option[String],
+    judgeModel:         Option[String],
+    sessionTypes:       List[String],
+    questionTimeoutMs:  Long,
+    pdfTimeoutMs:       Long,
+    reuseMarkdownCache: Boolean,
+    markdownCache:      Option[MarkdownCacheInfo] = None
+)
+
+/**
+ *  Records how the content-addressed Markdown cache was used for one provider
+ *  sweep, so reports can distinguish reused Markdown from a fresh conversion.
+ *
+ *  @param enabled   Whether cache reuse was permitted by configuration.
+ *  @param hit       Whether an existing valid entry was reused instead of converting.
+ *  @param key       Content-addressed cache key (SHA-256 of version, PDF hash, identity).
+ *  @param pdfSha256 SHA-256 digest of the source PDF bytes.
+ *  @param source    Absolute path of the cache entry that was read or written.
+ */
+case class MarkdownCacheInfo(
+    enabled:   Boolean,
+    hit:       Boolean,
+    key:       String,
+    pdfSha256: String,
+    source:    String
 )
 
 /**
@@ -88,7 +144,15 @@ object EvalProviderConfig
     }
 
     /**
-     *  Convenience factory for a single OpenAI-compatible endpoint with an explicit label.
+     *  Creates an evaluation provider configuration for one OpenAI-compatible endpoint.
+     *  The primary LLM endpoint is also used for vision unless separate VLM settings are
+     *  supplied through the full [[EvalProviderConfig]] constructor.
+     *
+     *  @param label       Human-readable provider label used in reports and output paths.
+     *  @param llmBaseURL  Base URL of the OpenAI-compatible endpoint.
+     *  @param llmModel    Model identifier sent to the endpoint.
+     *  @param llmAPIKey   API key used to authenticate endpoint requests.
+     *  @return            Provider configuration with no separate VLM override.
      */
     def apply(
         label:      String,
@@ -235,7 +299,8 @@ object EvalConfig
                 judgeModel           = c.obj.get("judgeModel").map(_.str),
                 judgeAPIKey          = c.obj.get("judgeAPIKey").map(_.str),
                 pauseBetweenPhasesMs = c.obj.get("pauseBetweenPhasesMs").map(_.num.toLong),
-                sessionTypes         = sessionTypes
+                sessionTypes         = sessionTypes,
+                reuseMarkdownCache   = c.obj.get("reuseMarkdownCache").forall(_.bool)
             )
         }
     }
@@ -255,6 +320,109 @@ case class EvalQuestion(
 )
 
 /**
+ *  Outcome of one QA agent turn.
+ */
+enum AnswerStatus:
+    /** Turn completed and produced a final answer. */
+    case Answered
+    /** Turn or an underlying HTTP request exceeded its timeout. */
+    case Timeout
+    /** Turn failed with a non-timeout error. */
+    case Error
+
+object AnswerStatus:
+    extension (s: AnswerStatus) def label: String = s match
+    {
+        case AnswerStatus.Answered => "answered"
+        case AnswerStatus.Timeout  => "timeout"
+        case AnswerStatus.Error    => "error"
+    }
+
+/**
+ *  Outcome of judging one answer.
+ */
+enum JudgeStatus:
+    /** Judge produced a score. */
+    case Judged
+    /** Judge call timed out. */
+    case JudgeTimeout
+    /** Judge call failed with a non-timeout error. */
+    case JudgeError
+    /** Judge was not invoked because the answer did not complete normally. */
+    case Skipped
+
+object JudgeStatus:
+    extension (s: JudgeStatus) def label: String = s match
+    {
+        case JudgeStatus.Judged       => "judged"
+        case JudgeStatus.JudgeTimeout => "judge-timeout"
+        case JudgeStatus.JudgeError   => "judge-error"
+        case JudgeStatus.Skipped      => "skipped"
+    }
+
+/**
+ *  Categorical verdict produced by the judge for one answer.
+ */
+enum JudgeVerdict:
+    /** Fully correct and complete. */
+    case Correct
+    /** Partially correct or missing important details. */
+    case PartiallyCorrect
+    /** Incorrect, unsupported, or hallucinated. */
+    case Wrong
+
+object JudgeVerdict:
+    extension (v: JudgeVerdict) def label: String = v match
+    {
+        case JudgeVerdict.Correct          => "correct"
+        case JudgeVerdict.PartiallyCorrect => "partial"
+        case JudgeVerdict.Wrong            => "wrong"
+    }
+
+    /** Numeric value used to compute aggregate scores. */
+    def score(v: JudgeVerdict): Double = v match
+    {
+        case JudgeVerdict.Correct          => 1.0
+        case JudgeVerdict.PartiallyCorrect => 0.5
+        case JudgeVerdict.Wrong            => 0.0
+    }
+
+    /** Maps a numeric score to the nearest verdict bucket (tolerant of stray floats). */
+    def fromScore(score: Double): JudgeVerdict =
+        if score >= 0.75 then Correct
+        else if score >= 0.25 then PartiallyCorrect
+        else Wrong
+
+    /** Normalizes a free-form verdict string ("correct", "partially correct", ...) to a verdict. */
+    def parse(text: String): Option[JudgeVerdict] =
+    {
+        val n = text.toLowerCase.filter(_.isLetter)
+        if n.contains("partial") then Some(PartiallyCorrect)
+        else if n.contains("wrong") || n.contains("incorrect") then Some(Wrong)
+        else if n.contains("correct") then Some(Correct)
+        else None
+    }
+
+/**
+ *  Outcome of a whole provider/session-type sweep.
+ */
+enum SweepStatus:
+    /** Sweep produced answers for all questions. */
+    case Ok
+    /** Sweep failed because a phase exceeded its timeout (e.g. PDF conversion). */
+    case FailedTimeout
+    /** Sweep failed with a non-timeout error. */
+    case FailedError
+
+object SweepStatus:
+    extension (s: SweepStatus) def label: String = s match
+    {
+        case SweepStatus.Ok            => "ok"
+        case SweepStatus.FailedTimeout => "failed-timeout"
+        case SweepStatus.FailedError   => "failed-error"
+    }
+
+/**
  *  Result of judging one predicted answer.
  *
  *  @param question         Original question.
@@ -263,9 +431,13 @@ case class EvalQuestion(
  *  @param actualAnswer     Final answer produced by the agent (last iteration only).
  *  @param thoughts         All reasoning and intermediate text from earlier iterations.
  *  @param toolCalls        Ordered list of raw tool call commands issued by the agent.
- *  @param judgeScore       Numeric score from 0.0 to 1.0.
+ *  @param judgeScore       Numeric score from 0.0 to 1.0; meaningless unless [[judgeStatus]] is [[JudgeStatus.Judged]].
  *  @param judgeRationale   Short rationale produced by the judge LLM.
  *  @param toolCounts       Map of tool name -> number of calls while answering this question.
+ *  @param status           Outcome of the QA agent turn.
+ *  @param judgeStatus      Outcome of the judging step for this answer.
+ *  @param judgeVerdict     Categorical verdict when [[judgeStatus]] is [[JudgeStatus.Judged]].
+ *  @param attempts         Number of QA attempts made for this question (1 or 2 after a timeout retry).
  */
 case class AnswerResult(
     question:         String,
@@ -276,7 +448,11 @@ case class AnswerResult(
     toolCalls:        List[String],
     judgeScore:       Double,
     judgeRationale:   String,
-    toolCounts:       Map[String, Int]
+    toolCounts:       Map[String, Int],
+    status:           AnswerStatus,
+    judgeStatus:      JudgeStatus,
+    judgeVerdict:     Option[JudgeVerdict],
+    attempts:         Int
 )
 
 /**
@@ -287,13 +463,17 @@ case class AnswerResult(
  *  @param markdownPath   Path to the generated Markdown file.
  *  @param markdownScore  MarkdownScorer output for the generated Markdown.
  *  @param answers        List of judged question/answer results.
+ *  @param status         Outcome of the sweep; [[SweepStatus.Ok]] when answers were produced.
+ *  @param statusMessage  Diagnostic detail for failed sweeps.
  */
 case class EvalResult(
     providerLabel: String,
     sessionType:   String,
     markdownPath:  Path,
     markdownScore: MarkdownScore,
-    answers:       List[AnswerResult]
+    answers:       List[AnswerResult],
+    status:        SweepStatus = SweepStatus.Ok,
+    statusMessage: String      = ""
 )
 
 /**
@@ -301,7 +481,7 @@ case class EvalResult(
  *
  *  Given a PDF, a JSON question set, and a list of (LLM, VLM) configurations, the harness:
  *    1. Copies the PDF into a temporary workspace.
- *    2. Generates Markdown via the real `files.read_pdf_to_markdown` tool path.
+ *    2. Generates Markdown via the real `files_read_pdf_to_markdown` tool path.
  *    3. Scores the Markdown with [[MarkdownScorer]].
  *    4. Runs each question through the real AgentLoop.
  *    5. Judges predicted answers with an LLM-as-judge.
@@ -319,8 +499,29 @@ object EvalHarness
 
     Runtime.getRuntime.addShutdownHook(new Thread(() => { evalExecutor.shutdownNow(); () }))
 
+    /** Returns an ISO timestamp for evaluation lifecycle logs. */
     private def ts(): String = java.time.Instant.now().toString
+    /** Writes a timestamped evaluation lifecycle message. */
     private def log(msg: String): Unit = println(s"[${ts()}] $msg")
+
+    /**
+     *  Creates a directory `pdf-eval-YYYYMMDD-HHMMSS` under the persistent Agentica
+     *  eval state directory. On collision (two runs started within the same second,
+     *  e.g. back-to-back tests) a `-N` counter suffix is appended.
+     */
+    private def createEvalWorkDir(): Path =
+    {
+        val formatter = java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+        val stamp       = java.time.LocalDateTime.now().format(formatter)
+        Files.createDirectories(AppDirs.evalsDir)
+        Iterator.iterate(0)(_ + 1)
+            .map(i => AppDirs.evalsDir.resolve(if i == 0 then s"pdf-eval-$stamp" else s"pdf-eval-$stamp-$i"))
+            .find { dir =>
+                try { Files.createDirectory(dir); true }
+                catch { case _: java.nio.file.FileAlreadyExistsException => false }
+            }
+            .get
+    }
 
     // ─── In-memory store stubs ─────────────────────────────────────────────────
 
@@ -342,6 +543,13 @@ object EvalHarness
             )
             appended.append(m)
             m
+        }
+
+        override def appendMessage(message: Message): Message =
+        {
+            val persisted = message.copy(id = s"msg-${appended.size}")
+            appended.append(persisted)
+            persisted
         }
 
         override def listForSession(sessionId: String): List[Message] = appended.toList
@@ -544,7 +752,7 @@ object EvalHarness
 
         val input = FilesReadPDFToMarkdownInput(
             path         = Paths.get(relPDF),
-            enrichImages = true
+            enrichImages = ConversionEnrichImages
         )
 
         val ctx = agentica.tools.ExecutionContext(
@@ -599,7 +807,7 @@ object EvalHarness
      *  @param session         Session whose rootPath is the workspace.
      *  @param history         Prior conversation history (empty for isolated sessions).
      *  @param timeoutMs       Hard wall-clock timeout for the turn.
-     *  @return                Tuple of (actual answer, thoughts, tool calls, tool call counts).
+     *  @return                [[TurnResult]] with answer text, tools, and outcome.
      */
     private def answerQuestion(
         question:        String,
@@ -608,7 +816,7 @@ object EvalHarness
         session:         Session,
         history:         List[Message] = Nil,
         timeoutMs:       Long = 120000L
-    ): (String, String, List[String], Map[String, Int]) =
+    ): TurnResult =
     {
         val userMsg = Message(
             id        = s"q-${UUID.randomUUID()}",
@@ -626,6 +834,89 @@ object EvalHarness
         runAgentTurn(agent, session, history, userMsg, timeoutMs)
     }
 
+    /** Minimum pause before a timeout retry. */
+    private val RetryDelayMinMs: Long = 5000L
+
+    /** Random jitter added on top of [[RetryDelayMinMs]] (delays land in 5–10s). */
+    private val RetryDelayJitterMs: Int = 5000
+
+    /**
+     *  Picks the delay before a retry: a caller-supplied fixed value wins,
+     *  otherwise `minMs` plus uniform jitter up to `jitterMs`.
+     *
+     *  @param fixed     Optional fixed delay override.
+     *  @param minMs     Minimum delay when randomising.
+     *  @param jitterMs  Upper bound of the random component.
+     *  @return          Delay in milliseconds.
+     */
+    private def pickRetryDelay(fixed: Option[Long], minMs: Long, jitterMs: Int): Long =
+        fixed.getOrElse(minMs + scala.util.Random.nextInt(jitterMs))
+
+    /**
+     *  Asks a question, retrying exactly once after a randomised delay when the
+     *  first attempt times out.  The retry reuses the same session and history so
+     *  shared-session sweeps keep their intended context and ordering.
+     *
+     *  @param retryDelayMs  Fixed delay before the retry; `None` picks a random 5–10s delay.
+     *  @return              Final [[TurnResult]]; `attempts` is 2 when a retry was used.
+     */
+    private def answerQuestionWithRetry(
+        question:        String,
+        markdownRelPath: String,
+        agent:           EvalAgent,
+        session:         Session,
+        history:         List[Message],
+        timeoutMs:       Long,
+        retryDelayMs:    Option[Long]
+    ): TurnResult =
+    {
+        val first = answerQuestion(question, markdownRelPath, agent, session, history, timeoutMs)
+        if first.status != AnswerStatus.Timeout then return first
+
+        val delayMs = pickRetryDelay(retryDelayMs, RetryDelayMinMs, RetryDelayJitterMs)
+        log(s"  Retrying timed-out question after ${delayMs}ms: ${question.take(60)}")
+        Thread.sleep(delayMs)
+        val retried = answerQuestion(question, markdownRelPath, agent, session, history, timeoutMs)
+        retried.copy(attempts = 2)
+    }
+
+    /**
+     *  Result of one QA agent turn: captured answer text, thoughts,
+     *  tool usage, and the turn outcome.
+     */
+    private case class TurnResult(
+        actual:     String,
+        thoughts:   String,
+        toolCalls:  List[String],
+        toolCounts: Map[String, Int],
+        status:     AnswerStatus,
+        attempts:   Int = 1
+    )
+
+    /**
+     *  Returns true if `t` or any exception in its cause chain represents a timeout
+     *  (turn-level TimeoutException, HTTP request timeout, or socket timeout).
+     *  Exceptions thrown inside `future.get` arrive wrapped in ExecutionException,
+     *  so the cause chain must be walked.
+     */
+    private def isTimeoutCause(t: Throwable): Boolean =
+    {
+        var cur: Throwable = t
+        while cur != null do
+        {
+            cur match
+            {
+                case _: TimeoutException                   => return true
+                case _: java.net.http.HttpTimeoutException => return true
+                case _: java.net.SocketTimeoutException    => return true
+                case _                                     => ()
+            }
+            val next = cur.getCause
+            cur = if (next eq cur) then null else next
+        }
+        false
+    }
+
     /**
      *  Runs one agent turn with a hard timeout and returns the final answer text,
      *  intermediate thoughts, ordered tool calls, and tool call counts.
@@ -639,7 +930,7 @@ object EvalHarness
      *  @param history    Prior conversation history.
      *  @param userMsg    Current user message.
      *  @param timeoutMs  Maximum duration to wait.
-     *  @return           Tuple of (actual answer, thoughts, tool calls, tool call counts).
+     *  @return           [[TurnResult]] with answer text, tools, and outcome.
      */
     private def runAgentTurn(
         agent:     EvalAgent,
@@ -647,13 +938,14 @@ object EvalHarness
         history:   List[Message],
         userMsg:   Message,
         timeoutMs: Long
-    ): (String, String, List[String], Map[String, Int]) =
+    ): TurnResult =
     {
         val cancelFlag = new AtomicBoolean(false)
         val traceId    = s"eval-qa-${UUID.randomUUID()}"
         val permissionCoordinator = new PermissionCoordinator(traceId)
-        val answerBuf  = new StringBuilder()
+        val answerBuf       = new StringBuilder()
         val lastLLMStartPos = new java.util.concurrent.atomic.AtomicInteger(0)
+        val terminalEvent   = new AtomicReference[Option[AgentEvent]](None)
 
         log(s"Agent turn start traceId=$traceId session=${session.id} timeout=${timeoutMs}ms")
         val t0 = System.currentTimeMillis()
@@ -673,6 +965,8 @@ object EvalHarness
                     {
                         case AgentEvent.LLMCallStart(_, _, _) =>
                             lastLLMStartPos.set(answerBuf.length)
+                        case event @ (AgentEvent.Final(_, _) | AgentEvent.AgentError(_) | AgentEvent.Cancelled) =>
+                            terminalEvent.set(Some(event))
                         case _ =>
                             ()
                     }
@@ -707,7 +1001,18 @@ object EvalHarness
             log(s"Agent turn complete traceId=$traceId elapsed=${elapsed}ms")
             val (actual, thoughts) = splitAnswer
             val (toolCalls, toolCounts) = capturedTools
-            (actual, thoughts, toolCalls, toolCounts)
+            terminalEvent.get() match
+            {
+                case Some(AgentEvent.Final(_, _)) =>
+                    TurnResult(actual, thoughts, toolCalls, toolCounts, AnswerStatus.Answered)
+                case Some(AgentEvent.AgentError(message)) =>
+                    log(s"Agent turn terminal error traceId=$traceId: $message")
+                    TurnResult(s"[Agent error: $message]", thoughts, toolCalls, toolCounts, AnswerStatus.Error)
+                case Some(AgentEvent.Cancelled) =>
+                    TurnResult("[Agent turn cancelled]", thoughts, toolCalls, toolCounts, AnswerStatus.Error)
+                case _ =>
+                    TurnResult("[Agent turn ended without a terminal event]", thoughts, toolCalls, toolCounts, AnswerStatus.Error)
+            }
         }
         catch
         {
@@ -719,13 +1024,14 @@ object EvalHarness
                 permissionCoordinator.close()
                 val (actual, thoughts) = splitAnswer
                 val (toolCalls, toolCounts) = capturedTools
-                (actual, thoughts, toolCalls, toolCounts)
+                TurnResult(actual, thoughts, toolCalls, toolCounts, AnswerStatus.Timeout)
             case t: Throwable =>
                 log(s"Agent turn ERROR traceId=$traceId ${t.getClass.getSimpleName}: ${t.getMessage}")
                 future.cancel(true)
                 permissionCoordinator.close()
                 val (toolCalls, toolCounts) = capturedTools
-                (s"[Agent turn error: ${t.getClass.getSimpleName}: ${t.getMessage}]", "", toolCalls, toolCounts)
+                val status = if isTimeoutCause(t) then AnswerStatus.Timeout else AnswerStatus.Error
+                TurnResult(s"[Agent turn error: ${t.getClass.getSimpleName}: ${t.getMessage}]", "", toolCalls, toolCounts, status)
         }
     }
 
@@ -742,7 +1048,7 @@ object EvalHarness
      *  @param predictedAnswer    Agent-predicted answer.
      *  @param judgeProvider      LLM provider used as the judge.
      *  @param timeoutMs          Maximum time to wait for the judge.
-     *  @return                   Tuple of (score, rationale).
+     *  @return                   Tuple of (verdict if any, rationale, judge status).
      */
     def judgeAnswer(
         question:        String,
@@ -750,23 +1056,23 @@ object EvalHarness
         predictedAnswer: String,
         judgeProvider:   LLMProvider,
         timeoutMs:       Long = 60000L
-    ): (Double, String) =
+    ): (Option[JudgeVerdict], String, JudgeStatus) =
     {
         val prompt =
             s"""You are an expert evaluator. Compare the predicted answer to the reference answer for the given question.
-               |Score how factually correct and complete the predicted answer is, based only on the reference.
+               |Judge how factually correct and complete the predicted answer is, based only on the reference.
                |
                |Question: $question
                |Reference Answer: $referenceAnswer
                |Predicted Answer: $predictedAnswer
                |
                |Return ONLY a JSON object in this exact format:
-               |{"score": 0.0, "rationale": "Brief explanation"}
+               |{"verdict": "correct", "rationale": "Brief explanation"}
                |
-               |Score scale:
-               |- 1.0: fully correct and complete
-               |- 0.5: partially correct or missing important details
-               |- 0.0: incorrect, unsupported, or hallucinated
+               |The "verdict" field must be exactly one of:
+               |- "correct": fully correct and complete
+               |- "partial": partially correct or missing important details
+               |- "wrong": incorrect, unsupported, or hallucinated
                |""".stripMargin
 
         val systemMsg = Message(
@@ -784,14 +1090,63 @@ object EvalHarness
             timestamp = ""
         )
 
-        log(s"Judge call start timeout=${timeoutMs}ms")
+        var attempt = 1
+        var result  = judgeAttempt(systemMsg, userMsg, judgeProvider, timeoutMs, attempt)
+        while (result._3 == JudgeStatus.JudgeError && attempt < JudgeMaxAttempts)
+        {
+            val delayMs = pickRetryDelay(None, JudgeRetryMinMs, JudgeRetryJitterMs)
+            log(s"Judge attempt $attempt failed (${result._2}); retrying in ${delayMs}ms")
+            Thread.sleep(delayMs)
+            attempt += 1
+            result = judgeAttempt(systemMsg, userMsg, judgeProvider, timeoutMs, attempt)
+        }
+        result
+    }
+
+    /** Total judge attempts per answer; a retry absorbs transient engine/protocol errors. */
+    private val JudgeMaxAttempts: Int = 2
+
+    /** Minimum pause between judge attempts. */
+    private val JudgeRetryMinMs: Long = 500L
+
+    /** Random jitter added on top of [[JudgeRetryMinMs]] (delays land in 0.5–1s). */
+    private val JudgeRetryJitterMs: Int = 500
+
+    /**
+     *  Performs one judge call and classifies the outcome.
+     *
+     *  Transport errors and unparsable content map to [[JudgeStatus.JudgeError]]
+     *  (retryable by the caller); timeouts map to [[JudgeStatus.JudgeTimeout]]
+     *  and are not retried because a hung endpoint is likely to hang again.
+     *
+     *  @param systemMsg     Judge system prompt message.
+     *  @param userMsg       Judge user prompt message.
+     *  @param judgeProvider LLM provider used as the judge.
+     *  @param timeoutMs     Maximum time to wait for this attempt.
+     *  @param attempt       1-based attempt number for logging.
+     *  @return              Tuple of (verdict if any, rationale, judge status).
+     */
+    private def judgeAttempt(
+        systemMsg:     Message,
+        userMsg:       Message,
+        judgeProvider: LLMProvider,
+        timeoutMs:     Long,
+        attempt:       Int
+    ): (Option[JudgeVerdict], String, JudgeStatus) =
+    {
+        log(s"Judge call start attempt=$attempt timeout=${timeoutMs}ms")
         val t0 = System.currentTimeMillis()
         val future = evalExecutor.submit(new java.util.concurrent.Callable[String]
         {
             override def call(): String =
             {
                 val buf = new StringBuilder()
-                judgeProvider.streamChatCompletions(List(systemMsg, userMsg), tok => buf.append(tok))
+                val response = judgeProvider.streamChatCompletions(List(systemMsg, userMsg), tok => buf.append(tok))
+                if (buf.isEmpty && response.toolCalls.nonEmpty)
+                {
+                    throw IllegalStateException(
+                        s"Judge returned ${response.toolCalls.size} unexpected tool call(s) with no content")
+                }
                 buf.toString()
             }
         })
@@ -799,27 +1154,30 @@ object EvalHarness
         try
         {
             val responseText = future.get(timeoutMs, TimeUnit.MILLISECONDS)
-            log(s"Judge call complete elapsed=${System.currentTimeMillis() - t0}ms")
-            parseJudgeResponse(responseText)
+            log(s"Judge call complete attempt=$attempt elapsed=${System.currentTimeMillis() - t0}ms")
+            val (verdict, rationale) = parseJudgeResponse(responseText)
+            (verdict, rationale, if verdict.isDefined then JudgeStatus.Judged else JudgeStatus.JudgeError)
         }
         catch
         {
-            case _: TimeoutException =>
+            case t: Throwable if isTimeoutCause(t) =>
                 log(s"Judge call TIMEOUT after ${timeoutMs}ms; cancelling worker")
                 future.cancel(true)
-                (0.0, "Judge call timed out")
+                (None, "Judge call timed out", JudgeStatus.JudgeTimeout)
             case t: Throwable =>
-                log(s"Judge call ERROR ${t.getClass.getSimpleName}: ${t.getMessage}")
+                log(s"Judge call ERROR attempt=$attempt ${t.getClass.getSimpleName}: ${t.getMessage}")
                 future.cancel(true)
-                (0.0, s"Judge error: ${t.getClass.getSimpleName}: ${t.getMessage}")
+                (None, s"Judge error: ${t.getClass.getSimpleName}: ${t.getMessage}", JudgeStatus.JudgeError)
         }
     }
 
     /**
-     *  Parses the judge JSON response into (score, rationale).
-     *  Falls back to (0.0, "Unable to parse judge response") on failure.
+     *  Parses the judge JSON response into (verdict, rationale).
+     *  Reads the categorical `verdict` field; falls back to bucketing a numeric
+     *  `score` field for judges that ignore the requested format.  Returns
+     *  `None` verdict only when nothing usable was returned.
      */
-    private def parseJudgeResponse(text: String): (Double, String) =
+    private def parseJudgeResponse(text: String): (Option[JudgeVerdict], String) =
     {
         try
         {
@@ -829,17 +1187,23 @@ object EvalHarness
             {
                 case Some(jsonStr) =>
                     val json = ujson.read(jsonStr)
-                    val score = json.obj.get("score").map(_.num).getOrElse(0.0)
+                    val verdict = json.obj.get("verdict")
+                        .flatMap(v => JudgeVerdict.parse(v.str))
+                        .orElse(json.obj.get("score").map(s => JudgeVerdict.fromScore(s.num)))
                     val rationale = json.obj.get("rationale").map(_.str).getOrElse("No rationale provided")
-                    (score, rationale)
+                    verdict match
+                    {
+                        case Some(v) => (Some(v), rationale)
+                        case None    => (None, s"Unrecognized judge response: $rationale")
+                    }
                 case None =>
-                    (0.0, s"No JSON object found in judge response: $text")
+                    (None, s"No JSON object found in judge response: $text")
             }
         }
         catch
         {
             case t: Throwable =>
-                (0.0, s"Failed to parse judge response: ${t.getMessage}. Raw: $text")
+                (None, s"Failed to parse judge response: ${t.getMessage}. Raw: $text")
         }
     }
 
@@ -863,10 +1227,49 @@ object EvalHarness
                 "toolCalls"       -> Arr(a.toolCalls.map(Str(_))*),
                 "toolCounts"      -> Obj.from(a.toolCounts.map { case (k, v) => k -> Num(v) }),
                 "judgeScore"      -> Num(a.judgeScore),
-                "judgeRationale"  -> Str(a.judgeRationale)
+                "judgeRationale"  -> Str(a.judgeRationale),
+                "verdict"         -> a.judgeVerdict.map(v => Str(v.label)).getOrElse(ujson.Null),
+                "status"          -> Str(a.status.label),
+                "judgeStatus"     -> Str(a.judgeStatus.label),
+                "attempts"        -> Num(a.attempts)
             )
         }*)
         Files.writeString(sweepDir.resolve("questions.json"), json.render(indent = 2))
+    }
+
+    /**
+     *  Saves the non-sensitive provider configuration metadata to a manifest file.
+     *  This lets reporting tools recover which models, endpoints, and session types
+     *  were used for each sweep without re-reading the original provider config.
+     *
+     *  @param providerDir  Directory for this provider sweep.
+     *  @param manifest     Provider metadata to persist.
+     */
+    private def saveProviderManifest(providerDir: Path, manifest: ProviderManifest): Unit =
+    {
+        val json = Obj(
+            "providerLabel"     -> Str(manifest.providerLabel),
+            "llmBaseURL"        -> Str(manifest.llmBaseURL),
+            "llmModel"          -> Str(manifest.llmModel),
+            "vlmBaseURL"        -> manifest.vlmBaseURL.map(Str(_)).getOrElse(ujson.Null),
+            "vlmModel"          -> manifest.vlmModel.map(Str(_)).getOrElse(ujson.Null),
+            "judgeBaseURL"      -> manifest.judgeBaseURL.map(Str(_)).getOrElse(ujson.Null),
+            "judgeModel"        -> manifest.judgeModel.map(Str(_)).getOrElse(ujson.Null),
+            "sessionTypes"      -> Arr(manifest.sessionTypes.map(Str(_))*),
+            "questionTimeoutMs" -> Num(manifest.questionTimeoutMs),
+            "pdfTimeoutMs"      -> Num(manifest.pdfTimeoutMs),
+            "reuseMarkdownCache" -> Bool(manifest.reuseMarkdownCache),
+            "markdownCache"     -> manifest.markdownCache.map { c =>
+                Obj(
+                    "enabled"   -> Bool(c.enabled),
+                    "hit"       -> Bool(c.hit),
+                    "key"       -> Str(c.key),
+                    "pdfSha256" -> Str(c.pdfSha256),
+                    "source"    -> Str(c.source)
+                )
+            }.getOrElse(ujson.Null)
+        )
+        Files.writeString(providerDir.resolve("manifest.json"), json.render(indent = 2))
     }
 
     /**
@@ -879,14 +1282,15 @@ object EvalHarness
      *  @param answers       All judged question results for this sweep.
      */
     private def saveSummary(
-        sweepDir:      Path,
+        sweepDir:          Path,
         fileStem:      String,
         providerLabel: String,
         mdScore:       MarkdownScore,
         answers:       List[AnswerResult]
     ): Unit =
     {
-        val avgScore = if (answers.isEmpty) 0.0 else answers.map(_.judgeScore).sum / answers.length
+        val judged   = answers.filter(_.judgeStatus == JudgeStatus.Judged)
+        val avgScore = if (judged.isEmpty) 0.0 else judged.map(_.judgeScore).sum / judged.length
         val totalToolCounts = answers.foldLeft(Map.empty[String, Int]) { (acc, r) =>
             r.toolCounts.foldLeft(acc) { case (m, (k, v)) => m.updated(k, m.getOrElse(k, 0) + v) }
         }
@@ -905,6 +1309,18 @@ object EvalHarness
                 "vlmWordCount"   -> Num(mdScore.vlmWordCount)
             ),
             "averageJudgeScore" -> Num(avgScore),
+            "judgedCount"       -> Num(judged.length),
+            "verdicts"          -> Obj(
+                "correct" -> Num(judged.count(_.judgeVerdict.contains(JudgeVerdict.Correct))),
+                "partial" -> Num(judged.count(_.judgeVerdict.contains(JudgeVerdict.PartiallyCorrect))),
+                "wrong"   -> Num(judged.count(_.judgeVerdict.contains(JudgeVerdict.Wrong)))
+            ),
+            "answeredCount"     -> Num(answers.count(_.status == AnswerStatus.Answered)),
+            "timeoutCount"      -> Num(answers.count(_.status == AnswerStatus.Timeout)),
+            "errorCount"        -> Num(answers.count(_.status == AnswerStatus.Error)),
+            "judgeTimeoutCount" -> Num(answers.count(_.judgeStatus == JudgeStatus.JudgeTimeout)),
+            "judgeErrorCount"   -> Num(answers.count(_.judgeStatus == JudgeStatus.JudgeError)),
+            "retriedCount"      -> Num(answers.count(_.attempts > 1)),
             "totalToolCounts"   -> Obj.from(totalToolCounts.map { case (k, v) => k -> Num(v) }),
             "questionsFile"     -> Str("questions.json")
         )
@@ -913,6 +1329,67 @@ object EvalHarness
 
     /** Default pause (ms) between answer generation and judging when the judge endpoint is local. */
     private val DefaultLocalPauseMs: Long = 30000L
+
+    /** Version marker invalidating entries when the conversion pipeline or prompt changes. */
+    private val MarkdownCacheVersion = "vision-v1"
+
+    /** Whether PDF conversion requests image enrichment; part of the cache key. */
+    private val ConversionEnrichImages: Boolean = true
+
+    /** Minimum size for a cache entry to be trusted as a completed conversion. */
+    private val MinMarkdownCacheBytes: Long = 100L
+
+    /**
+     *  Returns the directory holding content-addressed Markdown cache entries.
+     *  Defaults to `.markdown-cache` under the evals state directory and can be
+     *  redirected with the `AGENTICA_MARKDOWN_CACHE_DIR` system property or
+     *  environment variable (useful for tests and CI caches).
+     *
+     *  @return  Directory path in which `<key>.md` entries live.
+     */
+    private[eval] def markdownCacheDir: Path =
+        sys.props.get("AGENTICA_MARKDOWN_CACHE_DIR")
+            .orElse(sys.env.get("AGENTICA_MARKDOWN_CACHE_DIR"))
+            .map(Paths.get(_))
+            .getOrElse(AppDirs.evalsDir.resolve(".markdown-cache"))
+
+    /** Returns a lowercase SHA-256 digest for the supplied bytes. */
+    private def sha256(bytes: Array[Byte]): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).map("%02x".format(_)).mkString
+
+    /**
+     *  Computes the content-addressed cache entry for one PDF and conversion
+     *  identity (VLM endpoint and model).  The key covers the conversion
+     *  pipeline version, image-enrichment behavior, and the PDF bytes, so
+     *  different documents or converter settings never collide.
+     *
+     *  @param pdfPath   Source PDF whose bytes are hashed.
+     *  @param identity  Converter identity string (e.g. `vlmBaseURL|vlmModel`).
+     *  @return          Tuple of (cache file path, cache key, PDF SHA-256).
+     */
+    private[eval] def markdownCacheEntry(pdfPath: Path, identity: String): (Path, String, String) =
+    {
+        val pdfHash = sha256(Files.readAllBytes(pdfPath))
+        val key = sha256(
+            s"$MarkdownCacheVersion|enrichImages=$ConversionEnrichImages|$pdfHash|$identity"
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)
+        )
+        (Files.createDirectories(markdownCacheDir).resolve(s"$key.md"), key, pdfHash)
+    }
+
+    /** Writes a cache entry atomically so interrupted conversions cannot leave partial Markdown. */
+    private def writeMarkdownCache(path: Path, markdown: String): Unit =
+    {
+        val temp = Files.createTempFile(path.getParent, path.getFileName.toString, ".tmp")
+        Files.writeString(temp, markdown)
+        try Files.move(temp, path, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        catch { case _: java.nio.file.AtomicMoveNotSupportedException =>
+            Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    /** Zeroed MarkdownScore used for sweeps that failed before conversion produced output. */
+    private val EmptyMarkdownScore = MarkdownScore(0.0, 0.0, 0, 0, 0, 0, 0.0, 0, 0)
 
     /**
      *  Bundle of live providers and session types used by [[runEvalBundles]].
@@ -925,6 +1402,8 @@ object EvalHarness
      *  @param pauseBetweenPhasesMs Optional pause before judging.
      *  @param beforeJudge          Hook executed between answer generation and judging;
      *                              used by config-based runs for LM-Studio model unloading.
+     *  @param reuseMarkdownCache   Whether a matching content-addressed Markdown cache entry may be reused.
+     *  @param markdownCacheIdentity Stable VLM identity included in the conversion cache key.
      */
     case class EvalProviderBundle(
         label:                String,
@@ -933,7 +1412,10 @@ object EvalHarness
         judge:                LLMProvider,
         sessionTypes:         List[EvalSessionType] = List(EvalSessionType.AllQuestionsPerSession),
         pauseBetweenPhasesMs: Option[Long]            = None,
-        beforeJudge:          () => Unit               = () => ()
+        beforeJudge:          () => Unit               = () => (),
+        metadata:             Option[ProviderManifest]  = None,
+        reuseMarkdownCache:   Boolean                   = true,
+        markdownCacheIdentity: String                   = "default"
     )
 
     /**
@@ -947,6 +1429,8 @@ object EvalHarness
      *  @param settings          AppSettings used for AgentLoop and VLM options.
      *  @param pdfTimeoutMs      Timeout for PDF-to-Markdown conversion.
      *  @param questionTimeoutMs Timeout for each QA agent turn.
+     *  @param retryDelayMs      Fixed delay before a question timeout retry;
+     *                           `None` picks a random 5–10s delay.
      *  @return                  Tuple of (root work directory, list of EvalResult).
      */
     def runEvalBundles(
@@ -955,12 +1439,13 @@ object EvalHarness
         bundles:           List[EvalProviderBundle],
         settings:          AppSettings,
         pdfTimeoutMs:      Long = 600000L,
-        questionTimeoutMs: Long = 120000L
+        questionTimeoutMs: Long = 120000L,
+        retryDelayMs:      Option[Long] = None
     ): (Path, List[EvalResult]) =
     {
         ensureToolIndexApplied()
 
-        val rootWorkDir = Files.createTempDirectory("pdf-eval-")
+        val rootWorkDir = createEvalWorkDir()
         log(s"Root work directory: $rootWorkDir")
 
         val pdfName   = pdfPath.getFileName.toString
@@ -976,6 +1461,7 @@ object EvalHarness
             {
                 Files.createDirectory(providerDir)
             }
+            bundle.metadata.foreach { m => saveProviderManifest(providerDir, m) }
 
             try
             {
@@ -987,13 +1473,36 @@ object EvalHarness
                 val workPDF = providerDir.resolve(pdfName)
                 Files.copy(fileDir.resolve(pdfName), workPDF, StandardCopyOption.REPLACE_EXISTING)
 
-                log(s"--- Converting PDF to Markdown: ${bundle.label} ---")
-                val conversionSession = makeSession(providerDir)
-                val (markdown, mdRelPath) = runWithTimeout(
-                    convertPDFToMarkdown(workPDF, conversionSession, llm, vlm, settings),
-                    pdfTimeoutMs,
-                    "PDF conversion"
-                )
+                val (cachePath, cacheKey, pdfHash) = markdownCacheEntry(workPDF, bundle.markdownCacheIdentity)
+                val cacheHit = bundle.reuseMarkdownCache && Files.exists(cachePath) && Files.size(cachePath) > MinMarkdownCacheBytes
+
+                bundle.metadata.foreach { m =>
+                    saveProviderManifest(providerDir, m.copy(markdownCache = Some(MarkdownCacheInfo(
+                        enabled   = bundle.reuseMarkdownCache,
+                        hit       = cacheHit,
+                        key       = cacheKey,
+                        pdfSha256 = pdfHash,
+                        source    = cachePath.toString
+                    ))))
+                }
+
+                val (markdown, mdRelPath) = if (cacheHit)
+                {
+                    log(s"--- Reusing Markdown cache: ${cachePath.getFileName} ---")
+                    (Files.readString(cachePath), s"$fileStem.md")
+                }
+                else
+                {
+                    log(s"--- Converting PDF to Markdown: ${bundle.label} ---")
+                    val conversionSession = makeSession(providerDir)
+                    val converted = runWithTimeout(
+                        convertPDFToMarkdown(workPDF, conversionSession, llm, vlm, settings),
+                        pdfTimeoutMs,
+                        "PDF conversion"
+                    )
+                    writeMarkdownCache(cachePath, converted._1)
+                    converted
+                }
                 val mdScore = scoreMarkdown(markdown, workPDF)
                 log(s"Markdown score: ${mdScore.pretty}")
 
@@ -1008,7 +1517,7 @@ object EvalHarness
                     Files.writeString(mdSavePath, markdown)
 
                     log(s"Generating answers (${sessionType.label} session) for ${questions.length} questions...")
-                    val qaPairs = generateAnswers(questions, mdRelPath, agent, sweepDir, sessionType, questionTimeoutMs)
+                    val qaPairs = generateAnswers(questions, mdRelPath, agent, sweepDir, sessionType, questionTimeoutMs, retryDelayMs)
 
                     (sessionType, sweepDir, mdSavePath, mdScore, qaPairs)
                 }
@@ -1021,34 +1530,45 @@ object EvalHarness
                 }
 
                 // Phase 3: judge all answers across all session types.
-                phaseOneResults.flatMap { case (sessionType, sweepDir, mdSavePath, mdScore, qaPairs) =>
+                phaseOneResults.map { case (sessionType, sweepDir, mdSavePath, mdScore, qaPairs) =>
                     try
                     {
                         log(s"--- Judging: ${bundle.label} / ${sessionType.label} (${qaPairs.length} answers) ---")
-                        val answerResults = qaPairs.map { case (q, actual, thoughts, toolCalls, toolCounts) =>
-                            val (score, rationale) = judgeAnswer(q.question, q.referenceAnswer, actual, bundle.judge, questionTimeoutMs)
-                            println(f"    Score: $score%.2f — $rationale")
-                            AnswerResult(q.question, q.category, q.referenceAnswer, actual, thoughts, toolCalls, score, rationale, toolCounts)
+                        val answerResults = qaPairs.map { case (q, tr) =>
+                            val (verdict, rationale, jStatus) =
+                                if tr.status == AnswerStatus.Answered then
+                                    judgeAnswer(q.question, q.referenceAnswer, tr.actual, bundle.judge, questionTimeoutMs)
+                                else
+                                    (None, s"Not judged — agent turn ${tr.status.label}", JudgeStatus.Skipped)
+                            println(s"    Verdict: ${verdict.map(_.label).getOrElse("n/a")} — $rationale")
+                            val score = verdict.map(JudgeVerdict.score).getOrElse(0.0)
+                            AnswerResult(q.question, q.category, q.referenceAnswer, tr.actual, tr.thoughts, tr.toolCalls, score, rationale, tr.toolCounts, tr.status, jStatus, verdict, tr.attempts)
                         }
 
                         saveQuestions(sweepDir, answerResults)
                         saveSummary(sweepDir, fileStem, bundle.label, mdScore, answerResults)
 
-                        Some(EvalResult(bundle.label, sessionType.label, mdSavePath, mdScore, answerResults))
+                        EvalResult(bundle.label, sessionType.label, mdSavePath, mdScore, answerResults)
                     }
                     catch
                     {
                         case t: Throwable =>
-                            log(s"ERROR judging ${bundle.label}/${sessionType.label}: ${t.getClass.getSimpleName}: ${t.getMessage}")
-                            None
+                            val status = if isTimeoutCause(t) then SweepStatus.FailedTimeout else SweepStatus.FailedError
+                            val msg    = s"${t.getClass.getSimpleName}: ${t.getMessage}"
+                            log(s"ERROR judging ${bundle.label}/${sessionType.label}: $msg")
+                            EvalResult(bundle.label, sessionType.label, mdSavePath, mdScore, Nil, status, msg)
                     }
                 }
             }
             catch
             {
                 case t: Throwable =>
-                    log(s"ERROR for ${bundle.label}: ${t.getClass.getSimpleName}: ${t.getMessage}")
-                    Nil
+                    val status = if isTimeoutCause(t) then SweepStatus.FailedTimeout else SweepStatus.FailedError
+                    val msg    = s"${t.getClass.getSimpleName}: ${t.getMessage}"
+                    log(s"ERROR for ${bundle.label}: $msg")
+                    bundle.sessionTypes.map { st =>
+                        EvalResult(bundle.label, st.label, providerDir.resolve(pdfName), EmptyMarkdownScore, Nil, status, msg)
+                    }
             }
         }
 
@@ -1090,6 +1610,21 @@ object EvalHarness
                 judge                = config.judgeProvider,
                 sessionTypes         = config.sessionTypes,
                 pauseBetweenPhasesMs = config.pauseBetweenPhasesMs,
+                metadata             = Some(ProviderManifest(
+                    providerLabel     = config.label,
+                    llmBaseURL        = config.llmBaseURL,
+                    llmModel          = config.llmModel,
+                    vlmBaseURL        = config.vlmBaseURL,
+                    vlmModel          = config.vlmModel,
+                    judgeBaseURL      = config.judgeBaseURL,
+                    judgeModel        = config.judgeModel,
+                    sessionTypes      = config.sessionTypes.map(_.label),
+                    questionTimeoutMs = questionTimeoutMs,
+                    pdfTimeoutMs      = pdfTimeoutMs,
+                    reuseMarkdownCache = config.reuseMarkdownCache
+                )),
+                reuseMarkdownCache   = config.reuseMarkdownCache,
+                markdownCacheIdentity = s"${config.vlmBaseURL.getOrElse(config.llmBaseURL)}|${config.vlmModel.getOrElse(config.llmModel)}",
                 beforeJudge          = () => {
                     if LMStudioClient.isLocal(judgeBaseURL) then
                     {
@@ -1123,7 +1658,8 @@ object EvalHarness
      *  @param sweepDir         Sweep directory (used to create sessions).
      *  @param sessionType      Session mode.
      *  @param questionTimeoutMs Timeout for each QA agent turn.
-     *  @return                 List of (question, actual answer, thoughts, tool calls, tool counts).
+     *  @param retryDelayMs      Optional fixed delay before retrying a timed-out turn.
+     *  @return                  List of (question, TurnResult) pairs.
      */
     private def generateAnswers(
         questions:         List[EvalQuestion],
@@ -1131,8 +1667,9 @@ object EvalHarness
         agent:             EvalAgent,
         sweepDir:          Path,
         sessionType:       EvalSessionType,
-        questionTimeoutMs: Long
-    ): List[(EvalQuestion, String, String, List[String], Map[String, Int])] =
+        questionTimeoutMs: Long,
+        retryDelayMs:      Option[Long]
+    ): List[(EvalQuestion, TurnResult)] =
     {
         sessionType match
         {
@@ -1140,19 +1677,19 @@ object EvalHarness
                 questions.map { q =>
                     val t0 = System.currentTimeMillis()
                     log(s"  Q (isolated): ${q.question}")
-                    val (actual, thoughts, toolCalls, toolCounts) =
-                        answerQuestion(q.question, mdRelPath, agent, makeSession(sweepDir), timeoutMs = questionTimeoutMs)
-                    log(s"  A (isolated, elapsed=${System.currentTimeMillis() - t0}ms): ${actual.take(200).replaceAll("\\s+", " ")}")
-                    (q, actual, thoughts, toolCalls, toolCounts)
+                    val tr = answerQuestionWithRetry(q.question, mdRelPath, agent, makeSession(sweepDir),
+                        Nil, questionTimeoutMs, retryDelayMs)
+                    log(s"  A (isolated, elapsed=${System.currentTimeMillis() - t0}ms): ${tr.actual.take(200).replaceAll("\\s+", " ")}")
+                    (q, tr)
                 }
 
             case EvalSessionType.AllQuestionsPerSession =>
-                generateAllQuestionsPerSession(questions, mdRelPath, agent, sweepDir, questionTimeoutMs)
+                generateAllQuestionsPerSession(questions, mdRelPath, agent, sweepDir, questionTimeoutMs, retryDelayMs)
 
             case EvalSessionType.AllQuestionsPerSessionShuffled =>
                 val shuffled = new scala.util.Random(ShuffleSeed).shuffle(questions)
                 log(s"  AllQuestionsPerSessionShuffled order (seed=$ShuffleSeed): ${shuffled.map(_.question.take(40)).mkString(" | ")}")
-                generateAllQuestionsPerSession(shuffled, mdRelPath, agent, sweepDir, questionTimeoutMs)
+                generateAllQuestionsPerSession(shuffled, mdRelPath, agent, sweepDir, questionTimeoutMs, retryDelayMs)
         }
     }
 
@@ -1166,24 +1703,26 @@ object EvalHarness
      *  @param agent            Pre-built eval agent and its tool-run store.
      *  @param sweepDir         Sweep directory (used to create sessions).
      *  @param questionTimeoutMs Timeout for each QA agent turn.
-     *  @return                 List of (question, actual answer, thoughts, tool calls, tool counts).
+     *  @param retryDelayMs      Optional fixed delay before retrying a timed-out turn.
+     *  @return                  List of (question, TurnResult) pairs.
      */
     private def generateAllQuestionsPerSession(
         questions:         List[EvalQuestion],
         mdRelPath:         String,
         agent:             EvalAgent,
         sweepDir:          Path,
-        questionTimeoutMs: Long
-    ): List[(EvalQuestion, String, String, List[String], Map[String, Int])] =
+        questionTimeoutMs: Long,
+        retryDelayMs:      Option[Long]
+    ): List[(EvalQuestion, TurnResult)] =
     {
         val session = makeSession(sweepDir)
         val historyBuf = mutable.ListBuffer.empty[Message]
         questions.map { q =>
             val t0 = System.currentTimeMillis()
             log(s"  Q (shared): ${q.question}")
-            val (actual, thoughts, toolCalls, toolCounts) =
-                answerQuestion(q.question, mdRelPath, agent, session, history = historyBuf.toList, timeoutMs = questionTimeoutMs)
-            log(s"  A (shared, elapsed=${System.currentTimeMillis() - t0}ms): ${actual.take(200).replaceAll("\\s+", " ")}")
+            val tr = answerQuestionWithRetry(q.question, mdRelPath, agent, session, historyBuf.toList,
+                questionTimeoutMs, retryDelayMs)
+            log(s"  A (shared, elapsed=${System.currentTimeMillis() - t0}ms): ${tr.actual.take(200).replaceAll("\\s+", " ")}")
             // Append user message and assistant reply to the conversation history.
             historyBuf += Message(
                 id = s"hist-user-${historyBuf.size}", sessionId = session.id,
@@ -1191,9 +1730,9 @@ object EvalHarness
             )
             historyBuf += Message(
                 id = s"hist-asst-${historyBuf.size}", sessionId = session.id,
-                role = MessageRole.Assistant, content = actual, timestamp = Instant.now().toString
+                role = MessageRole.Assistant, content = tr.actual, timestamp = Instant.now().toString
             )
-            (q, actual, thoughts, toolCalls, toolCounts)
+            (q, tr)
         }
     }
 
@@ -1252,19 +1791,20 @@ object EvalHarness
             s"""You are an expert QA evaluation analyst. Below are the aggregated results from an
                |end-to-end document question-answering evaluation. The system converts a PDF to
                |Markdown using a VLM, then answers questions using an LLM agent, and the answers
-               |are judged on a scale of 0.0, 0.5, or 1.0.
+               |are judged with categorical verdicts: correct, partial, or wrong.
                |
                |$summaryText
                |
                |Write a concise analysis covering:
                |1. Which session types perform best/worst and why that might be.
                |2. Whether derived questions are harder than direct questions and what that implies.
-               |3. Where the biggest quality gaps are (specific categories, session types, or score buckets).
-               |4. A summary of every answer that received a score of 0.0 — explain why it failed
+               |3. Where the biggest quality gaps are (specific categories, session types, or verdict buckets).
+               |4. A summary of every answer judged "wrong" — explain why it failed
                |   based on the judge rationale provided. Group by common patterns if applicable
                |   (e.g. hallucination, missing data, wrong entity).
+               |5. Whether timeouts or other infrastructure failures skewed the results.
                |
-               |If there are no zero-score answers, briefly note that for point 4.
+               |If there are no wrong answers, briefly note that for point 4.
                |
                |Be specific and reference the numbers. Keep it under 400 words.
                |""".stripMargin

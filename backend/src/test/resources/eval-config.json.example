@@ -11,6 +11,7 @@
     "judgeModel": "claude-3-5-sonnet",
     "judgeAPIKey": "lm-studio",
     "pauseBetweenPhasesMs": 30000,
+    "reuseMarkdownCache": true,
     "sessionTypes": ["all-questions-per-session", "all-questions-per-session-shuffled", "one-question-per-session"]
   },
   {

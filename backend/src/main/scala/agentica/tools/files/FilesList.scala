@@ -41,7 +41,7 @@ case class FilesListOutput(
 )
 
 /**
- *  Implements the `files.list` command.
+ *  Implements the `files_list` command.
  *  Produces an indented tree listing of workspace files using `java.nio.file` APIs.
  */
 object FilesList extends Tool[FilesListInput, FilesListOutput]
@@ -50,13 +50,13 @@ object FilesList extends Tool[FilesListInput, FilesListOutput]
     /**
      *  Canonical tool name.
      */
-    val name: String = "files.list"
+    val name: String = "files_list"
 
     /**
      *  Argument schema for help generation and system-prompt tool index.
      */
     val schema: CommandSchema = CommandSchema(
-        fullName = "files.list",
+        fullName = "files_list",
         summary  = "List workspace files as an indented tree",
         args     = List(
             ArgSpec("path",      "Root path to list (default: workspace root)",         required = false),
@@ -65,7 +65,7 @@ object FilesList extends Tool[FilesListInput, FilesListOutput]
             ArgSpec("depth",     "Maximum directory depth (default: 3)",                 required = false),
             ArgSpec("pattern",   "Glob pattern to filter file names (default: none)",    required = false)
         ),
-        example  = """files.list path=src/ recursive=true depth=2"""
+        example  = """files_list path=src/ recursive=true depth=2"""
     )
 
     /**
@@ -190,6 +190,8 @@ object FilesList extends Tool[FilesListInput, FilesListOutput]
                 ))
             case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
+            case Some(error) =>
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"Directory listing failed: ${error.toErrorCode}"))
             case None =>
                 val text     = output.lines.mkString("\n")
                 val metadata = Map(

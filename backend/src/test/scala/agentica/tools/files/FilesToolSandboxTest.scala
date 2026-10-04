@@ -51,21 +51,21 @@ class FilesToolSandboxTest extends AnyFunSuite
             debugMode       = false
         )
 
-    // ── files.stat ────────────────────────────────────────────────────────────
+    // ── files_stat ────────────────────────────────────────────────────────────
 
-    test("files.stat: traversal via ../ yields path_escaped error") {
+    test("files_stat: traversal via ../ yields path_escaped error") {
         val input  = FilesStatInput("../../etc/passwd")
         val output = FilesStat.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))
     }
 
-    test("files.stat: absolute path outside root yields path_escaped error") {
+    test("files_stat: absolute path outside root yields path_escaped error") {
         val input  = FilesStatInput("/etc/shadow")
         val output = FilesStat.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))
     }
 
-    test("files.stat: render converts path_escaped output to Err ToolResult") {
+    test("files_stat: render converts path_escaped output to Err ToolResult") {
         val output = FilesStatOutput("../../etc/passwd", 0, "", "", Some(FilesError.PathEscaped))
         val result = FilesStat.render(output, ctx(root))
         assert(result.status.isInstanceOf[ToolStatus.Err])
@@ -73,48 +73,48 @@ class FilesToolSandboxTest extends AnyFunSuite
         assert(err.code == "path_escaped")
     }
 
-    test("files.stat: sibling workspace directory is rejected") {
+    test("files_stat: sibling workspace directory is rejected") {
         val input  = FilesStatInput("../other-workspace/secret.txt")
         val output = FilesStat.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))
     }
 
-    // ── files.read ────────────────────────────────────────────────────────────
+    // ── files_read ────────────────────────────────────────────────────────────
 
-    test("files.read: traversal via ../ yields path_escaped in content sentinel") {
+    test("files_read: traversal via ../ yields path_escaped in content sentinel") {
         val input  = FilesReadInput(java.nio.file.Paths.get("../../etc/passwd"), None)
         val output = FilesRead.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))
     }
 
-    test("files.read: absolute path outside root yields path_escaped in content sentinel") {
+    test("files_read: absolute path outside root yields path_escaped in content sentinel") {
         val input  = FilesReadInput(java.nio.file.Paths.get("/etc/shadow"), None)
         val output = FilesRead.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))
     }
 
-    test("files.read: render converts path_escaped sentinel to Err ToolResult") {
+    test("files_read: render converts path_escaped sentinel to Err ToolResult") {
         val output = FilesReadOutput("", 0, 0, false, "../../etc/passwd", 0, Some(FilesError.PathEscaped))
         val result = FilesRead.render(output, ctx(root))
         assert(result.status.isInstanceOf[ToolStatus.Err])
     }
 
-    // ── files.write ───────────────────────────────────────────────────────────
+    // ── files_write ───────────────────────────────────────────────────────────
 
-    test("files.write: traversal via ../ yields path_escaped before permission check") {
+    test("files_write: traversal via ../ yields path_escaped before permission check") {
         val input  = FilesWriteInput("../../tmp/injected.txt", "malicious content")
         val output = FilesWrite.execute(input, ctx(root))
         // Must short-circuit at sandbox — never reach permission latch
         assert(output.error.contains(FilesError.PathEscaped))
     }
 
-    test("files.write: absolute path outside root yields path_escaped") {
+    test("files_write: absolute path outside root yields path_escaped") {
         val input  = FilesWriteInput("/tmp/injected.txt", "content")
         val output = FilesWrite.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))
     }
 
-    test("files.write: render converts path_escaped output to Err ToolResult") {
+    test("files_write: render converts path_escaped output to Err ToolResult") {
         val output = FilesWriteOutput("../../tmp/injected.txt", 0, Some(FilesError.PathEscaped))
         val result = FilesWrite.render(output, ctx(root))
         assert(result.status.isInstanceOf[ToolStatus.Err])
@@ -122,23 +122,23 @@ class FilesToolSandboxTest extends AnyFunSuite
         assert(err.code == "path_escaped")
     }
 
-    // ── files.list ────────────────────────────────────────────────────────────
+    // ── files_list ────────────────────────────────────────────────────────────
 
-    test("files.list: traversal via ../ yields path_escaped error") {
+    test("files_list: traversal via ../ yields path_escaped error") {
         val input  = FilesListInput("../../etc", recursive = false, all = false, depth = 1, pattern = None)
         val output = FilesList.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))
     }
 
-    test("files.list: absolute path outside root yields path_escaped error") {
+    test("files_list: absolute path outside root yields path_escaped error") {
         val input  = FilesListInput("/etc", recursive = false, all = false, depth = 1, pattern = None)
         val output = FilesList.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))
     }
 
-    // ── files.search ──────────────────────────────────────────────────────────
+    // ── files_search ──────────────────────────────────────────────────────────
 
-    test("files.search: traversal via ../ yields path_escaped error") {
+    test("files_search: traversal via ../ yields path_escaped error") {
         val input  = FilesSearchInput(
             rawPath      = "../../etc",
             query        = "password",
@@ -153,7 +153,7 @@ class FilesToolSandboxTest extends AnyFunSuite
         assert(output.error.contains(FilesError.PathEscaped))
     }
 
-    test("files.search: absolute path outside root yields path_escaped error") {
+    test("files_search: absolute path outside root yields path_escaped error") {
         val input  = FilesSearchInput(
             rawPath      = "/etc",
             query        = "password",

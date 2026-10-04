@@ -33,7 +33,9 @@ class MessageStoreTest extends AnyFunSuite with BeforeAndAfterEach
                 role        TEXT NOT NULL,
                 content     TEXT NOT NULL,
                 timestamp   TEXT NOT NULL,
-                attachments TEXT NOT NULL DEFAULT '[]',
+                attachments  TEXT NOT NULL DEFAULT '[]',
+                tool_call_id TEXT,
+                tool_calls   TEXT,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             )
         """)
@@ -66,6 +68,22 @@ class MessageStoreTest extends AnyFunSuite with BeforeAndAfterEach
         assert(messages.head.role == MessageRole.User)
         assert(messages(1).id == msg2.id)
         assert(messages(1).role == MessageRole.Assistant)
+    }
+
+    test("native tool-call metadata round-trips") {
+        val assistant = store.appendMessage(Message(
+            id = "", sessionId = "s1", role = MessageRole.Assistant, content = "", timestamp = "",
+            toolCallsJson = Some("[{\"id\":\"call-1\"}]")
+        ))
+        val tool = store.appendMessage(Message(
+            id = "", sessionId = "s1", role = MessageRole.Tool, content = "result", timestamp = "",
+            toolCallId = Some("call-1")
+        ))
+
+        val messages = store.listForSession("s1")
+        assert(messages.find(_.id == assistant.id).flatMap(_.toolCallsJson).contains("[{\"id\":\"call-1\"}]"))
+        assert(messages.find(_.id == tool.id).flatMap(_.toolCallId).contains("call-1"))
+        assert(messages.find(_.id == tool.id).exists(_.role == MessageRole.Tool))
     }
 
     test("updateContent modifies message content") {

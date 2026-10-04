@@ -1,12 +1,12 @@
 package agentica.agent
 
-import agentica.llm.LLMResponse
+import agentica.llm.{LLMResponse, NativeToolCall, ToolSpec}
 import agentica.observability.TokenAccounting
 import agentica.permissions.{GrantDecision, ScopeStore}
 import agentica.session.{AgentTurn, AgentTurnStore, MemoryEntry, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, ToolRun}
 import agentica.settings.{APIMode, AppSettings}
 import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
-import agentica.testutil.ScriptedLLMProvider
+import agentica.testutil.{ScriptedLLMProvider, ScriptedResponse}
 import agentica.tools.ExecutionContext
 import org.scalatest.funsuite.AnyFunSuite
 import agentica.permissions.PermissionCoordinator
@@ -38,6 +38,13 @@ class AgentLoopTest extends AnyFunSuite
                             role = role, content = content, timestamp = "")
             appended.append(m)
             m
+        }
+
+        override def appendMessage(message: Message): Message =
+        {
+            val persisted = message.copy(id = s"msg-${appended.size}")
+            appended.append(persisted)
+            persisted
         }
 
         override def listForSession(sessionId: String): List[Message] = appended.toList
@@ -97,6 +104,21 @@ class AgentLoopTest extends AnyFunSuite
                 durationMs = 0L
             )
         }
+
+        override def executeNative(name: String, argumentsJson: String,
+                                   ctx: agentica.tools.ExecutionContext): (String, agentica.tools.AgentResponse) =
+        {
+            try
+            {
+                val args = ujson.read(argumentsJson).obj.map { case (k, v) => s"$k=${v.str}" }.mkString(" ")
+                val command = s"${name} $args".trim
+                (command, execute(command, ctx))
+            }
+            catch
+            {
+                case _: Throwable => super.executeNative(name, argumentsJson, ctx)
+            }
+        }
     }
 
     private val session = Session(
@@ -143,8 +165,9 @@ class AgentLoopTest extends AnyFunSuite
         // Test dependencies are injected through the constructor parameters
     }
 
+    /** Builds an agent loop backed by structured native-call scripted responses. */
     private def makeLoop(
-        llmResponses: List[String],
+        llmResponses: List[ScriptedResponse],
         shell:        EchoVirtualShell    = new EchoVirtualShell(),
         store:        StubMessageStore    = new StubMessageStore(),
         runStore:     StubRunStore        = new StubRunStore(),
@@ -152,15 +175,24 @@ class AgentLoopTest extends AnyFunSuite
         settings:     AppSettings         = defaultSettings
     ): (AgentLoop, StubMessageStore, StubTokenAccounting, EchoVirtualShell, StubRunStore) =
     {
-        val llm  = ScriptedLLMProvider(llmResponses)
-        val loop = new TestableAgentLoop(llm, store, runStore, accounting, shell, settings)
+        val loop = new TestableAgentLoop(new ScriptedLLMProvider(llmResponses), store, runStore, accounting, shell, settings)
         (loop, store, accounting, shell, runStore)
     }
 
-    // ── Final answer: <done> marker ───────────────────────────────────────────
+    /** Shorthand for a scripted response carrying a single native tool call. */
+    private def toolCallResp(name: String, argsJson: String, content: String = ""): ScriptedResponse =
+        ScriptedResponse.toolCall(name, argsJson, content = content)
 
-    test("emits Final event when model responds with <done>") {
-        val (loop, store, _, _, _) = makeLoop(List("Here is my answer.\n<done>"))
+    /** Shorthand for a scripted response carrying several native tool calls. */
+    private def toolCallsResp(calls: (String, String)*): ScriptedResponse =
+        ScriptedResponse(toolCalls = calls.zipWithIndex.toList.map { case ((n, a), i) =>
+            NativeToolCall(s"call-${i + 1}", n, a)
+        })
+
+    // ── Final answer: a response without tool calls ───────────────────────────
+
+    test("emits Final event on a content-only response") {
+        val (loop, store, _, _, _) = makeLoop(List(ScriptedResponse("Here is my answer.")))
         var finalId: Option[String] = None
 
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
@@ -174,29 +206,15 @@ class AgentLoopTest extends AnyFunSuite
         assert(finalId.isDefined, "Final event must be emitted")
         val saved = store.appended.find(_.role == MessageRole.Assistant)
         assert(saved.isDefined)
-        assert(!saved.get.content.contains("<done>"), "<done> must be stripped from persisted text")
-        assert(saved.get.content.trim == "Here is my answer.")
-    }
-
-    test("<done> adjacent to answer text (no newline) is still stripped") {
-        // System prompt says <done> on its own line, but models may omit the newline.
-        // replace+trim must still strip it cleanly.
-        val store = new StubMessageStore()
-        val (loop, _, _, _, _) = makeLoop(List("Here is my answer.<done>"), store = store)
-
-        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
-            emitToken = _ => (),
-            emitEvent = _ => ()
-        )
-
-        val saved = store.appended.find(_.role == MessageRole.Assistant)
-        assert(saved.isDefined)
         assert(saved.get.content == "Here is my answer.")
     }
 
-    test("<done> appearing multiple times is fully stripped") {
+    test("legacy <done> marker text is inert and persisted verbatim") {
+        // The <done> terminator belonged to the removed textual protocol. A model
+        // that still emits it produces an ordinary content-only final answer —
+        // the marker is neither interpreted nor stripped.
         val store = new StubMessageStore()
-        val (loop, _, _, _, _) = makeLoop(List("Answer.\n<done>\n<done>"), store = store)
+        val (loop, _, _, _, _) = makeLoop(List(ScriptedResponse("Here is my answer.<done>")), store = store)
 
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
@@ -205,11 +223,11 @@ class AgentLoopTest extends AnyFunSuite
 
         val saved = store.appended.find(_.role == MessageRole.Assistant)
         assert(saved.isDefined)
-        assert(!saved.get.content.contains("<done>"))
+        assert(saved.get.content == "Here is my answer.<done>")
     }
 
-    test("soft fallback: emits Final even when <done> is absent") {
-        val (loop, _, _, _, _) = makeLoop(List("Plain answer with no marker."))
+    test("response with no tool calls is the final answer") {
+        val (loop, _, _, _, _) = makeLoop(List(ScriptedResponse("Plain answer with no marker.")))
         var finalEmitted = false
 
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
@@ -220,11 +238,11 @@ class AgentLoopTest extends AnyFunSuite
             }
         )
 
-        assert(finalEmitted, "Final must be emitted even without <done>")
+        assert(finalEmitted, "Final must be emitted for a content-only response")
     }
 
     test("tokens are streamed to emitToken during LLM call") {
-        val (loop, _, _, _, _) = makeLoop(List("token-by-token\n<done>"))
+        val (loop, _, _, _, _) = makeLoop(List(ScriptedResponse("token-by-token")))
         val received = mutable.ListBuffer.empty[String]
 
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
@@ -233,15 +251,15 @@ class AgentLoopTest extends AnyFunSuite
         )
 
         assert(received.nonEmpty, "emitToken must have been called at least once")
-        assert(received.mkString == "token-by-token\n<done>")
+        assert(received.mkString == "token-by-token")
     }
 
     // ── Token accounting ──────────────────────────────────────────────────────
 
     test("token accounting is recorded once per LLM call") {
         val (loop, _, accounting, _, _) = makeLoop(List(
-            """run(command="files.stat path=x")""",
-            "Done.\n<done>"
+            toolCallResp("files_stat", """{"path":"x"}"""),
+            ScriptedResponse("Done.")
         ))
 
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
@@ -258,8 +276,8 @@ class AgentLoopTest extends AnyFunSuite
         val shell = new EchoVirtualShell()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                """I'll check the file. run(command="files.stat path=foo.txt")""",
-                "The file exists.\n<done>"
+                toolCallResp("files_stat", """{"path":"foo.txt"}""", content = "I'll check the file."),
+                ScriptedResponse("The file exists.")
             ),
             shell = shell
         )
@@ -287,8 +305,8 @@ class AgentLoopTest extends AnyFunSuite
         val shell = new EchoVirtualShell()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                """run(command="files.list path=src") run(command="files.stat path=README.md")""",
-                "Done.\n<done>"
+                toolCallsResp("files_list" -> """{"path":"src"}""", "files_stat" -> """{"path":"README.md"}"""),
+                ScriptedResponse("Done.")
             ),
             shell = shell
         )
@@ -304,7 +322,7 @@ class AgentLoopTest extends AnyFunSuite
     // ── Cancellation ─────────────────────────────────────────────────────────
 
     test("respects cancelFlag set before first iteration") {
-        val (loop, _, _, shell, _) = makeLoop(List("Should never be called.\n<done>"))
+        val (loop, _, _, shell, _) = makeLoop(List(ScriptedResponse("Should never be called.")))
         var cancelledEmitted = false
 
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(true), new PermissionCoordinator("test-run"),
@@ -323,7 +341,7 @@ class AgentLoopTest extends AnyFunSuite
 
     test("stops with AgentError after maxIterations with infinite tool calls") {
         // Every LLM response contains a tool call — loop should hit the cap.
-        val infiniteToolCalls = List.fill(10)("""run(command="files.stat path=x")""")
+        val infiniteToolCalls = List.fill(10)(toolCallResp("files_stat", """{"path":"x"}"""))
         val settings          = AppSettings(maxIterations = 3, contextBudgetTokens = 8000)
         val (loop, _, _, shell, _) = makeLoop(infiniteToolCalls, settings = settings)
 
@@ -342,15 +360,12 @@ class AgentLoopTest extends AnyFunSuite
 
     // ── Parse failure injection ───────────────────────────────────────────────
 
-    test("malformed run() call injects parse_failed error into tool result turn") {
-        // The LLM emits a bad call (no opening quote) followed by a final answer.
-        // The loop must NOT silently skip the failure — it must inject a parse_failed
-        // error into the [TOOL RESULT] block so the model can observe and self-correct.
-        val store     = new StubMessageStore()
+    test("malformed native arguments inject an error tool result") {
+        val store = new StubMessageStore()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                "run(command=NOSTRING)",   // malformed — no opening quote
-                "Self-corrected.\n<done>"
+                ScriptedResponse(toolCalls = List(NativeToolCall("call-1", "files_stat", "not-json"))),
+                ScriptedResponse("Self-corrected.")
             ),
             store = store
         )
@@ -364,36 +379,34 @@ class AgentLoopTest extends AnyFunSuite
         // contain "parse_failed". We verify via the final assistant message that the
         // loop completed two iterations (second LLM call produced the final answer).
         val assistantMsgs = store.appended.filter(_.role == MessageRole.Assistant)
-        assert(assistantMsgs.length == 1, "exactly one final assistant message persisted")
-        assert(assistantMsgs.head.content == "Self-corrected.")
+        assert(assistantMsgs.length == 2, "tool-call assistant turn and final assistant message must be persisted")
+        assert(assistantMsgs.last.content == "Self-corrected.")
     }
 
     // ── Additional AgentLoop edge cases ──────────────────────────────────────
 
-    test("empty LLM response triggers soft-fallback Final with empty content") {
-        // Empty string: no run() calls, no <done>. Loop should soft-fallback to Final
-        // and persist an empty (or blank) assistant message rather than hanging.
+    test("empty LLM response emits AgentError with provider diagnostics") {
         val store = new StubMessageStore()
-        val (loop, _, _, _, _) = makeLoop(List(""), store = store)
-        var finalEmitted = false
+        val (loop, _, _, _, _) = makeLoop(List(ScriptedResponse("")), store = store)
+        var error: Option[String] = None
 
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
             emitEvent = {
-                case AgentEvent.Final(_, _) => finalEmitted = true
-                case _                      => ()
+                case AgentEvent.AgentError(message) => error = Some(message)
+                case _                              => ()
             }
         )
 
-        assert(finalEmitted, "Final must be emitted even for empty response")
-        val saved = store.appended.find(_.role == MessageRole.Assistant)
-        assert(saved.isDefined, "Empty assistant message must still be persisted")
+        assert(error.exists(_.contains("empty_llm_response")))
+        assert(!store.appended.exists(_.role == MessageRole.Assistant),
+            "An empty provider response must not be persisted as a final answer")
     }
 
-    test("<done> inside tool output does not terminate the loop early") {
-        // EchoVirtualShell echoes the command back; we extend it here to return <done>
-        // in the output. The loop must NOT treat this as a final-answer signal —
-        // <done> is only checked when toolCalls.isEmpty (no run() calls in the response).
+    test("tool result content does not affect loop termination") {
+        // Tool results arrive as role=tool messages, never scanned for terminators —
+        // a result body containing the legacy <done> marker must not short-circuit
+        // the loop.
         val doneInOutputShell = new EchoVirtualShell()
         {
             override def execute(rawCommand: String, ctx: agentica.tools.ExecutionContext)
@@ -405,8 +418,8 @@ class AgentLoopTest extends AnyFunSuite
         }
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                """run(command="files.stat path=x")""",
-                "All done.\n<done>"
+                toolCallResp("files_stat", """{"path":"x"}"""),
+                ScriptedResponse("All done.")
             ),
             shell = doneInOutputShell
         )
@@ -422,7 +435,7 @@ class AgentLoopTest extends AnyFunSuite
             }
         )
 
-        assert(iterationCount == 2, "loop must complete both iterations, not short-circuit on <done> in tool output")
+        assert(iterationCount == 2, "loop must complete both iterations regardless of tool output content")
         assert(finalEmitted,        "Final must be emitted after the second LLM response")
     }
 
@@ -435,16 +448,19 @@ class AgentLoopTest extends AnyFunSuite
         {
             private var calls = 0
             val modelName = "error-on-2nd"
-            def streamChatCompletions(messages: List[agentica.session.Message], onToken: String => Unit): agentica.llm.LLMResponse =
+            def streamChatCompletions(messages: List[agentica.session.Message], onToken: String => Unit,
+                                      tools: List[ToolSpec] = Nil): agentica.llm.LLMResponse =
                 throw UnsupportedOperationException()
-            override def streamResponses(input: List[agentica.session.Message], onToken: String => Unit, previousResponseId: Option[String] = None): agentica.llm.LLMResponse =
+            override def streamResponses(input: List[agentica.session.Message], onToken: String => Unit,
+                                         previousResponseId: Option[String], tools: List[ToolSpec]): agentica.llm.LLMResponse =
             {
                 calls += 1
                 if (calls == 1)
                 {
-                    val r = """run(command="files.stat path=x")"""
-                    r.foreach(c => onToken(c.toString))
-                    agentica.llm.LLMResponse(modelName, 0, 0, 0)
+                    agentica.llm.LLMResponse(
+                        modelName, 0, 0, 0,
+                        toolCalls = List(agentica.llm.NativeToolCall("call-1", "files_stat", "{\"path\":\"x\"}"))
+                    )
                 }
                 else
                 {
@@ -467,15 +483,15 @@ class AgentLoopTest extends AnyFunSuite
         assert(errorEmitted,             "AgentError emitted when second LLM call throws")
     }
 
-    test("all parser failures still inject observations and continue") {
-        // All calls in the first response are malformed → no Success dispatches.
-        // The loop still injects a [TOOL RESULT] with parse errors and calls the LLM again.
-        // The second response provides a final answer — verifying the loop recovered.
+    test("all malformed native calls still inject observations and continue") {
         val store = new StubMessageStore()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                "run(command=BAD1) run(command=BAD2)",  // all failures
-                "Recovered.\n<done>"
+                ScriptedResponse(toolCalls = List(
+                    NativeToolCall("call-1", "files_stat", "BAD1"),
+                    NativeToolCall("call-2", "files_read", "BAD2")
+                )),
+                ScriptedResponse("Recovered.")
             ),
             store = store
         )
@@ -490,14 +506,14 @@ class AgentLoopTest extends AnyFunSuite
         )
 
         assert(finalEmitted, "loop must recover from all-failures iteration and reach Final")
-        val saved = store.appended.find(_.role == MessageRole.Assistant)
+        val saved = store.appended.filter(_.role == MessageRole.Assistant).lastOption
         assert(saved.exists(_.content == "Recovered."))
     }
 
     // ── IterationBoundary events ──────────────────────────────────────────────
 
     test("emits IterationBoundary(1) on single-iteration run") {
-        val (loop, _, _, _, _) = makeLoop(List("Answer.\n<done>"))
+        val (loop, _, _, _, _) = makeLoop(List(ScriptedResponse("Answer.")))
         val boundaries = mutable.ListBuffer.empty[Int]
 
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
@@ -513,8 +529,8 @@ class AgentLoopTest extends AnyFunSuite
 
     test("emits IterationBoundary(1) and IterationBoundary(2) on two-iteration run") {
         val (loop, _, _, _, _) = makeLoop(List(
-            """run(command="files.stat path=x")""",
-            "Done.\n<done>"
+            toolCallResp("files_stat", """{"path":"x"}"""),
+            ScriptedResponse("Done.")
         ))
         val boundaries = mutable.ListBuffer.empty[Int]
 
@@ -535,8 +551,8 @@ class AgentLoopTest extends AnyFunSuite
         val rs = new StubRunStore()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                """run(command="files.stat path=foo.txt")""",
-                "Done.\n<done>"
+                toolCallResp("files_stat", """{"path":"foo.txt"}"""),
+                ScriptedResponse("Done.")
             ),
             runStore = rs
         )
@@ -549,18 +565,18 @@ class AgentLoopTest extends AnyFunSuite
         assert(rs.runs.size == 1, "exactly one ToolRun record persisted")
         val run = rs.runs.head
         assert(run.sessionId == session.id)
-        assert(run.tool      == "files.stat")
+        assert(run.tool      == "files_stat")
         assert(run.traceId   == "t1")
         assert(run.status    == RunStatus.Success)
-        assert(run.input.contains("files.stat path=foo.txt"))
+        assert(run.input.contains("files_stat path=foo.txt"))
     }
 
     test("multiple tool calls in one response each produce a separate RunStore record") {
         val rs = new StubRunStore()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                """run(command="files.list path=src") run(command="files.stat path=README.md")""",
-                "Done.\n<done>"
+                toolCallsResp("files_list" -> """{"path":"src"}""", "files_stat" -> """{"path":"README.md"}"""),
+                ScriptedResponse("Done.")
             ),
             runStore = rs
         )
@@ -571,17 +587,17 @@ class AgentLoopTest extends AnyFunSuite
         )
 
         assert(rs.runs.size == 2, "one record per dispatched tool call")
-        assert(rs.runs(0).tool == "files.list")
-        assert(rs.runs(1).tool == "files.stat")
+        assert(rs.runs(0).tool == "files_list")
+        assert(rs.runs(1).tool == "files_stat")
     }
 
     test("tool calls across two iterations produce cumulative RunStore records") {
         val rs = new StubRunStore()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                """run(command="files.stat path=a.txt")""",
-                """run(command="files.stat path=b.txt")""",
-                "Done.\n<done>"
+                toolCallResp("files_stat", """{"path":"a.txt"}"""),
+                toolCallResp("files_stat", """{"path":"b.txt"}"""),
+                ScriptedResponse("Done.")
             ),
             runStore = rs
         )
@@ -594,13 +610,14 @@ class AgentLoopTest extends AnyFunSuite
         assert(rs.runs.size == 2, "one record per call across all iterations")
     }
 
-    test("parse failures do not produce RunStore records") {
-        // Malformed run() calls are never dispatched so must not appear in RunStore.
+    test("malformed native tool calls produce an error ToolRun record, not a success") {
+        // Calls that fail argument validation are not executed, but they are
+        // persisted as error ToolRun records so failures stay observable.
         val rs = new StubRunStore()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                "run(command=NOSTRING)",
-                "Recovered.\n<done>"
+                ScriptedResponse(toolCalls = List(NativeToolCall("call-1", "files_stat", "BAD"))),
+                ScriptedResponse("Recovered.")
             ),
             runStore = rs
         )
@@ -610,20 +627,22 @@ class AgentLoopTest extends AnyFunSuite
             emitEvent = _ => ()
         )
 
-        assert(rs.runs.isEmpty, "parse failures must not produce ToolRun records")
+        assert(rs.runs.size == 1, "a malformed call must leave exactly one error ToolRun record")
+        assert(rs.runs.head.status == RunStatus.Error,
+            s"malformed call must be recorded as error, got ${rs.runs.head.status}")
     }
 
     // ── Duplicate tool call deduplication ────────────────────────────────────
 
     test("duplicate successful tool calls in one response are dispatched only once - v1") {
-        // The model emits the same run() call twice in one response.
+        // The model emits the same native call twice in one response.
         // Only one dispatch must occur and only one RunStore record must be created.
         val rs    = new StubRunStore()
         val shell = new EchoVirtualShell()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                """run(command="files.stat path=x") run(command="files.stat path=x")""",
-                "Done.\n<done>"
+                toolCallsResp("files_stat" -> """{"path":"x"}""", "files_stat" -> """{"path":"x"}"""),
+                ScriptedResponse("Done.")
             ),
             runStore = rs,
             shell    = shell
@@ -639,14 +658,20 @@ class AgentLoopTest extends AnyFunSuite
     }
 
     test("duplicate successful tool calls in one response are dispatched only once - v2") {
-        // The model emits the same run() call twice in one response.
-        // Only one dispatch must occur and only one RunStore record must be created.
+        // The model emits the same native call twice in one response, alongside
+        // reasoning text. Only one dispatch and one RunStore record must occur.
         val rs    = new StubRunStore()
         val shell = new EchoVirtualShell()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                """<thinking>Let me think</thinking> run(command="files.stat path=a") <thinking>Let me think again</thinking> run(command="files.stat path=a")""",
-                "Done.\n<done>"
+                ScriptedResponse(
+                    content   = "<thinking>Let me think</thinking> <thinking>Let me think again</thinking>",
+                    toolCalls = List(
+                        NativeToolCall("call-1", "files_stat", """{"path":"a"}"""),
+                        NativeToolCall("call-2", "files_stat", """{"path":"a"}""")
+                    )
+                ),
+                ScriptedResponse("Done.")
             ),
             runStore = rs,
             shell    = shell
@@ -667,8 +692,8 @@ class AgentLoopTest extends AnyFunSuite
         val shell = new EchoVirtualShell()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                """run(command="files.stat path=a") run(command="files.stat path=b")""",
-                "Done.\n<done>"
+                toolCallsResp("files_stat" -> """{"path":"a"}""", "files_stat" -> """{"path":"b"}"""),
+                ScriptedResponse("Done.")
             ),
             runStore = rs,
             shell    = shell
@@ -683,13 +708,13 @@ class AgentLoopTest extends AnyFunSuite
         assert(rs.runs.size == 2,        "two distinct tool calls must each produce a RunStore record")
     }
 
-    test("duplicate malformed tool calls in one response inject only one parse error") {
-        // The model emits the same malformed call twice.
-        // Only one parse_failed error must be injected into the tool result block,
-        // which the loop injects as context for the next LLM call.
-        // We verify via the second call's input: parse_failed appears exactly once.
+    test("duplicate malformed native tool calls inject only one error result") {
+        val malformed = agentica.llm.NativeToolCall("call-1", "files_stat", "BAD")
         val provider = CapturingResponsesProvider(
-            responses = List("run(command=BAD) run(command=BAD)", "Recovered.\n<done>")
+            responses = List(
+                ScriptedResponse(toolCalls = List(malformed, malformed.copy(id = "call-2"))),
+                ScriptedResponse("Recovered.")
+            )
         )
         val loop = makeLoopWithCapturing(provider)
 
@@ -700,9 +725,9 @@ class AgentLoopTest extends AnyFunSuite
 
         assert(provider.capturedInputs.size == 2, "two LLM calls expected")
         val secondMsgs   = provider.capturedInputs(1)
-        val secondContent = secondMsgs.map(_.content).mkString
-        val occurrences  = secondContent.split("parse_failed", -1).length - 1
-        assert(occurrences == 1, s"parse_failed must appear exactly once in second call input, found $occurrences")
+        val toolResults = secondMsgs.filter(_.role == MessageRole.Tool)
+        assert(toolResults.size == 1, s"exactly one deduplicated tool result expected, found ${toolResults.size}")
+        assert(toolResults.head.content.contains("invalid_args"))
     }
 
     test("same tool call repeated across multiple iterations is dispatched each time") {
@@ -710,9 +735,9 @@ class AgentLoopTest extends AnyFunSuite
         val rs = new StubRunStore()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                """run(command="files.stat path=x")""",
-                """run(command="files.stat path=x")""",
-                "Done.\n<done>"
+                toolCallResp("files_stat", """{"path":"x"}"""),
+                toolCallResp("files_stat", """{"path":"x"}"""),
+                ScriptedResponse("Done.")
             ),
             runStore = rs
         )
@@ -786,10 +811,10 @@ class AgentLoopTest extends AnyFunSuite
             }
         }
 
-        val llm  = ScriptedLLMProvider(List(
-            """run(command="files.stat path=a.txt")""",
-            """run(command="files.stat path=b.txt")""",
-            "Done.\n<done>"
+        val llm  = new ScriptedLLMProvider(List(
+            toolCallResp("files_stat", """{"path":"a.txt"}"""),
+            toolCallResp("files_stat", """{"path":"b.txt"}"""),
+            ScriptedResponse("Done.")
         ))
         val loop = new RealBuildCtxLoop(
             llm, new StubMessageStore(), new StubRunStore(),
@@ -831,7 +856,7 @@ class AgentLoopTest extends AnyFunSuite
      *  so tests can inspect the persisted [[AgentTurn]].
      */
     private def makeLoopWithTurns(
-        llmResponses: List[String],
+        llmResponses: List[ScriptedResponse],
         shell:        EchoVirtualShell    = new EchoVirtualShell(),
         store:        StubMessageStore    = new StubMessageStore(),
         runStore:     StubRunStore        = new StubRunStore(),
@@ -839,7 +864,7 @@ class AgentLoopTest extends AnyFunSuite
         settings:     AppSettings         = defaultSettings
     ): (AgentLoop, StubMessageStore, StubAgentTurnStore, EchoVirtualShell) =
     {
-        val llm       = ScriptedLLMProvider(llmResponses)
+        val llm       = new ScriptedLLMProvider(llmResponses)
         val turnStore = new StubAgentTurnStore()
         val loop = new AgentLoop(
             llm,
@@ -861,7 +886,7 @@ class AgentLoopTest extends AnyFunSuite
     }
 
     test("single-shot response: AgentTurn is persisted with empty steps") {
-        val (loop, msgStore, turnStore, _) = makeLoopWithTurns(List("Direct answer.\n<done>"))
+        val (loop, msgStore, turnStore, _) = makeLoopWithTurns(List(ScriptedResponse("Direct answer.")))
 
         loop.run(session, Nil, userMsg, "trace-1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
             emitToken = _ => (),
@@ -882,8 +907,8 @@ class AgentLoopTest extends AnyFunSuite
     test("one tool call: AgentTurn contains one thinking step and one tool_call step") {
         val (loop, _, turnStore, _) = makeLoopWithTurns(
             llmResponses = List(
-                """Let me check.\nrun(command="files.stat path=a.txt")""",
-                "Done looking.\n<done>"
+                toolCallResp("files_stat", """{"path":"a.txt"}""", content = "Let me check."),
+                ScriptedResponse("Done looking.")
             )
         )
 
@@ -900,15 +925,15 @@ class AgentLoopTest extends AnyFunSuite
         assert(thinkingSteps.nonEmpty, "thinking step must be recorded for iteration 1")
         assert(toolSteps.size == 1, "exactly one tool_call step expected")
         assert(toolSteps.head.iteration == 1)
-        assert(toolSteps.head.command.contains("files.stat"))
+        assert(toolSteps.head.command.contains("files_stat"))
         assert(toolSteps.head.durationMs >= 0L)
     }
 
     test("two tool calls in one iteration: both appear as tool_call steps") {
         val (loop, _, turnStore, _) = makeLoopWithTurns(
             llmResponses = List(
-                """run(command="files.stat path=a.txt") run(command="files.stat path=b.txt")""",
-                "All done.\n<done>"
+                toolCallsResp("files_stat" -> """{"path":"a.txt"}""", "files_stat" -> """{"path":"b.txt"}"""),
+                ScriptedResponse("All done.")
             )
         )
 
@@ -929,9 +954,9 @@ class AgentLoopTest extends AnyFunSuite
     test("multi-iteration run: each iteration gets its own thinking step") {
         val (loop, _, turnStore, _) = makeLoopWithTurns(
             llmResponses = List(
-                """Iter 1 thinking.\nrun(command="files.stat path=a.txt")""",
-                """Iter 2 thinking.\nrun(command="files.stat path=b.txt")""",
-                "Final answer.\n<done>"
+                toolCallResp("files_stat", """{"path":"a.txt"}""", content = "Iter 1 thinking."),
+                toolCallResp("files_stat", """{"path":"b.txt"}""", content = "Iter 2 thinking."),
+                ScriptedResponse("Final answer.")
             )
         )
 
@@ -952,7 +977,7 @@ class AgentLoopTest extends AnyFunSuite
     }
 
     test("tool_call step result matches what the shell returned") {
-        val fixedResult = "$ files.stat path=a.txt\nok\n─────\nsize: 42"
+        val fixedResult = "$ files_stat path=a.txt\nok\n─────\nsize: 42"
         val fixedShell = new EchoVirtualShell()
         {
             override def execute(rawCommand: String, ctx: agentica.tools.ExecutionContext)
@@ -963,8 +988,8 @@ class AgentLoopTest extends AnyFunSuite
         }
         val (loop, _, turnStore, _) = makeLoopWithTurns(
             llmResponses = List(
-                """run(command="files.stat path=a.txt")""",
-                "Done.\n<done>"
+                toolCallResp("files_stat", """{"path":"a.txt"}"""),
+                ScriptedResponse("Done.")
             ),
             shell = fixedShell
         )
@@ -984,7 +1009,7 @@ class AgentLoopTest extends AnyFunSuite
     test("cancelled run does not persist an AgentTurn") {
         val cancelFlag = new AtomicBoolean(true)  // already cancelled before run starts
         val (loop, _, turnStore, _) = makeLoopWithTurns(
-            llmResponses = List("This won't reach Final.\n<done>")
+            llmResponses = List(ScriptedResponse("This won't reach Final."))
         )
 
         loop.run(session, Nil, userMsg, "trace-6", cancelFlag, new PermissionCoordinator("test-run"),
@@ -1013,7 +1038,7 @@ class AgentLoopTest extends AnyFunSuite
         val rs = new StubRunStore()
         val (loop, _, _, _, _) = makeLoop(
             llmResponses = List(
-                """run(command="files.stat path=a.txt") run(command="files.stat path=b.txt")"""
+                toolCallsResp("files_stat" -> """{"path":"a.txt"}""", "files_stat" -> """{"path":"b.txt"}""")
             ),
             shell    = countingShell,
             runStore = rs
@@ -1025,7 +1050,7 @@ class AgentLoopTest extends AnyFunSuite
         )
 
         assert(rs.runs.size == 1, "only the completed tool call before cancel is persisted")
-        assert(rs.runs.head.tool == "files.stat")
+        assert(rs.runs.head.tool == "files_stat")
     }
 
     // ── Session title generation ───────────────────────────────────────────────
@@ -1104,7 +1129,7 @@ class AgentLoopTest extends AnyFunSuite
 
         var capturedTitle: Option[String] = None
         val (loop, _, _, _, _) = makeLoop(
-            llmResponses = List("Final answer here"),
+            llmResponses = List(ScriptedResponse("Final answer here")),
             store        = store
         )
 
@@ -1144,7 +1169,7 @@ class AgentLoopTest extends AnyFunSuite
 
         var capturedTitle: Option[String] = None
         val (loop, _, _, _, _) = makeLoop(
-            llmResponses = List("Another answer"),
+            llmResponses = List(ScriptedResponse("Another answer")),
             store        = store
         )
 
@@ -1178,7 +1203,7 @@ class AgentLoopTest extends AnyFunSuite
 
         var capturedTitle: Option[String] = None
         val (loop, _, _, _, _) = makeLoop(
-            llmResponses = List("Final answer"),
+            llmResponses = List(ScriptedResponse("Final answer")),
             store        = store
         )
 
@@ -1205,12 +1230,12 @@ class AgentLoopTest extends AnyFunSuite
      *  [[agentica.llm.LLMProvider]] stub that captures every `streamResponses` call
      *  so tests can assert on the `input` messages and `previousResponseId` passed by
      *  [[AgentLoop]].  Each call dequeues the next scripted response.
-     *  @param responses          Pre-scripted assistant response strings, in order.
+     *  @param responses          Pre-scripted assistant responses, in order.
      *  @param responseIdToReturn Optional response ID to include in every [[LLMResponse]],
      *                            simulating a stateful Responses API server.
      */
     private class CapturingResponsesProvider(
-        responses:          List[String],
+        responses:          List[ScriptedResponse],
         responseIdToReturn: Option[String] = None
     ) extends agentica.llm.LLMProvider
     {
@@ -1227,7 +1252,8 @@ class AgentLoopTest extends AnyFunSuite
          *  @param onToken   Ignored.
          *  @return          Stub [[LLMResponse]].
          */
-        def streamChatCompletions(messages: List[Message], onToken: String => Unit): LLMResponse =
+        def streamChatCompletions(messages: List[Message], onToken: String => Unit,
+                                  tools: List[ToolSpec] = Nil): LLMResponse =
             throw UnsupportedOperationException("CapturingResponsesProvider only supports streamResponses")
 
         /**
@@ -1240,19 +1266,21 @@ class AgentLoopTest extends AnyFunSuite
         override def streamResponses(
             input:              List[Message],
             onToken:            String => Unit,
-            previousResponseId: Option[String] = None
+            previousResponseId: Option[String],
+            tools:              List[ToolSpec]
         ): LLMResponse =
         {
             capturedInputs  += input
             capturedPrevIds += previousResponseId
-            val response = if queue.nonEmpty then queue.dequeue() else ""
-            response.split("(?<=\\n)|(?=\\n)").foreach(onToken)
+            val scripted = if queue.nonEmpty then queue.dequeue() else ScriptedResponse("")
+            scripted.content.split("(?<=\\n)|(?=\\n)").filter(_.nonEmpty).foreach(onToken)
             LLMResponse(
                 model            = modelName,
                 promptTokens     = 0,
-                completionTokens = response.length / 4,
+                completionTokens = scripted.content.length / 4,
                 latencyMs        = 0,
-                responseId       = responseIdToReturn
+                responseId       = responseIdToReturn,
+                toolCalls        = scripted.toolCalls
             )
         }
     }
@@ -1265,6 +1293,7 @@ class AgentLoopTest extends AnyFunSuite
      */
     private val responsesSettings = defaultSettings.copy(apiMode = APIMode.Responses)
 
+    /** Builds an agent loop whose Responses API provider captures all inputs. */
     private def makeLoopWithCapturing(
         provider:     CapturingResponsesProvider,
         store:        StubMessageStore  = new StubMessageStore(),
@@ -1287,7 +1316,7 @@ class AgentLoopTest extends AnyFunSuite
     }
 
     test("streamResponses: cold start sends full context as message list") {
-        val provider = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val provider = CapturingResponsesProvider(List(ScriptedResponse("Answer.")))
         val loop     = makeLoopWithCapturing(provider)
 
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
@@ -1303,7 +1332,7 @@ class AgentLoopTest extends AnyFunSuite
     }
 
     test("streamResponses: cold start includes full history in message list") {
-        val provider    = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val provider    = CapturingResponsesProvider(List(ScriptedResponse("Answer.")))
         val loop        = makeLoopWithCapturing(provider)
         val priorAssist = Message("prior-1", session.id, MessageRole.Assistant, "Prior answer.", "")
 
@@ -1317,13 +1346,13 @@ class AgentLoopTest extends AnyFunSuite
             "cold start must include prior assistant message from history")
     }
 
-    test("streamResponses: subsequent iteration in same run sends single tool-result message") {
+    test("streamResponses: subsequent iteration sends only the correlated tool result") {
         // Two iterations: first response has a tool call, second is the final answer.
-        // On the second call the server retains state — only the tool result block is sent.
+        // On the second call the server retains the assistant call, so only its output is sent.
         val provider = CapturingResponsesProvider(
             responses          = List(
-                """run(command="files.stat path=x")""",
-                "Done.\n<done>"
+                toolCallResp("files_stat", """{"path":"x"}"""),
+                ScriptedResponse("Done.")
             ),
             responseIdToReturn = Some("resp-001")
         )
@@ -1336,13 +1365,13 @@ class AgentLoopTest extends AnyFunSuite
 
         assert(provider.capturedInputs.size == 2, "two LLM calls expected")
         val secondMsgs = provider.capturedInputs(1)
-        assert(secondMsgs.size == 1,                          "second call must send exactly one message")
-        assert(secondMsgs.head.role == MessageRole.User,      "second call message must be user role")
-        assert(secondMsgs.head.content.contains("[TOOL RESULT]"), "second call must contain tool result block")
+        assert(secondMsgs.size == 1, "second call must send exactly one tool result")
+        assert(secondMsgs.head.role == MessageRole.Tool)
+        assert(secondMsgs.head.toolCallId.contains("call-1"))
     }
 
     test("streamResponses: previousResponseId is None on cold start") {
-        val provider = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val provider = CapturingResponsesProvider(List(ScriptedResponse("Answer.")))
         val loop     = makeLoopWithCapturing(provider)
 
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
@@ -1356,8 +1385,8 @@ class AgentLoopTest extends AnyFunSuite
     test("streamResponses: responseId from first call is threaded as previousResponseId on second call") {
         val provider = CapturingResponsesProvider(
             responses          = List(
-                """run(command="files.stat path=x")""",
-                "Done.\n<done>"
+                toolCallResp("files_stat", """{"path":"x"}"""),
+                ScriptedResponse("Done.")
             ),
             responseIdToReturn = Some("resp-abc")
         )
@@ -1375,7 +1404,7 @@ class AgentLoopTest extends AnyFunSuite
 
     test("streamResponses: session with existing lastResponseId threads it into first call") {
         val sessionWithPriorId = session.copy(lastResponseId = Some("prior-resp-xyz"))
-        val provider           = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val provider           = CapturingResponsesProvider(List(ScriptedResponse("Answer.")))
         val loop               = makeLoopWithCapturing(provider)
 
         loop.run(sessionWithPriorId, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
@@ -1391,7 +1420,7 @@ class AgentLoopTest extends AnyFunSuite
         // When a prior response ID exists, the server already has context.
         // Only the new user message should be sent as a single-element list.
         val sessionWithPriorId = session.copy(lastResponseId = Some("prior-resp-xyz"))
-        val provider           = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val provider           = CapturingResponsesProvider(List(ScriptedResponse("Answer.")))
         val loop               = makeLoopWithCapturing(provider)
 
         loop.run(sessionWithPriorId, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
@@ -1409,7 +1438,7 @@ class AgentLoopTest extends AnyFunSuite
 
     test("apiMode=Responses routes to streamResponses") {
         val responsesSettings = defaultSettings.copy(apiMode = APIMode.Responses)
-        val provider          = CapturingResponsesProvider(List("Answer.\n<done>"))
+        val provider          = CapturingResponsesProvider(List(ScriptedResponse("Answer.")))
         val loop = new AgentLoop(
             provider,
             None,
@@ -1438,10 +1467,11 @@ class AgentLoopTest extends AnyFunSuite
         val trackingLLM   = new agentica.llm.LLMProvider
         {
             val modelName = "tracking-model"
-            override def streamChatCompletions(messages: List[Message], onToken: String => Unit): LLMResponse =
+            override def streamChatCompletions(messages: List[Message], onToken: String => Unit,
+                                               tools: List[ToolSpec] = Nil): LLMResponse =
             {
                 chatCallCount += 1
-                onToken("Answer.\n<done>")
+                onToken("Answer.")
                 LLMResponse(model = modelName, promptTokens = 0, completionTokens = 0, latencyMs = 0)
             }
         }

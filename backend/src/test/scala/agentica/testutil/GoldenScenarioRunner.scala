@@ -63,6 +63,13 @@ class GoldenScenarioRunner(scenarioPath: Path, workspaceFiles: Map[String, Strin
             m
         }
 
+        override def appendMessage(message: Message): Message =
+        {
+            val persisted = message.copy(id = s"msg-${appended.size}")
+            appended.append(persisted)
+            persisted
+        }
+
         override def listForSession(sessionId: String): List[Message] = appended.toList
     }
 
@@ -209,9 +216,11 @@ class GoldenScenarioRunner(scenarioPath: Path, workspaceFiles: Map[String, Strin
      */
     def assertToolSequence(expected: String*): GoldenScenarioRunner =
     {
-        val actual = capturedToolCalls
+        val actual             = capturedToolCalls
+        val normalizedActual   = actual.map(agentica.shell.Tokenizer.parse)
+        val normalizedExpected = expected.toList.map(agentica.shell.Tokenizer.parse)
         assert(
-            actual == expected.toList,
+            normalizedActual == normalizedExpected,
             s"Tool sequence mismatch.\nExpected: ${expected.mkString("[", ", ", "]")}\nActual:   ${actual.mkString("[", ", ", "]")}"
         )
         this

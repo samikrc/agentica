@@ -1,76 +1,83 @@
 package agentica.testutil
 
-import agentica.llm.{LLMProvider, LLMResponse}
+import agentica.llm.{LLMProvider, LLMResponse, NativeToolCall, ToolSpec}
 import agentica.session.Message
 import java.nio.file.{Files, Path}
-import scala.jdk.CollectionConverters.*
 
 /**
  *  Test double for LLMProvider that reads scripted responses from a JSON file.
- *  Returns one response per stream() call in order. Throws if more calls are made
- *  than responses provided in the file.
+ *  Responses may be legacy strings or structured objects:
  *
- *  JSON format:
- *  {
+ *  {{
  *    "responses": [
- *      "First response with run(command=\"files.read path=data.txt\")",
- *      "Second response\\n<done>"
+ *      {"content":"", "tool_calls":[
+ *        {"id":"call-1", "name":"files_read", "arguments":{"path":"data.txt"}}
+ *      ]},
+ *      {"content":"The file contains the expected data."}
  *    ]
- *  }
+ *  }}
  *
  *  @param path  Path to the JSON scenario file.
  */
 class JSONFileLLMProvider(path: Path) extends LLMProvider
 {
-
-    private val json    = ujson.read(Files.readString(path))
-    private val responses = json.obj("responses").arr.map(_.str).toList
-    private val queue   = scala.collection.mutable.Queue(responses*)
+    private val json = ujson.read(Files.readString(path))
+    private val responses = json.obj("responses").arr.map(parseResponse).toList
+    private val queue = scala.collection.mutable.Queue(responses*)
 
     val modelName: String = json.obj.get("model").map(_.str).getOrElse("json-file-model")
 
-    /**
-     *  Streams tokens from the next scripted response.
-     *  Throws if no more responses are available.
-     *
-     *  @param messages
-     *    The messages to stream (ignored — responses are scripted).
-     *  @param onToken
-     *    The function to call for each token.
-     *  @return
-     *    The usage of the streamed response.
-     */
-    def streamChatCompletions(messages: List[Message], onToken: String => Unit): LLMResponse =
+    /** Parses a legacy string or structured JSON scripted response. */
+    private def parseResponse(value: ujson.Value): ScriptedResponse = value match
+    {
+        case ujson.Str(content) => ScriptedResponse(content)
+        case obj: ujson.Obj =>
+            val content = obj.value.get("content").collect { case ujson.Str(s) => s }.getOrElse("")
+            val calls = obj.value.get("tool_calls").map(_.arr.toList).getOrElse(Nil).map { call =>
+                val callObj = call.obj
+                val id      = callObj.get("id").map(_.str).getOrElse("call-1")
+                val name    = callObj("name").str
+                val args    = callObj.get("arguments") match
+                {
+                    case Some(ujson.Str(raw)) => raw
+                    case Some(arguments)      => ujson.write(arguments)
+                    case None                 => "{}"
+                }
+                NativeToolCall(id, name, args)
+            }
+            ScriptedResponse(content, calls)
+        case other => throw IllegalArgumentException(s"Invalid scripted response in $path: ${ujson.write(other)}")
+    }
+
+    /** Emits the next scripted Chat Completions response. */
+    def streamChatCompletions(
+        messages: List[Message],
+        onToken: String => Unit,
+        tools: List[ToolSpec] = Nil
+    ): LLMResponse =
     {
         if (queue.isEmpty)
         {
             throw IllegalStateException(s"JSONFileLLMProvider($path): no more scripted responses")
         }
         val response = queue.dequeue()
-        // Split on newlines to simulate token streaming while preserving line breaks
-        response.split("(?<=\\n)|(?=\\n)").foreach(onToken)
-        LLMResponse(model = modelName, promptTokens = 0, completionTokens = response.length / 4, latencyMs = 0)
+        response.content.split("(?<=\\n)|(?=\\n)").filter(_.nonEmpty).foreach(onToken)
+        LLMResponse(
+            model = modelName,
+            promptTokens = 0,
+            completionTokens = response.content.length / 4,
+            latencyMs = 0,
+            toolCalls = response.toolCalls
+        )
     }
 
-    /**
-     *  Delegates to [[streamChatCompletions]], ignoring input messages and response ID.
-     *  @param input               Ignored.
-     *  @param onToken             Called for each token fragment.
-     *  @param previousResponseId  Ignored.
-     *  @return                    Stub [[LLMResponse]] with zero token counts.
-     */
     override def streamResponses(
-        input:              List[Message],
-        onToken:            String => Unit,
-        previousResponseId: Option[String] = None
-    ): LLMResponse =
-        streamChatCompletions(Nil, onToken)
+        input: List[Message],
+        onToken: String => Unit,
+        previousResponseId: Option[String],
+        tools: List[ToolSpec]
+    ): LLMResponse = streamChatCompletions(Nil, onToken, tools)
 
-    /**
-     *  Returns the number of remaining scripted responses.
-     *
-     *  @return
-     *    The number of remaining scripted responses.
-     */
+    /** Returns the number of scripted responses not yet emitted. */
     def remainingResponses: Int = queue.size
 }

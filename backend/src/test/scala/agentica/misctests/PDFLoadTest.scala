@@ -13,6 +13,7 @@ object PDFLoadTest
     val PdfPath: String =
         getClass.getResource("/files/IT Support Analyst - India.pdf").toURI.getPath
 
+    /** Runs the standalone PDF loading diagnostic. */
     def main(args: Array[String]): Unit =
     {
         println(s"java.awt.headless = ${System.getProperty("java.awt.headless")}")

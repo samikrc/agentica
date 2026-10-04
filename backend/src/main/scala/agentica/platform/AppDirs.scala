@@ -61,4 +61,46 @@ object AppDirs
 
     /** Default backend log file path. */
     val logFile: Path = logsDir.resolve("agentica.log")
+
+    /**
+     *  Returns the OS-standard application state directory for Agentica.
+     *  This is intended for logs, evaluation history, and other runtime state
+     *  that should persist across reboots but is not user data.
+     *
+     *  Windows : %APPDATA%\Agentica\state
+     *  macOS   : ~/Library/Application Support/Agentica/state
+     *  Linux   : ~/.local/state/Agentica
+     */
+    val stateDir: Path =
+    {
+        val base = sys.env.get("AGENTICA_STATE_DIR") match
+        {
+            case Some(override_) => Paths.get(override_)
+            case None =>
+                val os = sys.props("os.name").toLowerCase
+                if (os.contains("win"))
+                {
+                    Paths.get(sys.env.getOrElse("APPDATA", sys.props("user.home")), appName, "state")
+                }
+                else if (os.contains("mac"))
+                {
+                    Paths.get(sys.props("user.home"), "Library", "Application Support", appName, "state")
+                }
+                else
+                {
+                    Paths.get(sys.props("user.home"), ".local", "state", appName)
+                }
+        }
+        try Files.createDirectories(base)
+        catch
+        {
+            case ex: java.nio.file.FileAlreadyExistsException =>
+                if (!Files.isDirectory(base))
+                    throw ex
+        }
+        base
+    }
+
+    /** Directory where evaluation runs and their artifacts are persisted. */
+    val evalsDir: Path = Files.createDirectories(stateDir.resolve("evals"))
 }

@@ -23,9 +23,9 @@ case class ParseError(message: String, input: String)
  *
  *  Examples:
  *  {{{
- *    files.read path=data/report.txt
- *    files.search query="total revenue" path=reports/ ignore_case=true
- *    llm.summarize text="some inline text with spaces"
+ *    files_read path=data/report.txt
+ *    files_search query="total revenue" path=reports/ ignore_case=true
+ *    llm_summarize text="some inline text with spaces"
  *  }}}
  *
  *  Thread-safe: stateless object.
@@ -35,7 +35,7 @@ object Tokenizer
     /**
      *  Parses a raw command string into a [[Command]] AST.
      *
-     *  @param raw  Raw command string, already stripped of any `run(command="...")` wrapper.
+     *  @param raw  Internal canonical command string.
      *  @return     `Right(Command)` on success, `Left(ParseError)` on failure.
      */
     def parse(raw: String): Either[ParseError, Command] =
@@ -46,19 +46,19 @@ object Tokenizer
             return Left(ParseError("empty command", raw))
         }
 
-        // ── 1. Extract family.verb head ──────────────────────────────────────
+        // ── 1. Extract family_verb head ──────────────────────────────────────
         val spaceIdx = trimmed.indexWhere(c => c == ' ' || c == '\t')
         val head     = if (spaceIdx < 0) then trimmed else trimmed.substring(0, spaceIdx)
         val rest     = if (spaceIdx < 0) then "" else trimmed.substring(spaceIdx + 1).trim
 
-        val dotIdx = head.indexOf('.')
-        if (dotIdx <= 0 || dotIdx == head.length - 1)
+        val separatorIdx = head.indexOf('_')
+        if (separatorIdx <= 0 || separatorIdx == head.length - 1)
         {
-            return Left(ParseError(s"expected family.verb, got: '$head'", raw))
+            return Left(ParseError(s"expected family_verb, got: '$head'", raw))
         }
 
-        val family = head.substring(0, dotIdx)
-        val verb   = head.substring(dotIdx + 1)
+        val family = head.substring(0, separatorIdx)
+        val verb   = head.substring(separatorIdx + 1)
 
         if (family.isEmpty || verb.isEmpty)
         {
@@ -75,6 +75,12 @@ object Tokenizer
 
     // ── Internal arg parser ───────────────────────────────────────────────────
 
+    /**
+     *  Parses the argument portion of a canonical command into key-value pairs.
+     *  @param s         Argument text following the command name.
+     *  @param rawInput  Full original input included in parse errors.
+     *  @return          Parsed arguments or a structured [[ParseError]].
+     */
     private def parseArgs(s: String, rawInput: String): Either[ParseError, Map[String, String]] =
     {
         if (s.isEmpty)

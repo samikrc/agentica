@@ -102,6 +102,10 @@ class SessionScratchpad
      */
     def size: Int = this.synchronized(entries.size)
 
+    /**
+     *  Evicts the least-recently-used entry when the scratchpad reaches capacity.
+     *  Does nothing while the scratchpad remains below its configured limit.
+     */
     private def evictOldestIfFull(): Unit =
     {
         if (entries.size >= MAX_ENTRIES)

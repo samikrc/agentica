@@ -57,6 +57,10 @@ object DocToolDetector
 
     // ── Private ───────────────────────────────────────────────────────────────
 
+    /**
+     *  Detects installed document-conversion tools.
+     *  @return  Availability and version details for each supported converter.
+     */
     private def detect(): DocToolStatus =
     {
         val whichResult = ProcessUtils.runCaptured(List("which", "soffice"))

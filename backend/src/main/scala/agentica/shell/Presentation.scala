@@ -8,7 +8,7 @@ import agentica.tools.{AgentResponse, ToolBody, ToolResult, ToolStatus}
  *
  *  Envelope format:
  *  {{{
- *    $ family.verb arg1=val1 arg2=val2
+ *    $ family_verb arg1=val1 arg2=val2
  *    ok                         ← or "error: <code>"
  *    ─ key: value               ← zero or more metadata lines
  *    ─────                      ← separator (only present when body follows)
@@ -62,7 +62,7 @@ object Presentation
                 lines += s"error: $code"
                 lines += s"─ message: $message"
                 hints.foreach(h => lines += s"─ hint: $h")
-                trySuggestions.foreach(t => lines += s"""─ try: run(command="$t")""")
+                trySuggestions.foreach(t => lines += s"─ try: ${t.replaceFirst("\\.", "_")}")
         }
 
         // Metadata lines (only for Ok — errors embed their own hints above)
@@ -85,9 +85,9 @@ object Presentation
                 val sizeKb = f"${sizeBytes / 1024.0}%.1f"
                 lines += s"─ stored: $ref"
                 lines += s"─ hint: content too large for context ($sizeKb KB, $lineCount lines); use targeted tools"
-                lines += s"""─ try: run(command="files.search query=\\"your term\\" path=$sourcePath")"""
-                lines += s"""─ try: run(command="files.read path=$sourcePath lines=1-50")"""
-                lines += s"""─ try: run(command="llm.summarize text=$ref")"""
+                lines += s"""─ try: files_search query="your term" path="$sourcePath\""""
+                lines += s"""─ try: files_read path="$sourcePath" lines="1-50\""""
+                lines += s"""─ try: llm_summarize text="$ref\""""
         }
 
         AgentResponse(text = lines.mkString("\n"), durationMs = durationMs)

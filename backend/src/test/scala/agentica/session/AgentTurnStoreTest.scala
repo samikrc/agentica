@@ -88,12 +88,14 @@ class AgentTurnStoreTest extends AnyFunSuite with BeforeAndAfterEach
         )
     }
 
+    /** Creates a thinking-step fixture. */
     private def thinkingStep(iter: Int, text: String): AgentTurnStep =
     {
         AgentTurnStep(stepType = agentica.session.StepType.Thinking, iteration = iter, content = text,
                       command = "", result = "", durationMs = 0L)
     }
 
+    /** Creates a tool-step fixture. */
     private def toolStep(iter: Int, cmd: String, result: String, dur: Long): AgentTurnStep =
     {
         AgentTurnStep(stepType = agentica.session.StepType.ToolCall, iteration = iter, content = "",
@@ -117,7 +119,7 @@ class AgentTurnStoreTest extends AnyFunSuite with BeforeAndAfterEach
     test("steps round-trip: thinking and tool_call steps survive serialisation") {
         val steps = List(
             thinkingStep(1, "I will search for revenue data"),
-            toolStep(1, "files.search query=\"revenue\"", "$ files.search\nok\nfoo.txt:42: revenue = 100", 83L),
+            toolStep(1, "files_search query=\"revenue\"", "$ files_search\nok\nfoo.txt:42: revenue = 100", 83L),
             thinkingStep(2, "Now I have the data, I can answer"),
         )
         store.insert(turn("t2", "sess-1", steps = steps))
@@ -137,7 +139,7 @@ class AgentTurnStoreTest extends AnyFunSuite with BeforeAndAfterEach
         val s1 = loadedSteps(1)
         assert(s1.stepType == agentica.session.StepType.ToolCall)
         assert(s1.iteration == 1)
-        assert(s1.command == "files.search query=\"revenue\"")
+        assert(s1.command == "files_search query=\"revenue\"")
         assert(s1.result.contains("revenue = 100"))
         assert(s1.durationMs == 83L)
 
@@ -182,7 +184,7 @@ class AgentTurnStoreTest extends AnyFunSuite with BeforeAndAfterEach
     test("step content with unicode and special chars survives round-trip") {
         val steps = List(
             thinkingStep(1, "Revenue ≥ $1M → growth \"strong\" & <done> marker"),
-            toolStep(1, "files.search query=\"NRR,revenue\"", "NRR: 115%\nRevenue: $50M", 12L)
+            toolStep(1, "files_search query=\"NRR,revenue\"", "NRR: 115%\nRevenue: $50M", 12L)
         )
         store.insert(turn("t4", "sess-1", steps = steps))
 

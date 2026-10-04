@@ -18,7 +18,7 @@ case class MemorySetInput(key: String, value: String)
 case class MemorySetOutput(key: String, error: Option[String])
 
 /**
- *  Implements the `memory.set` command.
+ *  Implements the `memory_set` command.
  *  Upserts a session-scoped key-value entry into the SQLite `memory_entries` table.
  */
 object MemorySet extends Tool[MemorySetInput, MemorySetOutput]
@@ -27,19 +27,19 @@ object MemorySet extends Tool[MemorySetInput, MemorySetOutput]
     /**
      *  Canonical tool name.
      */
-    val name: String = "memory.set"
+    val name: String = "memory_set"
 
     /**
      *  Argument schema for help generation and system-prompt tool index.
      */
     val schema: CommandSchema = CommandSchema(
-        fullName = "memory.set",
+        fullName = "memory_set",
         summary  = "Persist a key-value pair in session memory",
         args     = List(
             ArgSpec("key",   "Unique key to store the value under",     required = true),
             ArgSpec("value", "String value to associate with the key",   required = true)
         ),
-        example  = """memory.set key=user_name value="Alice"""
+        example  = """memory_set key=user_name value="Alice"""
     )
 
     /**

@@ -30,7 +30,7 @@ case class FilesStatOutput(
 )
 
 /**
- *  Implements the `files.stat` command.
+ *  Implements the `files_stat` command.
  *  Returns the size, last-modified time, and type of a workspace file or directory.
  */
 object FilesStat extends Tool[FilesStatInput, FilesStatOutput]
@@ -39,18 +39,18 @@ object FilesStat extends Tool[FilesStatInput, FilesStatOutput]
     /**
      *  Canonical tool name.
      */
-    val name: String = "files.stat"
+    val name: String = "files_stat"
 
     /**
      *  Argument schema for help generation and system-prompt tool index.
      */
     val schema: CommandSchema = CommandSchema(
-        fullName = "files.stat",
+        fullName = "files_stat",
         summary  = "Return size, modified time, and type of a workspace file or directory",
         args     = List(
             ArgSpec("path", "Relative path to the file or directory within the workspace", required = true)
         ),
-        example  = """files.stat path=src/main.scala"""
+        example  = """files_stat path=src/main.scala"""
     )
 
     /**
@@ -130,6 +130,8 @@ object FilesStat extends Tool[FilesStatInput, FilesStatOutput]
                 ))
             case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
+            case Some(error) =>
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File stat failed: ${error.toErrorCode}"))
             case None =>
                 ToolResult(
                     status   = ToolStatus.Ok,

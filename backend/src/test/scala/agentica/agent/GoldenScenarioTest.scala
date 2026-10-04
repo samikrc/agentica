@@ -15,6 +15,7 @@ class GoldenScenarioTest extends AnyFunSuite
     private val scenariosDir: Path =
         Paths.get(getClass.getResource("/scenarios").toURI)
 
+    /** Resolves a named golden scenario fixture. */
     private def scenarioPath(name: String): Path =
         scenariosDir.resolve(s"$name.json")
 
@@ -30,7 +31,7 @@ class GoldenScenarioTest extends AnyFunSuite
         {
             runner
                 .run()
-                .assertToolSequence("files.read path=data.txt")
+                .assertToolSequence("files_read path=data.txt")
                 .assertFinalAnswerContains("file contains")
         }
         finally
@@ -55,7 +56,7 @@ class GoldenScenarioTest extends AnyFunSuite
         {
             runner
                 .run()
-                .assertToolSequence("files.list path=src recursive=true", "files.search query=TODO path=src")
+                .assertToolSequence("files_list path=src recursive=true", "files_search query=TODO path=src")
                 .assertFinalAnswerContains("TODO")
         }
         finally
@@ -79,7 +80,7 @@ class GoldenScenarioTest extends AnyFunSuite
         {
             runner
                 .run()
-                .assertToolSequence("files.stat path=README.md", "files.read path=src/main.py")
+                .assertToolSequence("files_stat path=README.md", "files_read path=src/main.py")
         }
         finally
         {
@@ -99,7 +100,7 @@ class GoldenScenarioTest extends AnyFunSuite
         {
             runner
                 .run()
-                .assertToolSequence("memory.set key=preference value=dark_mode", "memory.get key=preference")
+                .assertToolSequence("memory_set key=preference value=dark_mode", "memory_get key=preference")
                 .assertFinalAnswerContains("Stored")
         }
         finally
@@ -123,7 +124,7 @@ class GoldenScenarioTest extends AnyFunSuite
         {
             runner
                 .run()
-                .assertToolSequence("files.read path=report.txt", "files.search query=report include=*.txt")
+                .assertToolSequence("files_read path=report.txt", "files_search query=report include=*.txt")
         }
         finally
         {
@@ -143,7 +144,7 @@ class GoldenScenarioTest extends AnyFunSuite
         {
             runner
                 .run()
-                .assertToolSequence("files.stat path=data.json", "files.read path=data.json")
+                .assertToolSequence("files_stat path=data.json", "files_read path=data.json")
                 .assertFinalAnswerContains("JSON")
         }
         finally
@@ -169,7 +170,7 @@ class GoldenScenarioTest extends AnyFunSuite
         {
             runner
                 .run()
-                .assertToolSequence("files.list path=. recursive=true depth=2")
+                .assertToolSequence("files_list path=. recursive=true depth=2")
         }
         finally
         {
@@ -189,7 +190,7 @@ class GoldenScenarioTest extends AnyFunSuite
         {
             runner
                 .run()
-                .assertToolSequence("files.stat path=large.log", "files.read path=large.log lines=1-100")
+                .assertToolSequence("files_stat path=large.log", "files_read path=large.log lines=1-100")
         }
         finally
         {

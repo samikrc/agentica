@@ -59,7 +59,8 @@ Edit `src/test/resources/eval-config.json` to point at your endpoints and models
     "judgeBaseURL": "http://localhost:1234/v1",
     "judgeModel": "claude-3-5-sonnet",
     "judgeAPIKey": "lm-studio",
-    "pauseBetweenPhasesMs": 30000
+    "pauseBetweenPhasesMs": 30000,
+    "reuseMarkdownCache": true
   }
 ]
 ```
@@ -71,6 +72,7 @@ Fields:
 - `vlmBaseURL`, `vlmModel`, `vlmAPIKey` — optional VLM; if omitted the primary LLM is used for vision tasks.
 - `judgeBaseURL`, `judgeModel`, `judgeAPIKey` — optional separate judge LLM; if omitted the primary LLM is used as the judge.
 - `pauseBetweenPhasesMs` — optional pause (ms) between answer generation and judging so you can unload the answer model and load the judge model on the same server (e.g., LM Studio).
+- `reuseMarkdownCache` — optional boolean (default `true`); when `true`, a matching content-addressed Markdown cache entry skips PDF rendering and VLM transcription. Set `false` to force a fresh conversion.
 
 You can also point at a config file outside the repo by setting the environment variable or Java system property `PDF_EVAL_CONFIG`.
 
@@ -120,26 +122,69 @@ Pipeline in one JVM for each provider:
 
 This means only **one** model swap per provider, regardless of how many session types are configured. Generated answers and judge results are persisted as JSON in the sweep directory described below.
 
-### Output files
+### Markdown cache
 
-For every PDF run, the harness creates a temporary root directory (printed at the start) and lays out artifacts like this:
+PDF → Markdown conversion is the slowest part of an eval run (page rendering plus one VLM call per page). The harness therefore keeps a persistent, **content-addressed** cache at:
 
 ```
-/tmp/pdf-eval-123456/
+~/.local/state/Agentica/evals/.markdown-cache/<key>.md
+```
+
+The cache key is a SHA-256 over:
+
+- the SHA-256 of the PDF bytes (filename alone is **not** used),
+- the VLM base URL and model actually used for conversion,
+- the image-enrichment setting, and
+- a pipeline version constant (bumped when rendering/prompting changes).
+
+Because the key covers the PDF bytes and the converter configuration, two files that happen to share a name but differ in content — or the same file converted with a different VLM — never collide.
+
+`reuseMarkdownCache` (per-provider, default `true`) controls reads only:
+
+- `true`, cache hit → the stored Markdown is loaded and the VLM is never called.
+- `true`, cache miss → the PDF is converted normally and the resulting Markdown is written to the cache.
+- `false` → the PDF is always converted and the cache entry is refreshed, so a forced re-run still updates the cache for subsequent runs.
+
+Cache use does **not** change the workspace layout: whichever Markdown was produced is still copied into every session-type directory, so each session remains an independent sandbox rooted at its own folder.
+
+Whether a run reused or regenerated Markdown is recorded in `manifest.json` under `markdownCache`:
+
+```json
+{
+  "markdownCache": {
+    "enabled": true,
+    "hit": false,
+    "key": "sha256-of-key-material",
+    "pdfSha256": "sha256-of-pdf-bytes",
+    "source": "/…/evals/.markdown-cache/<key>.md"
+  }
+}
+```
+
+The cache directory can be relocated with the `AGENTICA_MARKDOWN_CACHE_DIR` system property or environment variable (useful for tests and shared CI caches).
+
+### Output files
+
+For every PDF run, the harness creates a persistent root directory under
+`~/.local/state/Agentica/evals/pdf-eval-YYYYMMDD-HHMMSS` and lays out artifacts like this:
+
+```
+~/.local/state/Agentica/evals/pdf-eval-20261003-002836/
 └── IT Support Analyst - India/
-    ├── IT Support Analyst - India.pdf
-    └── local-qwen-vlm/
-        ├── multiple/
-        │   ├── IT Support Analyst - India.pdf
+    └── valar-qwen/
+        ├── IT Support Analyst - India.pdf
+        ├── manifest.json
+        ├── all-questions-per-session/
         │   ├── IT Support Analyst - India.md
         │   ├── questions.json
         │   └── summary.json
-        └── single/
-            ├── IT Support Analyst - India.pdf
+        └── one-question-per-session/
             ├── IT Support Analyst - India.md
             ├── questions.json
             └── summary.json
 ```
+
+`manifest.json` records the models, endpoints, and session modes used for that provider sweep (no API keys are written).  It lets reporting tools recover which LLM/VLM/judge were used without re-reading the original provider config.
 
 `questions.json` is an array of objects, each containing:
 
@@ -150,14 +195,29 @@ For every PDF run, the harness creates a temporary root directory (printed at th
 - `thoughts` — reasoning and intermediate text from earlier iterations
 - `toolCalls` — ordered array of raw tool call commands
 - `toolCounts` — map of tool name → number of calls
-- `judgeScore`
+- `status` — `answered`, `timeout`, or `error`
+- `attempts` — `1` normally, `2` if a timeout triggered an immediate retry
+- `judgeStatus` — `judged`, `judge-timeout`, `judge-error`, or `skipped`
+- `verdict` — `correct`, `partial`, or `wrong` (when judged)
+- `judgeScore` — numeric score derived from `verdict` for averaging
 - `judgeRationale`
 
-`summary.json` contains the Markdown score breakdown, the average judge score, the total tool counts across all questions, and a reference to `questions.json`.
+`summary.json` contains the Markdown score breakdown, the average judge score (over judged answers only), verdict counts, status counts, retry counts, total tool counts, and a reference to `questions.json`.
+
+### Aggregating results across runs
+
+`backend/src/test/scala/agentica/eval/eval-report.sc` is a standalone Scala-CLI script that scans all persisted eval run folders and prints a summary for each sweep, including the models used and the same statistics shown in `summary.json`:
+
+```bash
+scala-cli backend/src/test/scala/agentica/eval/eval-report.sc
+
+# or point it at a custom evals root:
+scala-cli backend/src/test/scala/agentica/eval/eval-report.sc /path/to/evals
+```
 
 ### Adding a new evaluation suite
 
-1. Extend `agentica.testutil.EvalSuite`.
+1. Extend `agentica.eval.EvalSuite`.
 2. Add the `@DoNotDiscover` annotation to the concrete class so it is not auto-run.
 3. Call `loadProviderConfigs()` to read the active provider sweep.
 4. Add any required question/resource JSON files under `src/test/resources/files`.

@@ -1,6 +1,6 @@
 package agentica.doc
 
-import agentica.llm.{LLMProvider, LLMResponse}
+import agentica.llm.{LLMProvider, LLMResponse, ToolSpec}
 import agentica.session.Message
 import org.scalatest.funsuite.AnyFunSuite
 import java.nio.file.Paths
@@ -20,6 +20,7 @@ class PDFPageRendererTest extends AnyFunSuite
 
     private val pdfResource = "/files/IT Support Analyst - India.pdf"
 
+    /** Resolves the PDF fixture used by rendering tests. */
     private def pdfPath =
         Paths.get(getClass.getResource(pdfResource).toURI)
 
@@ -32,13 +33,15 @@ class PDFPageRendererTest extends AnyFunSuite
         override def completeVision(base64Image: String, prompt: String): String =
             "## Stub page\n\nThis is stub Markdown returned by the test double."
 
-        def streamChatCompletions(messages: List[Message], onToken: String => Unit): LLMResponse =
+        def streamChatCompletions(messages: List[Message], onToken: String => Unit,
+                                  tools: List[ToolSpec] = Nil): LLMResponse =
             throw UnsupportedOperationException("not used in vision tests")
 
         override def streamResponses(
             input:              List[Message],
             onToken:            String => Unit,
-            previousResponseId: Option[String]
+            previousResponseId: Option[String],
+            tools:              List[ToolSpec]
         ): LLMResponse =
             throw UnsupportedOperationException("not used in vision tests")
     }

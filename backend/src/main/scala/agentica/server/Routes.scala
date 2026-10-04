@@ -57,6 +57,11 @@ class Routes(
 
     private val virtualThreadPool = Executors.newVirtualThreadPerTaskExecutor()
 
+    /**
+     *  Determines the HTTP content type for a static asset.
+     *  @param name  Asset filename.
+     *  @return      MIME type suitable for the HTTP `Content-Type` header.
+     */
     private def mimeType(name: String): String = name match
     {
         case n if n.endsWith(".html") => "text/html; charset=utf-8"
@@ -69,6 +74,11 @@ class Routes(
         case _                        => "application/octet-stream"
     }
 
+    /**
+     *  Serves a static UI file relative to the configured UI root.
+     *  @param relativePath  Relative asset path requested by the client.
+     *  @return              HTTP response containing the asset or a not-found response.
+     */
     private def serveFile(relativePath: String): Response[Response.Data] =
     {
         val path = uiRoot.resolve(relativePath).normalize()
@@ -121,6 +131,11 @@ class Routes(
         "Access-Control-Allow-Headers" -> "Authorization, Content-Type"
     )
 
+    /**
+     *  Adds the configured cross-origin headers to an HTTP response.
+     *  @param r  Original response.
+     *  @return   Response containing the required CORS headers.
+     */
     private def withCors(r: Response[Response.Data]): Response[Response.Data] =
         r.copy(headers = r.headers ++ corsHeaders)
 

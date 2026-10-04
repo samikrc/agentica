@@ -3,7 +3,7 @@ package agentica.shell
 /**
  *  Single parsed command in the Agentica DSL.
  *
- *  A raw command string of the form `family.verb key=value key2="quoted value"`
+ *  A canonical command string of the form `family_verb key=value key2="quoted value"`
  *  is parsed by [[Tokenizer]] into this structure.
  *
  *  @param family  Tool family name, e.g. `"files"`, `"memory"`, `"llm"`.
@@ -16,6 +16,6 @@ case class Command(
     args:   Map[String, String]
 )
 {
-    /** Canonical `family.verb` identifier, e.g. `"files.read"`. */
-    def fullName: String = s"$family.$verb"
+    /** Canonical `family_verb` identifier, e.g. `"files_read"`. */
+    def fullName: String = s"${family}_$verb"
 }
