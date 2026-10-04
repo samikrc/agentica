@@ -48,7 +48,7 @@ case class FilesSearchOutput(
 )
 
 /**
- *  Implements the `files.search` command.
+ *  Implements the `files_search` command.
  *  Grep-style line-by-line scan using `java.nio.file` APIs.
  *  Binary files are skipped with a note.
  */
@@ -58,13 +58,13 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
     /**
      *  Canonical tool name.
      */
-    val name: String = "files.search"
+    val name: String = "files_search"
 
     /**
      *  Argument schema for help generation and system-prompt tool index.
      */
     val schema: CommandSchema = CommandSchema(
-        fullName = "files.search",
+        fullName = "files_search",
         summary  = "Grep-style search across workspace files",
         args     = List(
             ArgSpec("query",         "Term(s) to search; comma or pipe-separated for OR logic", required = true),
@@ -76,7 +76,7 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
             ArgSpec("include",       "Glob pattern to filter filenames (default: none)",        required = false),
             ArgSpec("regex",         "Treat query as a raw regex, skipping comma/pipe split",   required = false)
         ),
-        example  = """files.search query="revenue,growth,deceleration" path=reports/ lines_context=3"""
+        example  = """files_search query="revenue,growth,deceleration" path=reports/ lines_context=3"""
     )
 
     /**
@@ -260,6 +260,8 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                 ))
             case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
+            case Some(error) =>
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File search failed: ${error.toErrorCode}"))
             case None =>
                 val text        = output.blocks.mkString("\n")
                 val computedKey = ctx.scratchpad.nextComputedKey()

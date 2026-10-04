@@ -25,7 +25,7 @@ case class ArgSpec(
 /**
  *  Full schema for a single tool verb, used by [[agentica.shell.CommandRegistry]]
  *  to generate help text and system-prompt tool index.
- *  @param fullName    Canonical `family.verb` name, e.g. `"files.read"`.
+ *  @param fullName    Canonical `family_verb` name, e.g. `"files_read"`.
  *  @param summary     One-line description for the help index.
  *  @param args        Ordered list of accepted argument specifications.
  *  @param example     An example invocation string shown in detailed help.
@@ -62,7 +62,7 @@ enum ToolStatus
      *                         `invalid_args`, `path_escaped`, `cancelled`, `internal_error`.
      *  @param message         Human-readable error description.
      *  @param hints           Contextual hints to surface in the presentation layer.
-     *  @param trySuggestions  Ready-to-run `run(command="...")` invocations the agent can try.
+     *  @param trySuggestions  Suggested native tool invocations the agent can try.
      */
     case Err(
         code:            String,
@@ -147,7 +147,7 @@ case class ExecutionContext(
 trait Tool[I, O]
 {
     /**
-     *  Canonical `family.verb` name, e.g. `"files.read"`.
+     *  Canonical `family_verb` name, e.g. `"files_read"`.
      *  Must match the key used when registering with [[agentica.shell.CommandRegistry]].
      */
     def name: String

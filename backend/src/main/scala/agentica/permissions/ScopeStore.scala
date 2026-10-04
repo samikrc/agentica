@@ -17,7 +17,7 @@ enum GrantTTL
  *  A persisted permission grant for a sensitive tool.
  *  @param id          Unique grant identifier (UUID).
  *  @param sessionId   Owning session; `None` means global scope.
- *  @param toolSet     Tool or tool-set this grant covers, e.g. `"files.write"` or `"files.*"`.
+ *  @param toolSet     Tool or tool-set this grant covers, e.g. `"files_write"` or `"files_*"`.
  *  @param pathPrefix  Path prefix restriction; `None` means any path within the sandbox.
  *  @param ttl         Expiry policy for this grant.
  */
@@ -55,7 +55,7 @@ trait ScopeStore
     /**
      *  Checks whether a valid grant exists for the given tool and path.
      *  @param sessionId  Current session identifier.
-     *  @param toolName   Canonical tool name, e.g. `"files.write"`.
+     *  @param toolName   Canonical tool name, e.g. `"files_write"`.
      *  @param path       Absolute resolved path the tool intends to write.
      *  @return           `true` if a non-expired grant covers this tool and path.
      */

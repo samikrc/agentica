@@ -12,7 +12,7 @@ class PermissionCoordinatorTest extends AnyFunSuite
     test("decision completes one-shot and duplicate resolution is rejected") {
         val coordinator = new PermissionCoordinator("one-shot")
         var result: PermissionCoordinator.ResolveResult = PermissionCoordinator.ResolveResult.Unknown
-        val decision = coordinator.request("files.write", None, Nil, {
+        val decision = coordinator.request("files_write", None, Nil, {
             case AgentEvent.PermissionRequired(requestId, _, _, _) =>
                 result = coordinator.resolve(requestId, granted)
             case _ => ()
@@ -21,7 +21,7 @@ class PermissionCoordinatorTest extends AnyFunSuite
         assert(result == PermissionCoordinator.ResolveResult.Completed)
 
         var duplicate = PermissionCoordinator.ResolveResult.Unknown
-        coordinator.request("files.write", None, Nil, {
+        coordinator.request("files_write", None, Nil, {
             case AgentEvent.PermissionRequired(requestId, _, _, _) =>
                 assert(coordinator.resolve(requestId, granted) == PermissionCoordinator.ResolveResult.Completed)
                 duplicate = coordinator.resolve(requestId, GrantDecision.Denied)
@@ -32,7 +32,7 @@ class PermissionCoordinatorTest extends AnyFunSuite
 
     test("completion directly from onEvent is not lost") {
         val coordinator = new PermissionCoordinator("early")
-        val decision = coordinator.request("files.write", None, Nil, {
+        val decision = coordinator.request("files_write", None, Nil, {
             case AgentEvent.PermissionRequired(requestId, _, _, _) =>
                 coordinator.resolve(requestId, granted)
             case _ => ()
@@ -49,7 +49,7 @@ class PermissionCoordinatorTest extends AnyFunSuite
         val coordinator = new PermissionCoordinator("sequential")
         val ids = ListBuffer.empty[String]
         val decisions = List(granted, GrantDecision.Denied).map { expected =>
-            coordinator.request("files.write", None, Nil, {
+            coordinator.request("files_write", None, Nil, {
                 case AgentEvent.PermissionRequired(requestId, _, _, _) =>
                     ids += requestId
                     coordinator.resolve(requestId, expected)
@@ -62,7 +62,7 @@ class PermissionCoordinatorTest extends AnyFunSuite
 
     test("timeout safely yields Denied") {
         val coordinator = new PermissionCoordinator("timeout", 1L, TimeUnit.MILLISECONDS)
-        assert(coordinator.request("files.write", None, Nil, _ => ()) == GrantDecision.Denied)
+        assert(coordinator.request("files_write", None, Nil, _ => ()) == GrantDecision.Denied)
     }
 
     test("close unblocks a pending request with Denied") {
@@ -71,7 +71,7 @@ class PermissionCoordinatorTest extends AnyFunSuite
         val executor = Executors.newSingleThreadExecutor()
         try
         {
-            val result = executor.submit(() => coordinator.request("files.write", None, Nil, _ => emitted.countDown()))
+            val result = executor.submit(() => coordinator.request("files_write", None, Nil, _ => emitted.countDown()))
             assert(emitted.await(5, TimeUnit.SECONDS))
             coordinator.close()
             assert(result.get(5, TimeUnit.SECONDS) == GrantDecision.Denied)
@@ -83,7 +83,7 @@ class PermissionCoordinatorTest extends AnyFunSuite
         val coordinator = new PermissionCoordinator("after-close")
         coordinator.close()
         var emitted = false
-        val decision = coordinator.request("files.write", None, Nil, _ => emitted = true)
+        val decision = coordinator.request("files_write", None, Nil, _ => emitted = true)
         assert(decision == GrantDecision.Denied)
         assert(!emitted)
     }

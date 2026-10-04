@@ -25,6 +25,9 @@ object MessageRole
     /** Role for the system prompt injected at context assembly. */
     val System: MessageRole = "system"
 
+    /** Role for tool-result messages sent back to the model under native function calling. */
+    val Tool: MessageRole = "tool"
+
     /**
      *  Parses a role string from an external source (HTTP parameter, SQLite row).
      *  @param s  Raw string value.
@@ -32,8 +35,8 @@ object MessageRole
      */
     def fromString(s: String): Option[MessageRole] = s match
     {
-        case "user" | "assistant" | "system" => Some(s)
-        case _                               => None
+        case "user" | "assistant" | "system" | "tool" => Some(s)
+        case _                                        => None
     }
 
     /**
@@ -180,6 +183,10 @@ case class Session(
  *  @param content     Text content of the message.
  *  @param timestamp   ISO-8601 timestamp of when the message was recorded.
  *  @param attachments List of attachment references (file paths or URIs); empty by default.
+ *  @param toolCallId  For `role == tool` messages: the provider call ID this result answers
+ *                     (native function calling). `None` for all other roles.
+ *  @param toolCallsJson  For assistant messages that carried native tool calls: the raw
+ *                     `tool_calls` JSON array, echoed verbatim on resend. `None` otherwise.
  */
 case class Message(
     id: String,
@@ -187,7 +194,9 @@ case class Message(
     role: MessageRole,
     content: String,
     timestamp: String,
-    attachments: List[String] = Nil
+    attachments: List[String] = Nil,
+    toolCallId: Option[String] = None,
+    toolCallsJson: Option[String] = None
 ) derives ReadWriter
 
 /** A record of a single tool invocation within an agent turn.

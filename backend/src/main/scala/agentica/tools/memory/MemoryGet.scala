@@ -18,7 +18,7 @@ case class MemoryGetInput(key: String)
 case class MemoryGetOutput(key: String, value: Option[String], error: Option[String])
 
 /**
- *  Implements the `memory.get` command.
+ *  Implements the `memory_get` command.
  *  Retrieves a session-scoped key-value entry from the SQLite `memory_entries` table.
  */
 object MemoryGet extends Tool[MemoryGetInput, MemoryGetOutput]
@@ -27,18 +27,18 @@ object MemoryGet extends Tool[MemoryGetInput, MemoryGetOutput]
     /**
      *  Canonical tool name.
      */
-    val name: String = "memory.get"
+    val name: String = "memory_get"
 
     /**
      *  Argument schema for help generation and system-prompt tool index.
      */
     val schema: CommandSchema = CommandSchema(
-        fullName = "memory.get",
+        fullName = "memory_get",
         summary  = "Retrieve a value from session memory by key",
         args     = List(
             ArgSpec("key", "Key to look up in session memory", required = true)
         ),
-        example  = """memory.get key=user_name"""
+        example  = """memory_get key=user_name"""
     )
 
     /**
@@ -92,7 +92,7 @@ object MemoryGet extends Tool[MemoryGetInput, MemoryGetOutput]
                         ToolResult(status = ToolStatus.Err(
                             code    = ErrorCode.NotFound,
                             message = s"Key not found in session memory: ${output.key}",
-                            hints   = List("""Use memory.set key=<key> value=<value> to store a value.""")
+                            hints   = List("""Use memory_set key=<key> value=<value> to store a value.""")
                         ))
                     case Some(v) =>
                         ToolResult(

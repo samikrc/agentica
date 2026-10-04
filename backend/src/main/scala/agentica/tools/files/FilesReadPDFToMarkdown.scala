@@ -36,7 +36,7 @@ case class FilesReadPDFToMarkdownOutput(
 )
 
 /**
- *  Implements `files.read_pdf_to_markdown` — converts PDF to Markdown via Vision-First ingestion.
+ *  Implements `files_read_pdf_to_markdown` — converts PDF to Markdown via Vision-First ingestion.
  *
  *  Pipeline:
  *  1. Validate path (sandbox check)
@@ -52,7 +52,7 @@ case class FilesReadPDFToMarkdownOutput(
  */
 object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesReadPDFToMarkdownOutput]
 {
-    val name: String = "files.read_pdf_to_markdown"
+    val name: String = "files_read_pdf_to_markdown"
 
     val schema: CommandSchema = CommandSchema(
         fullName = name,
@@ -61,9 +61,14 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
             ArgSpec("path",           "Relative path to the PDF file", required = true),
             ArgSpec("enrich_images", "Run vision LLM on pages (default: true)", required = false, default = Some("true"))
         ),
-        example  = """files.read_pdf_to_markdown path="My Report.pdf""""
+        example  = """files_read_pdf_to_markdown path="My Report.pdf""""
     )
 
+    /**
+     *  Validates PDF-to-Markdown arguments.
+     *  @param args  Raw native-call arguments.
+     *  @return      Validated input or an [[ArgError]].
+     */
     def validate(args: Map[String, String]): Either[ArgError, FilesReadPDFToMarkdownInput] =
     {
         args.get("path") match
@@ -80,6 +85,12 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
         }
     }
 
+    /**
+     *  Converts a PDF into cached Markdown using the configured vision provider.
+     *  @param input  Validated conversion input.
+     *  @param ctx    Execution context providing workspace, permissions, and providers.
+     *  @return       Raw conversion output including cache and error metadata.
+     */
     def execute(input: FilesReadPDFToMarkdownInput, ctx: ExecutionContext): FilesReadPDFToMarkdownOutput =
     {
         val rootStr = ctx.session.rootPath.getOrElse("")
@@ -94,6 +105,14 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
         }
     }
 
+    /**
+     *  Performs permission checks, cache validation, rendering, transcription, and cache persistence.
+     *  @param input       Validated conversion options.
+     *  @param ctx         Execution context providing permissions and model providers.
+     *  @param resolved    Sandbox-validated absolute source path.
+     *  @param sourcePath  Workspace-relative source path used in results and cache metadata.
+     *  @return            Raw PDF conversion output.
+     */
     private def readPDF(
         input:      FilesReadPDFToMarkdownInput,
         ctx:        ExecutionContext,
@@ -270,6 +289,12 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
         }
     }
 
+    /**
+     *  Converts PDF conversion output into the standard tool-result envelope.
+     *  @param output  Raw PDF conversion output.
+     *  @param ctx     Execution context for the current run.
+     *  @return        Render-ready conversion result or structured error.
+     */
     def render(output: FilesReadPDFToMarkdownOutput, ctx: ExecutionContext): ToolResult =
     {
         output.error match
@@ -289,8 +314,8 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
                         "If the filename contains spaces or hyphens, you MUST quote the value: path=\"My File - Name.pdf\""
                     ),
                     trySuggestions  = List(
-                        s"""files.read_pdf_to_markdown path=\\"${output.sourcePath}\\"""",
-                        "files.list"
+                        s"""files_read_pdf_to_markdown path=\\"${output.sourcePath}\\"""",
+                        "files_list"
                     )
                 ))
             case Some(FilesError.IoError(msg)) =>
@@ -299,6 +324,8 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
                     message = msg,
                     hints   = List("For PDF conversion, ensure the file is a valid PDF and a Vision LLM is configured.")
                 ))
+            case Some(error) =>
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"PDF conversion failed: ${error.toErrorCode}"))
             case None =>
                 val cacheStatus = if (output.wasRegenerated) "generated" else "cached"
                 ToolResult(

@@ -42,16 +42,16 @@ class ScopeStoreImpl(conn: () => Connection) extends ScopeStore
 
     /**
      *  Checks whether a valid grant exists for the given tool and path.
-     *  Matches on exact tool name or wildcard family (`files.*`).
+     *  Matches on exact tool name or wildcard family (`files_*`).
      *  Global grants (`session_id IS NULL`) are also matched.
      *  @param sessionId  Current session identifier.
-     *  @param toolName   Canonical tool name, e.g. `"files.write"`.
+     *  @param toolName   Canonical tool name, e.g. `"files_write"`.
      *  @param path       Absolute resolved path the tool intends to access.
      *  @return           `true` if a non-expired grant covers this tool and path.
      */
     def hasGrant(sessionId: String, toolName: String, path: String): Boolean =
     {
-        val family    = toolName.split('.').headOption.getOrElse("") + ".*"
+        val family    = toolName.split('_').headOption.getOrElse("") + "_*"
         val c         = conn()
         try
         {

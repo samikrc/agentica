@@ -2,8 +2,8 @@
   "model": "golden-test-model",
   "description": "Try to read non-existent file, get error, then search instead",
   "responses": [
-    "Let me read the report file.\nrun(command=\"files.read path=report.txt\")",
-    "The file doesn't exist. Let me search for any report files.\nrun(command=\"files.search query=report include=*.txt\")",
-    "Found report files in the directory.\n<done>"
+    {"content": "Let me read the report file.", "tool_calls": [{"id": "call-1", "name": "files_read", "arguments": {"path": "report.txt"}}]},
+    {"content": "The file doesn't exist. Let me search for any report files.", "tool_calls": [{"id": "call-2", "name": "files_search", "arguments": {"query": "report", "include": "*.txt"}}]},
+    {"content": "Found report files in the directory."}
   ]
 }

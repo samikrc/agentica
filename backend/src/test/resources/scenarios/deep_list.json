@@ -2,7 +2,7 @@
   "model": "golden-test-model",
   "description": "Deep recursive directory listing with depth limit",
   "responses": [
-    "I'll list the project structure with depth 2.\nrun(command=\"files.list path=. recursive=true depth=2\")",
-    "Found the project structure.\n<done>"
+    {"content": "I'll list the project structure with depth 2.", "tool_calls": [{"id": "call-1", "name": "files_list", "arguments": {"path": ".", "recursive": "true", "depth": "2"}}]},
+    {"content": "Found the project structure."}
   ]
 }

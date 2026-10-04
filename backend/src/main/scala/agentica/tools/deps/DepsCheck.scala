@@ -26,7 +26,7 @@ case class DepsCheckOutput(
 )
 
 /**
- *  Implements the `deps.check` command.
+ *  Implements the `deps_check` command.
  *
  *  Reports the detection status of all external dependencies required by the document
  *  processing pipeline (Stage A).  Currently covers:
@@ -40,18 +40,29 @@ case class DepsCheckOutput(
  */
 object DepsCheck extends Tool[DepsCheckInput, DepsCheckOutput]
 {
-    val name: String = "deps.check"
+    val name: String = "deps_check"
 
     val schema: CommandSchema = CommandSchema(
         fullName = name,
         summary  = "Report the status of external dependencies required for document processing.",
         args     = Nil,
-        example  = """run(command="deps.check")"""
+        example  = "deps_check"
     )
 
+    /**
+     *  Validates dependency-check arguments.
+     *  @param args  Raw native-call arguments; currently ignored because this tool has no parameters.
+     *  @return      Validated dependency-check input.
+     */
     def validate(args: Map[String, String]): Either[ArgError, DepsCheckInput] =
         Right(DepsCheckInput())
 
+    /**
+     *  Detects installed document-processing dependencies.
+     *  @param input  Validated dependency-check input.
+     *  @param ctx    Execution context for the current run.
+     *  @return       Availability information for each supported dependency.
+     */
     def execute(input: DepsCheckInput, ctx: ExecutionContext): DepsCheckOutput =
     {
         val status = DocToolDetector.status
@@ -68,6 +79,12 @@ object DepsCheck extends Tool[DepsCheckInput, DepsCheckOutput]
         )
     }
 
+    /**
+     *  Renders dependency availability and installation guidance.
+     *  @param output  Raw dependency detection output.
+     *  @param ctx     Execution context for the current run.
+     *  @return        Standardized tool result containing status details and guidance.
+     */
     def render(output: DepsCheckOutput, ctx: ExecutionContext): ToolResult =
     {
         val lines = scala.collection.mutable.ListBuffer[String]()
@@ -82,7 +99,7 @@ object DepsCheck extends Tool[DepsCheckInput, DepsCheckOutput]
         else
         {
             lines += s"  status:  NOT FOUND"
-            lines += s"  impact:  files.read_docx, files.markdown_to_docx, files.markdown_to_pdf will be unavailable"
+            lines += s"  impact:  files_read_docx, files_markdown_to_docx, files_markdown_to_pdf will be unavailable"
             lines += s""
             lines += s"  Install instructions:"
             DocToolDetector.installInstructions.linesIterator.foreach(l => lines += s"  $l")

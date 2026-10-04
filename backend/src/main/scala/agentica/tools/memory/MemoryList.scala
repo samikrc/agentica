@@ -18,7 +18,7 @@ case class MemoryListInput()
 case class MemoryListOutput(entries: List[MemoryEntry], error: Option[String])
 
 /**
- *  Implements the `memory.list` command.
+ *  Implements the `memory_list` command.
  *  Lists all session-scoped key-value entries from the SQLite `memory_entries` table.
  */
 object MemoryList extends Tool[MemoryListInput, MemoryListOutput]
@@ -27,16 +27,16 @@ object MemoryList extends Tool[MemoryListInput, MemoryListOutput]
     /**
      *  Canonical tool name.
      */
-    val name: String = "memory.list"
+    val name: String = "memory_list"
 
     /**
      *  Argument schema for help generation and system-prompt tool index.
      */
     val schema: CommandSchema = CommandSchema(
-        fullName = "memory.list",
+        fullName = "memory_list",
         summary  = "List all key-value pairs in session memory",
         args     = Nil,
-        example  = "memory.list"
+        example  = "memory_list"
     )
 
     /**

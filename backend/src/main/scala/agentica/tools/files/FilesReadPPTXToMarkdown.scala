@@ -36,7 +36,7 @@ case class FilesReadPPTXToMarkdownOutput(
 )
 
 /**
- *  Implements `files.read_pptx_to_markdown` — converts PPTX to Markdown via Vision-First ingestion.
+ *  Implements `files_read_pptx_to_markdown` — converts PPTX to Markdown via Vision-First ingestion.
  *
  *  Pipeline:
  *  1. Validate path (sandbox check)
@@ -52,7 +52,7 @@ case class FilesReadPPTXToMarkdownOutput(
  */
 object FilesReadPPTXToMarkdown extends Tool[FilesReadPPTXToMarkdownInput, FilesReadPPTXToMarkdownOutput]
 {
-    val name: String = "files.read_pptx_to_markdown"
+    val name: String = "files_read_pptx_to_markdown"
 
     val schema: CommandSchema = CommandSchema(
         fullName = name,
@@ -61,9 +61,14 @@ object FilesReadPPTXToMarkdown extends Tool[FilesReadPPTXToMarkdownInput, FilesR
             ArgSpec("path",           "Relative path to the PPTX file", required = true),
             ArgSpec("enrich_images", "Run vision LLM on slides (default: true)", required = false, default = Some("true"))
         ),
-        example  = """files.read_pptx_to_markdown path=presentation.pptx"""
+        example  = """files_read_pptx_to_markdown path=presentation.pptx"""
     )
 
+    /**
+     *  Validates PPTX-to-Markdown arguments.
+     *  @param args  Raw native-call arguments.
+     *  @return      Validated input or an [[ArgError]].
+     */
     def validate(args: Map[String, String]): Either[ArgError, FilesReadPPTXToMarkdownInput] =
     {
         args.get("path") match
@@ -80,6 +85,12 @@ object FilesReadPPTXToMarkdown extends Tool[FilesReadPPTXToMarkdownInput, FilesR
         }
     }
 
+    /**
+     *  Converts a PPTX into cached Markdown using slide rendering and vision transcription.
+     *  @param input  Validated conversion input.
+     *  @param ctx    Execution context providing workspace, permissions, and providers.
+     *  @return       Raw conversion output including cache and error metadata.
+     */
     def execute(input: FilesReadPPTXToMarkdownInput, ctx: ExecutionContext): FilesReadPPTXToMarkdownOutput =
     {
         val rootStr = ctx.session.rootPath.getOrElse("")
@@ -94,6 +105,14 @@ object FilesReadPPTXToMarkdown extends Tool[FilesReadPPTXToMarkdownInput, FilesR
         }
     }
 
+    /**
+     *  Performs permission checks, cache validation, rendering, transcription, and cache persistence.
+     *  @param input       Validated conversion options.
+     *  @param ctx         Execution context providing permissions and model providers.
+     *  @param resolved    Sandbox-validated absolute source path.
+     *  @param sourcePath  Workspace-relative source path used in results and cache metadata.
+     *  @return            Raw PPTX conversion output.
+     */
     private def readPPTX(
         input:      FilesReadPPTXToMarkdownInput,
         ctx:        ExecutionContext,
@@ -255,6 +274,12 @@ object FilesReadPPTXToMarkdown extends Tool[FilesReadPPTXToMarkdownInput, FilesR
         }
     }
 
+    /**
+     *  Converts PPTX conversion output into the standard tool-result envelope.
+     *  @param output  Raw PPTX conversion output.
+     *  @param ctx     Execution context for the current run.
+     *  @return        Render-ready conversion result or structured error.
+     */
     def render(output: FilesReadPPTXToMarkdownOutput, ctx: ExecutionContext): ToolResult =
     {
         output.error match
@@ -277,6 +302,8 @@ object FilesReadPPTXToMarkdown extends Tool[FilesReadPPTXToMarkdownInput, FilesR
                     message = msg,
                     hints   = List("For PPTX conversion, ensure the file is a valid PPTX and a Vision LLM is configured.")
                 ))
+            case Some(error) =>
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"PPTX conversion failed: ${error.toErrorCode}"))
             case None =>
                 val cacheStatus = if (output.wasRegenerated) "generated" else "cached"
                 ToolResult(

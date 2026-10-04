@@ -1,7 +1,6 @@
 package agentica.eval
 
 import agentica.misctests.MarkdownScorer
-import agentica.testutil.{EvalHarness, EvalProviderConfig, EvalQuestion, EvalResult, EvalSuite}
 import agentica.llm.LLMProvider
 import agentica.settings.AppSettings
 import org.scalatest.DoNotDiscover
@@ -10,7 +9,7 @@ import java.nio.file.{Files, Path, Paths}
 /**
  *  End-to-end PDF question-answering evaluation.
  *
- *  Converts a test PDF to Markdown using the real `files.read_pdf_to_markdown`
+ *  Converts a test PDF to Markdown using the real `files_read_pdf_to_markdown`
  *  tool path, scores the Markdown with [[MarkdownScorer]], asks 10 grounded
  *  questions (5 direct + 5 rephrase), and judges the answers with an LLM-as-judge.
  *
@@ -28,7 +27,6 @@ import java.nio.file.{Files, Path, Paths}
 @DoNotDiscover
 class PDFEvalTest extends EvalSuite
 {
-
     /**
      *  Base path for evaluation question sets under test resources.
      */
@@ -89,41 +87,78 @@ class PDFEvalTest extends EvalSuite
         val summaryBuf = new StringBuilder()
         summaryBuf.append(s"File: $pdfName\n")
         summaryBuf.append(s"Work directory: $workDir\n\n")
+        summaryBuf.append("Verdicts are mapped to numeric scores for the average: correct=1.0, partial=0.5, wrong=0.0\n\n")
 
         // Group by (provider, sessionType) — one group per EvalResult.
         results.foreach { r =>
-            val answers   = r.answers
-            val avgScore  = if (answers.isEmpty) 0.0 else answers.map(_.judgeScore).sum / answers.length
-
-            // Score distribution by category.
-            val byCategory = answers.groupBy(_.category)
-            val categoryLines = byCategory.toList.sortBy(_._1).map { case (cat, as) =>
-                val count0   = as.count(_.judgeScore == 0.0)
-                val count05  = as.count(_.judgeScore == 0.5)
-                val count1   = as.count(_.judgeScore == 1.0)
-                val catAvg   = if (as.isEmpty) 0.0 else as.map(_.judgeScore).sum / as.length
-                f"    $cat%-12s  avg=$catAvg%.2f  (0.0:$count0%d  0.5:$count05%d  1.0:$count1%d  n=${as.length}%d)"
-            }
-
-            val header = f"  ${r.providerLabel} / ${r.sessionType}  —  avg=${avgScore}%.2f  (${answers.length} questions)"
-            println(header)
-            categoryLines.foreach(println)
-
-            summaryBuf.append(s"$header\n")
-            categoryLines.foreach(l => summaryBuf.append(s"$l\n"))
-
-            // Include per-question details for zero-score answers so the
-            // commentary LLM can explain why they failed.
-            val zeros = answers.filter(_.judgeScore == 0.0)
-            if zeros.nonEmpty then
+            if r.status != SweepStatus.Ok then
             {
-                summaryBuf.append("    Questions scoring 0.0:\n")
-                zeros.foreach { a =>
-                    summaryBuf.append(f"      [${a.judgeScore}%.1f] (${a.category}) ${a.question}\n")
-                    summaryBuf.append(s"        Rationale: ${a.judgeRationale}\n")
-                }
+                val header = s"  ${r.providerLabel} / ${r.sessionType}  —  FAILED (${r.status.label}): ${r.statusMessage}"
+                println(header)
+                summaryBuf.append(s"$header\n\n")
             }
-            summaryBuf.append("\n")
+            else
+            {
+                val answers   = r.answers
+                val judged    = answers.filter(_.judgeStatus == JudgeStatus.Judged)
+                val avgScore  = if (judged.isEmpty) 0.0 else judged.map(_.judgeScore).sum / judged.length
+
+                val timeouts   = answers.count(_.status == AnswerStatus.Timeout)
+                val errors     = answers.count(_.status == AnswerStatus.Error)
+                val retried    = answers.count(_.attempts > 1)
+                val jTimeouts  = answers.count(_.judgeStatus == JudgeStatus.JudgeTimeout)
+                val jErrors    = answers.count(_.judgeStatus == JudgeStatus.JudgeError)
+                val flags = List(
+                    Option.when(retried > 0)(s"$retried retried"),
+                    Option.when(timeouts > 0)(s"$timeouts timeout"),
+                    Option.when(errors > 0)(s"$errors error"),
+                    Option.when(jTimeouts > 0)(s"$jTimeouts judge-timeout"),
+                    Option.when(jErrors > 0)(s"$jErrors judge-error")
+                ).flatten
+                val annot = if flags.isEmpty then "" else flags.mkString("; ", "; ", "")
+
+                // Verdict distribution by category, over judged answers only.
+                val byCategory = judged.groupBy(_.category)
+                val categoryLines = byCategory.toList.sortBy(_._1).map { case (cat, as) =>
+                    val correct  = as.count(_.judgeVerdict.contains(JudgeVerdict.Correct))
+                    val partial  = as.count(_.judgeVerdict.contains(JudgeVerdict.PartiallyCorrect))
+                    val wrong    = as.count(_.judgeVerdict.contains(JudgeVerdict.Wrong))
+                    val catAvg   = if (as.isEmpty) 0.0 else as.map(_.judgeScore).sum / as.length
+                    f"    $cat%-12s  avg=$catAvg%.2f  (correct:$correct%d  partial:$partial%d  wrong:$wrong%d  n=${as.length}%d)"
+                }
+
+                val header = f"  ${r.providerLabel} / ${r.sessionType}  —  avg=${avgScore}%.2f  (${answers.length} questions$annot)"
+                println(header)
+                categoryLines.foreach(println)
+
+                summaryBuf.append(s"$header\n")
+                categoryLines.foreach(l => summaryBuf.append(s"$l\n"))
+
+                // Include per-question details for wrong answers so the
+                // commentary LLM can explain why they failed.
+                val wrong = judged.filter(_.judgeVerdict.contains(JudgeVerdict.Wrong))
+                if wrong.nonEmpty then
+                {
+                    summaryBuf.append("    Questions judged wrong:\n")
+                    wrong.foreach { a =>
+                        summaryBuf.append(f"      [${a.judgeVerdict.map(_.label).getOrElse("?")}] (${a.category}) ${a.question}\n")
+                        summaryBuf.append(s"        Rationale: ${a.judgeRationale}\n")
+                    }
+                }
+
+                // List questions that did not complete normally so the commentary
+                // can separate infrastructure timeouts from genuine failures.
+                val notAnswered = answers.filter(_.status != AnswerStatus.Answered)
+                if notAnswered.nonEmpty then
+                {
+                    summaryBuf.append("    Questions not answered:\n")
+                    notAnswered.foreach { a =>
+                        val tries = if a.attempts > 1 then s" after ${a.attempts} attempts" else ""
+                        summaryBuf.append(s"      [${a.status.label}$tries] (${a.category}) ${a.question}\n")
+                    }
+                }
+                summaryBuf.append("\n")
+            }
         }
 
         // Call judge LLM for analysis.
@@ -195,8 +230,9 @@ class PDFEvalTest extends EvalSuite
                     questionTimeoutMs = 120000L
                 )
 
-                // Soft sanity checks: every provider must produce answers for all questions.
-                results.foreach { r =>
+                // Soft sanity checks: every successful sweep must produce answers for all questions.
+                // Failed sweeps (timeout/error) are reported via EvalResult.status, not answers.
+                results.filter(_.status == SweepStatus.Ok).foreach { r =>
                     assert(r.answers.length == questions.length,
                         s"${r.providerLabel}/${r.sessionType}: expected ${questions.length} answers, got ${r.answers.length}")
                 }

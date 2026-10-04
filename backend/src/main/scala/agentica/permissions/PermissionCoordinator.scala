@@ -20,6 +20,10 @@ final class PermissionCoordinator private[permissions] (
     timeoutUnit: TimeUnit
 )
 {
+    /**
+     *  Creates a coordinator with the default sixty-second decision timeout.
+     *  @param runId  Identifier of the run that owns permission requests.
+     */
     def this(runId: String) = this(runId, 60L, TimeUnit.SECONDS)
 
     private val closed = new AtomicBoolean(false)
@@ -84,18 +88,37 @@ object PermissionCoordinator
     // requests are shared by HTTP and agent threads, so the registry must be concurrent.
     private val pending = TrieMap.empty[(String, String), CompletableFuture[GrantDecision]]
 
+    /**
+     *  Registers a pending permission request in the global lookup.
+     *  @param runId      Identifier of the run that owns the request.
+     *  @param requestId  Identifier of the permission request.
+     *  @param future     Future completed when the user submits a decision.
+     */
     private def register(
         runId: String,
         requestId: String,
         future: CompletableFuture[GrantDecision]
     ): Unit = pending.put((runId, requestId), future)
 
+    /**
+     *  Removes a completed permission request from the global lookup.
+     *  @param runId      Identifier of the run that owns the request.
+     *  @param requestId  Identifier of the permission request.
+     *  @param future     Future originally registered for the request.
+     */
     private def unregister(
         runId: String,
         requestId: String,
         future: CompletableFuture[GrantDecision]
     ): Unit = pending.remove((runId, requestId), future)
 
+    /**
+     *  Resolves a pending permission request with the supplied user decision.
+     *  @param runId      Identifier of the run that owns the request.
+     *  @param requestId  Identifier of the permission request.
+     *  @param decision   User decision used to complete the pending request.
+     *  @return           Resolution status indicating success or why no request was completed.
+     */
     def resolve(runId: String, requestId: String, decision: GrantDecision): ResolveResult =
         pending.get((runId, requestId)) match
         {

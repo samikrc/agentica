@@ -2,7 +2,7 @@ package agentica.tools.files
 
 import agentica.agent.AgentEvent
 import agentica.doc.{DocToolDetector, PDFPageRenderer}
-import agentica.llm.{LLMProvider, LLMResponse}
+import agentica.llm.{LLMProvider, LLMResponse, ToolSpec}
 import agentica.permissions.{GrantDecision, GrantTTL, PermissionCoordinator, ScopeStore}
 import agentica.session.{MemoryStore, Session}
 import agentica.shell.SessionScratchpad
@@ -14,7 +14,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable.ListBuffer
 
 /**
- *  Unit tests for the `files.read_*_to_markdown` tools (Stage B).
+ *  Unit tests for the `files_read_*_to_markdown` tools (Stage B).
  *
  *  Covers `.md` generation, cache hit, staleness re-generation, small-cache
  *  rejection, `enrich_images=false`, permission denied/granted, VLM-over-LLM
@@ -39,13 +39,15 @@ class FilesReadToMarkdownTest extends AnyFunSuite
                 "output file satisfies the cache-freshness minimum size check."
         }
 
-        def streamChatCompletions(messages: List[agentica.session.Message], onToken: String => Unit): LLMResponse =
+        def streamChatCompletions(messages: List[agentica.session.Message], onToken: String => Unit,
+                                  tools: List[ToolSpec] = Nil): LLMResponse =
             throw UnsupportedOperationException("not used in vision tests")
 
         override def streamResponses(
             input:              List[agentica.session.Message],
             onToken:            String => Unit,
-            previousResponseId: Option[String]
+            previousResponseId: Option[String],
+            tools:              List[ToolSpec]
         ): LLMResponse =
             throw UnsupportedOperationException("not used in vision tests")
     }
@@ -127,7 +129,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
 
     // ── PDF ───────────────────────────────────────────────────────────────────
 
-    test("files.read_pdf_to_markdown: generates .md on first call") {
+    test("files_read_pdf_to_markdown: generates .md on first call") {
         withWorkspace { ws =>
             val pdf      = copyFixture(pdfFixture, ws, "doc.pdf")
             val provider = StubVisionProvider()
@@ -148,7 +150,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pdf_to_markdown: cache hit on second call") {
+    test("files_read_pdf_to_markdown: cache hit on second call") {
         withWorkspace { ws =>
             copyFixture(pdfFixture, ws, "doc.pdf")
             val provider = StubVisionProvider()
@@ -167,7 +169,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pdf_to_markdown: stale .md regenerated when source is newer") {
+    test("files_read_pdf_to_markdown: stale .md regenerated when source is newer") {
         withWorkspace { ws =>
             val pdf      = copyFixture(pdfFixture, ws, "doc.pdf")
             val provider = StubVisionProvider()
@@ -188,7 +190,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pdf_to_markdown: cache ignored when .md is too small") {
+    test("files_read_pdf_to_markdown: cache ignored when .md is too small") {
         withWorkspace { ws =>
             copyFixture(pdfFixture, ws, "doc.pdf")
             val provider = StubVisionProvider()
@@ -205,7 +207,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pdf_to_markdown: enrich_images=false writes stub markdown without VLM calls") {
+    test("files_read_pdf_to_markdown: enrich_images=false writes stub markdown without VLM calls") {
         withWorkspace { ws =>
             val pdf      = copyFixture(pdfFixture, ws, "doc.pdf")
             val provider = StubVisionProvider()
@@ -225,7 +227,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pdf_to_markdown: validate parses enrich_images variants") {
+    test("files_read_pdf_to_markdown: validate parses enrich_images variants") {
         val base = Map("path" -> "doc.pdf")
         for (v <- List("false", "0", "no"))
             assert(FilesReadPDFToMarkdown.validate(base + ("enrich_images" -> v))
@@ -242,7 +244,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pdf_to_markdown: permission denied returns error and no .md") {
+    test("files_read_pdf_to_markdown: permission denied returns error and no .md") {
         withWorkspace { ws =>
             copyFixture(pdfFixture, ws, "doc.pdf")
             val provider = StubVisionProvider()
@@ -263,14 +265,14 @@ class FilesReadToMarkdownTest extends AnyFunSuite
             val perms = events.collect { case e: AgentEvent.PermissionRequired => e }
             assert(perms.length == 1)
             assert(perms.head.requestId.nonEmpty)
-            assert(perms.head.tool == "files.read_pdf_to_markdown")
+            assert(perms.head.tool == "files_read_pdf_to_markdown")
             assert(perms.head.path.contains(""))
             assert(!Files.exists(ws.resolve("doc.md")))
             assert(provider.callCount.get() == 0)
         }
     }
 
-    test("files.read_pdf_to_markdown: permission granted stores grant and proceeds") {
+    test("files_read_pdf_to_markdown: permission granted stores grant and proceeds") {
         withWorkspace { ws =>
             copyFixture(pdfFixture, ws, "doc.pdf")
             val provider = StubVisionProvider()
@@ -288,7 +290,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pdf_to_markdown: vision-unsupported provider returns structured error") {
+    test("files_read_pdf_to_markdown: vision-unsupported provider returns structured error") {
         withWorkspace { ws =>
             copyFixture(pdfFixture, ws, "doc.pdf")
             val provider = StubVisionProvider(supportsVision = false)
@@ -305,7 +307,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pdf_to_markdown: render maps success and not-found correctly") {
+    test("files_read_pdf_to_markdown: render maps success and not-found correctly") {
         withWorkspace { ws =>
             copyFixture(pdfFixture, ws, "doc.pdf")
             val provider = StubVisionProvider()
@@ -335,7 +337,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pdf_to_markdown: VLM provider preferred over primary LLM") {
+    test("files_read_pdf_to_markdown: VLM provider preferred over primary LLM") {
         withWorkspace { ws =>
             val pdf       = copyFixture(pdfFixture, ws, "doc.pdf")
             val providerA = StubVisionProvider()
@@ -352,7 +354,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
 
     // ── PPTX ──────────────────────────────────────────────────────────────────
 
-    test("files.read_pptx_to_markdown: generates .md with one section per slide") {
+    test("files_read_pptx_to_markdown: generates .md with one section per slide") {
         withWorkspace { ws =>
             copyFixture(pptxFixture, ws, "sample.pptx")
             val provider = StubVisionProvider()
@@ -368,7 +370,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pptx_to_markdown: cache hit on second call") {
+    test("files_read_pptx_to_markdown: cache hit on second call") {
         withWorkspace { ws =>
             copyFixture(pptxFixture, ws, "sample.pptx")
             val provider = StubVisionProvider()
@@ -384,7 +386,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pptx_to_markdown: enrich_images=false writes stub markdown") {
+    test("files_read_pptx_to_markdown: enrich_images=false writes stub markdown") {
         withWorkspace { ws =>
             copyFixture(pptxFixture, ws, "sample.pptx")
             val provider = StubVisionProvider()
@@ -399,7 +401,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_pptx_to_markdown: permission denied returns error and no .md") {
+    test("files_read_pptx_to_markdown: permission denied returns error and no .md") {
         withWorkspace { ws =>
             copyFixture(pptxFixture, ws, "sample.pptx")
             val provider = StubVisionProvider()
@@ -421,7 +423,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
 
     // ── DOCX ──────────────────────────────────────────────────────────────────
 
-    test("files.read_docx_to_markdown: cache hit returns cached path without LibreOffice") {
+    test("files_read_docx_to_markdown: cache hit returns cached path without LibreOffice") {
         withWorkspace { ws =>
             copyFixture(docxFixture, ws, "sample.docx")
             val provider = StubVisionProvider()
@@ -442,7 +444,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_docx_to_markdown: path escape yields path_escaped") {
+    test("files_read_docx_to_markdown: path escape yields path_escaped") {
         withWorkspace { ws =>
             val out = FilesReadDOCXToMarkdown.execute(
                 FilesReadDOCXToMarkdownInput(Paths.get("../../etc/passwd.docx"), enrichImages = true),
@@ -451,7 +453,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_docx_to_markdown: missing file yields not_found") {
+    test("files_read_docx_to_markdown: missing file yields not_found") {
         withWorkspace { ws =>
             val out = FilesReadDOCXToMarkdown.execute(
                 FilesReadDOCXToMarkdownInput(Paths.get("missing.docx"), enrichImages = true),
@@ -460,7 +462,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         }
     }
 
-    test("files.read_docx_to_markdown: missing LibreOffice yields structured error") {
+    test("files_read_docx_to_markdown: missing LibreOffice yields structured error") {
         assume(!DocToolDetector.available, "LibreOffice is installed — nothing to test")
         withWorkspace { ws =>
             copyFixture(docxFixture, ws, "sample.docx")

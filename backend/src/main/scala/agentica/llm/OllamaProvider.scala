@@ -1,6 +1,6 @@
 package agentica.llm
 
-import agentica.session.Message
+import agentica.session.{Message, MessageRole}
 import ujson.*
 
 /**
@@ -16,13 +16,26 @@ class OllamaProvider(
 {
     /**
      *  Converts a [[Message]] list to the JSON array expected by the Ollama API.
+     *  Tool-role results and assistant `tool_calls` are emitted in the
+     *  OpenAI-compatible shape Ollama understands.
      *  @param messages  Conversation history.
-     *  @return          JSON array of `{role, content}` objects.
+     *  @return          JSON array of message objects.
      */
     private def toOllamaMessages(messages: List[Message]): ujson.Arr =
     {
         ujson.Arr(messages.map { m =>
-            ujson.Obj("role" -> m.role.value, "content" -> m.content)
+            if (m.role == MessageRole.Tool)
+            {
+                ujson.Obj("role" -> "tool", "tool_call_id" -> m.toolCallId.getOrElse(""), "content" -> m.content)
+            }
+            else if (m.role == MessageRole.Assistant && m.toolCallsJson.isDefined)
+            {
+                ujson.Obj("role" -> "assistant", "content" -> m.content, "tool_calls" -> ujson.read(m.toolCallsJson.get))
+            }
+            else
+            {
+                ujson.Obj("role" -> m.role.value, "content" -> m.content)
+            }
         }*)
     }
 
@@ -30,19 +43,34 @@ class OllamaProvider(
      *  Calls the Ollama Chat API, streaming NDJSON lines and calling `onToken` per delta.
      *  @param messages  Full conversation history to send as context.
      *  @param onToken   Callback invoked with each streamed text delta.
-     *  @return          [[LLMResponse]] capturing token counts and total latency.
+     *  @param tools     Tool definitions to advertise via native function calling.
+     *  @return          [[LLMResponse]] capturing token counts, latency, and tool calls.
      */
-    def streamChatCompletions(messages: List[Message], onToken: String => Unit): LLMResponse =
+    def streamChatCompletions(messages: List[Message], onToken: String => Unit, tools: List[ToolSpec] = Nil): LLMResponse =
     {
         val t0               = System.currentTimeMillis()
         var promptTokens     = 0
         var completionTokens = 0
+        val toolCalls        = scala.collection.mutable.ListBuffer.empty[NativeToolCall]
 
         val body = ujson.Obj(
             "model"    -> modelName,
             "messages" -> toOllamaMessages(messages),
             "stream"   -> true
         )
+        if tools.nonEmpty then
+        {
+            body("tools") = ujson.Arr(tools.map { t =>
+                ujson.Obj(
+                    "type"     -> "function",
+                    "function" -> ujson.Obj(
+                        "name"        -> t.name,
+                        "description" -> t.description,
+                        "parameters"  -> t.parameters
+                    )
+                )
+            }*)
+        }
 
         val response = requests.post(
             url     = s"$baseURL/api/chat",
@@ -63,6 +91,24 @@ class OllamaProvider(
                 val json  = ujson.read(line)
                 val delta = json.obj.get("message").flatMap(_.obj.get("content")).map(_.str).getOrElse("")
                 if delta.nonEmpty then onToken(delta)
+
+                // Native tool calls arrive on the final message chunk.
+                json.obj.get("message").flatMap(_.obj.get("tool_calls")).foreach { calls =>
+                    calls.arr.foreach { tc =>
+                        for
+                        {
+                            name <- tc.obj.get("function").flatMap(_.obj.get("name")).map(_.str)
+                            args <- tc.obj.get("function").flatMap(_.obj.get("arguments")).map(v =>
+                                if v.isInstanceOf[ujson.Str] then v.str else v.render())
+                        } do
+                        {
+                            val id = tc.obj.get("id").map(_.str).filter(_.nonEmpty)
+                                .getOrElse(s"call-${java.util.UUID.randomUUID()}")
+                            toolCalls += NativeToolCall(id, name, args)
+                        }
+                    }
+                }
+
                 if json.obj.get("done").exists(_.bool) then
                 {
                     promptTokens     = json.obj.get("prompt_eval_count").map(_.num.toInt).getOrElse(0)
@@ -76,7 +122,8 @@ class OllamaProvider(
             model            = modelName,
             promptTokens     = promptTokens,
             completionTokens = completionTokens,
-            latencyMs        = System.currentTimeMillis() - t0
+            latencyMs        = System.currentTimeMillis() - t0,
+            toolCalls        = toolCalls.toList
         )
     }
 }

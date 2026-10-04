@@ -68,7 +68,7 @@ enum AgentEvent
 
     /**
      *  Signals that the agent is about to invoke a tool.
-     *  @param tool   Full tool name (e.g. `"files.read"`).
+     *  @param tool   Full tool name (e.g. `"files_read"`).
      *  @param input  JSON-serialised input arguments.
      */
     case ToolCallStart(tool: String, input: String)
@@ -103,7 +103,7 @@ enum AgentEvent
      *  Signals that a sensitive tool requires user permission before proceeding.
      *  The agent run is suspended until the UI modal posts a decision.
      *  @param requestId Unique identifier for this permission prompt within the run.
-     *  @param tool      Canonical tool name, e.g. `"files.write"`.
+     *  @param tool      Canonical tool name, e.g. `"files_write"`.
      *  @param path      Absolute resolved path the tool intends to access, if applicable.
      *  @param options   Human-readable TTL option labels presented to the user.
      */
@@ -111,7 +111,7 @@ enum AgentEvent
 
     /**
      *  Emitted by long-running tools to report incremental progress.
-     *  @param tool     Canonical tool name, e.g. `"files.read_pdf"`.
+     *  @param tool     Canonical tool name, e.g. `"files_read_pdf"`.
      *  @param message  Human-readable progress description, e.g. `"Transcribing page 3 / 12"`.
      *  @param current  Current step (1-based).
      *  @param total    Total number of steps.

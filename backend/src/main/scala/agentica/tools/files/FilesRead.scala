@@ -36,7 +36,7 @@ case class FilesReadOutput(
 )
 
 /**
- *  Implements the `files.read` command.
+ *  Implements the `files_read` command.
  *  Reads a workspace file and returns its content inline if it fits within the body
  *  budget, otherwise stores it in the session scratchpad and returns a ref.
  *  Staleness is checked against the scratchpad before re-reading.
@@ -47,19 +47,19 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
     /**
      *  Canonical tool name.
      */
-    val name: String = "files.read"
+    val name: String = "files_read"
 
     /**
      *  Argument schema for help generation and system-prompt tool index.
      */
     val schema: CommandSchema = CommandSchema(
-        fullName = "files.read",
+        fullName = "files_read",
         summary  = "Read a workspace file; large files are stored in the scratchpad",
         args     = List(
             ArgSpec("path",  "Relative path to the file within the workspace", required = true),
             ArgSpec("lines", "Optional line range to read, e.g. 1-50",         required = false)
         ),
-        example  = """files.read path=src/main.scala lines=1-50"""
+        example  = """files_read path=src/main.scala lines=1-50"""
     )
 
     /**
@@ -238,6 +238,8 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
                 ))
             case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
+            case Some(error) =>
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File read failed: ${error.toErrorCode}"))
             case None =>
                 val rangeNote = if (output.truncated) " · partial" else ""
                 if (!output.truncated)

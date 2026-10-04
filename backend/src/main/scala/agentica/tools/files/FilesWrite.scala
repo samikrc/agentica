@@ -29,7 +29,7 @@ case class FilesWriteOutput(
 )
 
 /**
- *  Implements the `files.write` command.
+ *  Implements the `files_write` command.
  *  Sensitive tool — requires user permission via the UI modal before executing.
  *  Uses `ctx.permissionCoordinator` to emit [[AgentEvent.PermissionRequired]] and wait
  *  for up to 60 seconds when no valid grant exists.
@@ -40,19 +40,19 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
     /**
      *  Canonical tool name.
      */
-    val name: String = "files.write"
+    val name: String = "files_write"
 
     /**
      *  Argument schema for help generation and system-prompt tool index.
      */
     val schema: CommandSchema = CommandSchema(
-        fullName = "files.write",
+        fullName = "files_write",
         summary  = "Write text content to a workspace file (requires user permission)",
         args     = List(
             ArgSpec("path",    "Relative path to the file within the workspace", required = true),
             ArgSpec("content", "Text content to write to the file",              required = true)
         ),
-        example  = """files.write path=notes.md content="# My Notes"""
+        example  = """files_write path=notes.md content="# My Notes"""
     )
 
     /**
@@ -189,10 +189,12 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
                 ToolResult(status = ToolStatus.Err(
                     code    = FilesError.PermissionDenied.toErrorCode,
                     message = s"User denied write permission for: ${output.sourcePath}",
-                    hints   = List("files.write requires user approval before executing.")
+                    hints   = List("files_write requires user approval before executing.")
                 ))
             case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
+            case Some(error) =>
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File write failed: ${error.toErrorCode}"))
             case None =>
                 ToolResult(
                     status   = ToolStatus.Ok,

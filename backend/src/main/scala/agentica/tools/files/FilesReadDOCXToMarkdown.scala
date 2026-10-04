@@ -36,7 +36,7 @@ case class FilesReadDOCXToMarkdownOutput(
 )
 
 /**
- *  Implements `files.read_docx_to_markdown` — converts DOCX to Markdown via Vision-First ingestion.
+ *  Implements `files_read_docx_to_markdown` — converts DOCX to Markdown via Vision-First ingestion.
  *
  *  Pipeline:
  *  1. Validate path (sandbox check)
@@ -53,7 +53,7 @@ case class FilesReadDOCXToMarkdownOutput(
  */
 object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesReadDOCXToMarkdownOutput]
 {
-    val name: String = "files.read_docx_to_markdown"
+    val name: String = "files_read_docx_to_markdown"
 
     val schema: CommandSchema = CommandSchema(
         fullName = name,
@@ -62,9 +62,14 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
             ArgSpec("path",           "Relative path to the DOCX file", required = true),
             ArgSpec("enrich_images", "Run vision LLM on pages (default: true)", required = false, default = Some("true"))
         ),
-        example  = """files.read_docx_to_markdown path=report.docx"""
+        example  = """files_read_docx_to_markdown path=report.docx"""
     )
 
+    /**
+     *  Validates DOCX-to-Markdown arguments.
+     *  @param args  Raw native-call arguments.
+     *  @return      Validated input or an [[ArgError]].
+     */
     def validate(args: Map[String, String]): Either[ArgError, FilesReadDOCXToMarkdownInput] =
     {
         args.get("path") match
@@ -81,6 +86,12 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
         }
     }
 
+    /**
+     *  Converts a DOCX into cached Markdown using document rendering and vision transcription.
+     *  @param input  Validated conversion input.
+     *  @param ctx    Execution context providing workspace, permissions, and providers.
+     *  @return       Raw conversion output including cache and error metadata.
+     */
     def execute(input: FilesReadDOCXToMarkdownInput, ctx: ExecutionContext): FilesReadDOCXToMarkdownOutput =
     {
         val rootStr = ctx.session.rootPath.getOrElse("")
@@ -95,6 +106,14 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
         }
     }
 
+    /**
+     *  Performs permission checks, cache validation, conversion, transcription, and cache persistence.
+     *  @param input       Validated conversion options.
+     *  @param ctx         Execution context providing permissions and model providers.
+     *  @param resolved    Sandbox-validated absolute source path.
+     *  @param sourcePath  Workspace-relative source path used in results and cache metadata.
+     *  @return            Raw DOCX conversion output.
+     */
     private def readDOCX(
         input:      FilesReadDOCXToMarkdownInput,
         ctx:        ExecutionContext,
@@ -151,7 +170,7 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
                 return FilesReadDOCXToMarkdownOutput(
                     "", 0, sizeBytes, sourcePath, false,
                     Some(FilesError.IoError(
-                        s"LibreOffice is required for DOCX conversion. ${DocToolDetector.installInstructions} Use deps.check for installation instructions."
+                        s"LibreOffice is required for DOCX conversion. ${DocToolDetector.installInstructions} Use deps_check for installation instructions."
                     ))
                 )
             }
@@ -268,6 +287,12 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
         }
     }
 
+    /**
+     *  Converts DOCX conversion output into the standard tool-result envelope.
+     *  @param output  Raw DOCX conversion output.
+     *  @param ctx     Execution context for the current run.
+     *  @return        Render-ready conversion result or structured error.
+     */
     def render(output: FilesReadDOCXToMarkdownOutput, ctx: ExecutionContext): ToolResult =
     {
         output.error match
@@ -292,9 +317,11 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
                         "For DOCX conversion, ensure:",
                         "1. The file is a valid DOCX",
                         "2. A Vision LLM is configured",
-                        "3. LibreOffice is installed (see deps.check for install instructions)"
+                        "3. LibreOffice is installed (see deps_check for install instructions)"
                     )
                 ))
+            case Some(error) =>
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"DOCX conversion failed: ${error.toErrorCode}"))
             case None =>
                 val cacheStatus = if (output.wasRegenerated) "generated" else "cached"
                 ToolResult(

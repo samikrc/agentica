@@ -76,7 +76,7 @@ class RunStoreTest extends AnyFunSuite with BeforeAndAfterEach
         val run = ToolRun(
             id         = "run-1",
             sessionId  = "sess-1",
-            tool       = "files.read",
+            tool       = "files_read",
             input      = "{\"path\":\"test.txt\"}",
             output     = "{\"content\":\"hello\"}",
             status     = RunStatus.Success,
@@ -87,7 +87,7 @@ class RunStoreTest extends AnyFunSuite with BeforeAndAfterEach
         val runs = store.listRunsForSession("sess-1")
         assert(runs.size == 1)
         assert(runs.head.id == "run-1")
-        assert(runs.head.tool == "files.read")
+        assert(runs.head.tool == "files_read")
     }
 
     test("tokenUsageForSession returns empty list when no usage exists") {
@@ -114,9 +114,9 @@ class RunStoreTest extends AnyFunSuite with BeforeAndAfterEach
 
     test("deleteRunsAfter removes runs after the specified message rowid") {
         // Insert runs - SQLite rowid is auto-incrementing, so runs inserted after msg-2 should have higher rowid
-        val run1 = ToolRun("run-1", "sess-1", "files.read", "{}", "{}", RunStatus.Success, "trace-1", 100L)
-        val run2 = ToolRun("run-2", "sess-1", "files.search", "{}", "{}", RunStatus.Success, "trace-1", 100L)
-        val run3 = ToolRun("run-3", "sess-1", "memory.set", "{}", "{}", RunStatus.Success, "trace-1", 100L)
+        val run1 = ToolRun("run-1", "sess-1", "files_read", "{}", "{}", RunStatus.Success, "trace-1", 100L)
+        val run2 = ToolRun("run-2", "sess-1", "files_search", "{}", "{}", RunStatus.Success, "trace-1", 100L)
+        val run3 = ToolRun("run-3", "sess-1", "memory_set", "{}", "{}", RunStatus.Success, "trace-1", 100L)
         store.insertRun(run1)
         store.insertRun(run2)
         store.insertRun(run3)

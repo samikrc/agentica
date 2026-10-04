@@ -22,6 +22,7 @@ class ContextManagerTest extends AnyFunSuite
         rootPath  = Some("/workspace")
     )
 
+    /** Creates a compact message fixture for context-assembly tests. */
     private def msg(role: MessageRole, content: String): Message =
         Message(id = "", sessionId = "s1", role = role, content = content, timestamp = "")
 

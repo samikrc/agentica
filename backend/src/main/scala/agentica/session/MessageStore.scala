@@ -25,10 +25,18 @@ class MessageStore(conn: () => Connection)
                 role        TEXT NOT NULL,
                 content     TEXT NOT NULL,
                 timestamp   TEXT NOT NULL,
-                attachments TEXT NOT NULL DEFAULT '[]',
+                attachments   TEXT NOT NULL DEFAULT '[]',
+                tool_call_id  TEXT,
+                tool_calls    TEXT,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             )
         """)
+        val columns = scala.collection.mutable.Set.empty[String]
+        val rs = st.executeQuery("PRAGMA table_info(messages)")
+        while rs.next() do columns += rs.getString("name")
+        rs.close()
+        if !columns.contains("tool_call_id") then st.execute("ALTER TABLE messages ADD COLUMN tool_call_id TEXT")
+        if !columns.contains("tool_calls") then st.execute("ALTER TABLE messages ADD COLUMN tool_calls TEXT")
         st.close()
         } finally { c.close() }
     }
@@ -41,25 +49,35 @@ class MessageStore(conn: () => Connection)
      *  @return           The persisted [[Message]] with its generated UUID and timestamp.
      */
     def append(sessionId: String, role: MessageRole, content: String): Message =
-    {
-        val msg = Message(
-            id          = UUID.randomUUID().toString,
+        appendMessage(Message(
+            id          = "",
             sessionId   = sessionId,
             role        = role,
             content     = content,
-            timestamp   = Instant.now().toString,
+            timestamp   = "",
             attachments = Nil
+        ))
+
+    /** Persists a complete message, including native tool-call correlation metadata. */
+    def appendMessage(message: Message): Message =
+    {
+        val msg = message.copy(
+            id        = if message.id.nonEmpty then message.id else UUID.randomUUID().toString,
+            timestamp = if message.timestamp.nonEmpty then message.timestamp else Instant.now().toString
         )
         val c  = conn()
         val ps = c.prepareStatement(
-            "INSERT INTO messages (id, session_id, role, content, timestamp, attachments) VALUES (?,?,?,?,?,?)"
+            "INSERT INTO messages (id, session_id, role, content, timestamp, attachments, tool_call_id, tool_calls) " +
+            "VALUES (?,?,?,?,?,?,?,?)"
         )
         ps.setString(1, msg.id)
         ps.setString(2, msg.sessionId)
         ps.setString(3, msg.role.value)
         ps.setString(4, msg.content)
         ps.setString(5, msg.timestamp)
-        ps.setString(6, "[]")
+        ps.setString(6, upickle.default.write(msg.attachments))
+        ps.setString(7, msg.toolCallId.orNull)
+        ps.setString(8, msg.toolCallsJson.orNull)
         ps.executeUpdate()
         ps.close()
         c.close()
@@ -85,8 +103,10 @@ class MessageStore(conn: () => Connection)
                 sessionId   = rs.getString("session_id"),
                 role        = MessageRole.unsafe(rs.getString("role")),
                 content     = rs.getString("content"),
-                timestamp   = rs.getString("timestamp"),
-                attachments = Nil
+                timestamp     = rs.getString("timestamp"),
+                attachments   = upickle.default.read[List[String]](rs.getString("attachments")),
+                toolCallId    = Option(rs.getString("tool_call_id")),
+                toolCallsJson = Option(rs.getString("tool_calls"))
             )
         }
         rs.close()

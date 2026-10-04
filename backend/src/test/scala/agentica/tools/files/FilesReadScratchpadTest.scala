@@ -27,6 +27,7 @@ class FilesReadScratchpadTest extends AnyFunSuite
         def deleteForSession(sessionId: String): Unit = ()
     }
 
+    /** Creates an execution context rooted at the supplied test workspace. */
     private def mkCtx(rootPath: String, scratchpad: SessionScratchpad): ExecutionContext =
         ExecutionContext(
             session         = Session("s1", "Test", "", "", "test-model", Some(rootPath)),
@@ -41,6 +42,7 @@ class FilesReadScratchpadTest extends AnyFunSuite
             debugMode       = false
         )
 
+    /** Deletes a temporary test workspace recursively. */
     private def deleteTmpDir(dir: java.nio.file.Path): Unit =
         Files.walk(dir)
             .sorted(java.util.Comparator.reverseOrder())

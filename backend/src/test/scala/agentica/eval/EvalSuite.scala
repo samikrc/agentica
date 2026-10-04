@@ -1,4 +1,4 @@
-package agentica.testutil
+package agentica.eval
 
 import org.scalatest.funsuite.AnyFunSuite
 
