@@ -11,7 +11,7 @@
 What exists and works today:
 
 - `AgentEngine` trait with `run(session, history, userMsg, traceId, onToken, onEvent)` signature. *(Phase 2 adds `cancelFlag: AtomicBoolean` — see §3.3.)*
-- `AgentLoop`: Phase 1 stub — single `llm.stream()` call, no tool dispatch, no iteration.
+- `AgentLoop`: Phase 1 stub — single `llm_stream()` call, no tool dispatch, no iteration.
 - `ContextManager.assemble()`: prepends a hardcoded system prompt, returns all history as-is.
 - `Routes.scala`: orchestrates the virtual thread, SSE queue, run/cancel lifecycle, and `AgentEvent` → SSE serialization. Core wiring is complete; Phase 2 adds `cancelFlag` threading, `permissionQueues`, and `POST /permissions` (see §6.2).
 - `AgentEvent` enum: `IterationBoundary`, `ToolCallStart`, `ToolCallResult`, `Final`, `Cancelled`, `AgentError` — all already defined. Phase 2 adds `PermissionRequired(requestId, tool, path, options)` (see §6.2).
@@ -27,7 +27,7 @@ Phase 2 replaces the `AgentLoop` body and fills in all stubs. `Routes.scala` rec
 Phase 2 delivers the following sub-systems, in dependency order:
 
 1. **Virtual Shell and Command DSL** — `Tokenizer`, `CommandAst`, `CommandRegistry`, `VirtualShell`, `Presentation` (§4)
-2. **Tool implementations** — `files.*`, `memory.*`, `llm.*` (§5)
+2. **Tool implementations** — `files_*`, `memory_*`, `llm_*` (§5)
 3. **Permissions** — `ScopeStore`, path sandboxing, UI-side permission prompts (§6)
 4. **Context Management** — token-budget-aware window, oldest-first truncation (§7)
 5. **Agent Loop** — multi-iteration plan→act→observe, cancellation, error recovery (§3)
@@ -49,6 +49,8 @@ The `AgentLoop` class continues to implement `AgentEngine`. Its `run()` signatur
 
 ### 3.2 Loop Structure
 
+*Note: the pseudocode below shows the Phase 2 textual transport (`ToolCallParser`, `[TOOL RESULT]` user turns). The shipped transport is provider-native tool calls — see §3.5 for the current dispatch sequence.*
+
 ```
 AgentLoop.run(session, history, userMsg, traceId, cancelFlag, onToken, onEvent):
 
@@ -67,7 +69,7 @@ AgentLoop.run(session, history, userMsg, traceId, cancelFlag, onToken, onEvent):
     emit IterationBoundary(iteration)
 
     llmMessages = buildLlmMessages(assembled, pendingToolResults)
-    (responseText, usage) = llm.stream(llmMessages, onToken)
+    (responseText, usage) = llm_stream(llmMessages, onToken)
     record usage
 
     parsed = ToolCallParser.parse(responseText)
@@ -122,63 +124,32 @@ This means it appears in the Settings modal under an "Agent" section (or alongsi
 
 ### 3.5 Tool Result Injection and Tool Call Format
 
-**Decision (Q-3 / Q-4 / Q-13 — consolidated):** The model emits `run(command="...")` inline in its freeform text. Tool results are injected back as a plain `user` turn prefixed with `[TOOL RESULT]`. No native function-call message role is used in Phase 2.
+**Current decision (superseding the Phase 2 text envelope):** every registered command uses one canonical `family_verb` identifier everywhere, including provider schemas, the registry, help, events, persistence, evaluation metrics, and result envelopes. For example, `files_search` is both the registered name and the provider function name. Arguments are JSON objects generated from `CommandSchema`; no name translation, `run(command=...)` wrapper, or text fallback is used.
 
 Message list shape per iteration:
 
-```
-{ role: "assistant", content: "I'll read the file.\nrun(command=\"files.read path=data/report.txt\")" }
-{ role: "user",      content: "[TOOL RESULT]\n$ files.read path=data/report.txt\nok\n─────\n<contents>" }
-```
-
-Rationale: works with all local models regardless of fine-tuning; the CLI DSL is text-native; graceful degradation on model output variations. Native function-calling (`tool` message role) is deferred to Phase 3 when cloud providers arrive and can be toggled per-provider via `nativeFunctionCalling: Boolean` on `LLMProvider`.
-
-**Logging**: `ToolCallParser` runs on every LLM response before dispatch. Its output — parsed `command`, `args` — is the source of truth for all logging and SSE events. The sequence is:
-1. Parse → `List[ParsedToolCall]`
-2. For each: emit `ToolCallStart` SSE event + `TraceLogger` line
-3. `VirtualShell.execute()` → `AgentResponse`
-4. Emit `ToolCallResult` SSE event + `TraceLogger` line + `RunStore.persist()`
-
-Parse failures (malformed `run()` output from the model) are logged as `TraceLogger.warn` with the raw response text, and treated as a final answer (no tool dispatched).
-
-**Multiple `run()` calls per turn**: allowed. The parser extracts all `run(...)` occurrences in order. Each is dispatched and logged individually before the next LLM turn.
-
-### 3.6 `ToolCallParser`
-
-Scans the model's response text for all `run(command="...")` occurrences in order. Implementation: a simple iterative scan (no full regex over the whole string) that finds `run(command=` boundaries, then extracts the quoted value handling escaped quotes.
-
-```scala
-case class ParsedToolCall(rawCommand: String, startOffset: Int, endOffset: Int)
-
-/** A run() call that could not be parsed; carries the raw offending text for error injection. */
-case class ParseFailure(rawSnippet: String, reason: String, startOffset: Int)
-
-/** Sum type returned by ToolCallParser.parse(). */
-enum ToolCallResult:
-  case Success(call: ParsedToolCall)
-  case Failure(err: ParseFailure)
-
-object ToolCallParser:
-  def parse(text: String, traceId: String): List[ToolCallResult]
+```json
+{"role":"assistant","content":"I'll read the file.","tool_calls":[{"id":"call-1","type":"function","function":{"name":"files_read","arguments":"{\"path\":\"data/report.txt\"}"}}]}
+{"role":"tool","tool_call_id":"call-1","content":"$ files_read path=data/report.txt\nok\n─────\n<contents>"}
 ```
 
-`rawCommand` is the unescaped value of the `command="..."` argument, ready for `Tokenizer.parse()`. `startOffset`/`endOffset` are used by the loop to extract any narrative text the model wrote outside `run()` calls.
+The assistant call message and every correlated tool result are persisted, allowing session history to be replayed without reconstructing provider state. Multiple calls in one response are supported and dispatched in response order. No calls means the assistant response is final; a terminator marker is not required.
 
-Edge cases to handle: nested quotes, missing closing `)`, extra whitespace. Malformed `run()` syntax is **never silently dropped**. Instead:
-- A `TraceLogger.warn` is emitted with `parseError` and the raw snippet.
-- A `ToolCallResult.Failure` is returned in-position so `AgentLoop` can inject a structured error result into the `[TOOL RESULT]` block.
+The execution sequence is:
+1. Provider parses its native response into `List[NativeToolCall]`.
+2. `CommandRegistry.commandFromNative` validates the function name and JSON object.
+3. `VirtualShell.executeCommand` performs scratch-reference substitution, validation, execution, and presentation.
+4. `AgentLoop` emits lifecycle events, persists `ToolRun`, and appends a `role=tool` result carrying the original call ID.
 
-**Rationale:** Silently skipping a malformed `run()` call corrupts the model's reasoning chain. On the next iteration the model receives a `[TOOL RESULT]` block with no entry for the call it intended to make. It cannot distinguish "tool ran and returned nothing" from "tool was never dispatched". This can cause the model to fabricate output, stall in a loop, or produce a confident wrong final answer. By injecting a structured error result the model can observe the failure and self-correct (e.g. re-issue the call with corrected syntax).
+Malformed arguments and unknown function names produce a correlated error tool result instead of being silently dropped, allowing the model to self-correct.
 
-Error result injected by `AgentLoop` for each `ToolCallResult.Failure`:
-```
-$ <rawSnippet>
-error: parse_failed
-─ message: <reason>
-─ hint: check quoting — command= value must be a double-quoted string
-```
+### 3.6 Native Schema Generation
+
+`CommandRegistry` is the source of truth for both execution and model-facing schemas. Each `CommandSchema` produces a `ToolSpec`; required fields come from `ArgSpec.required`. Arguments remain strings at the semantic command boundary so existing tool validation is preserved. The synthetic `help` function provides global, family, and command-level progressive discovery.
 
 ### 3.7 Final Answer Detection
+
+*Superseded: under native tool calls a response with no `tool_calls` is the final answer; no `<done>` marker is produced or checked (§3.5). Retained below as the Phase 2 record.*
 
 **Decision (Q-5):** The model is instructed to end its final answer with `<done>` on its own line. The loop checks for this marker after confirming no `run(...)` calls are present.
 
@@ -188,6 +159,32 @@ Termination logic:
 3. Else (no `run()`, no `<done>`) → log a warning (`missing_terminator`), accept the response as final answer anyway (soft fallback). No error raised.
 
 Rationale: the explicit marker is unambiguous and easy to verify in golden scenarios. The soft fallback ensures graceful degradation on non-compliant model output without breaking the user experience.
+
+### 3.8 Scaling the Tool Catalogue
+
+**Status: forward-looking note (not yet scheduled).**
+
+Under native function calling, every request advertises the full `ToolSpec` list — one function per registered command, each carrying a JSON-schema parameter object — and the payload is re-sent on **every loop iteration**, not just the first. This is correct and simplest while the catalogue is ~15 commands, but its cost grows linearly with tool count, and Phase 3–5 will add `browser_*`, `vision_*`, `audio_*`, and office-document tools.
+
+Pressure points as the catalogue grows:
+
+- Schema tokens are part of every prompt and count against `contextBudgetTokens`; ~30+ full schemas can consume a meaningful fraction of an 8K local context.
+- Very long tool menus degrade call quality on some local models (wrong or unneeded function choices).
+
+Mitigation ladder, in order of implementation effort:
+
+1. **Slim advertised schemas** — keep every command callable but ship only name + one-line description + required-args-only schema in `tools`; full argument specs remain discoverable through the `help` function. `CommandRegistry` already separates the compact index (`helpIndex`) from the full spec (`ToolSpec`), so this is a serialization choice, not a redesign.
+2. **Advertise a subset, accept all** — send only a core or task-relevant subset in `tools` while `commandFromNative` keeps validating against the whole registry, so an unadvertised-but-valid call still dispatches. This enables per-task tool groups via a `tags`/`group` field on `CommandSchema`.
+3. **Family-level functions** — collapse to one function per family (e.g., `files(operation, args)`) for models that struggle with many functions; central arg validation already lives in the registry. Trade-off: weaker provider-side schema enforcement.
+4. **Tool retrieval** — embed tool descriptions and pick the top-K relevant tools per request; aligns with Phase 5 RAG. Reserved for very large catalogues (50+ tools).
+
+Operational notes:
+
+- Keep the serialized `tools` array order stable across requests so providers with prompt-prefix caching can amortize the repeated schema block.
+- Record the serialized tools payload size in token accounting so schema growth is visible in evals.
+- `help` remains the progressive-discovery path and becomes the primary schema source under slim or subset-advertising modes.
+
+**Revisit trigger:** when the serialized `tools` payload exceeds roughly 10–15% of `contextBudgetTokens`, or when evals show call-quality degradation correlated with catalogue size.
 
 ---
 
@@ -208,7 +205,7 @@ No pipelines. The FTRD §10 output-capture design (`$last`, `$1`, `$2`, ...) is 
 
 ### 4.2 `Tokenizer`
 
-Hand-written tokenizer. Input: raw command string after stripping `run(command="...")`  wrapper.
+Hand-written tokenizer. Input: the internal `family_verb arg=val` command string, reconstructed from native tool calls at dispatch time (the Phase 2 `run(command="...")` wrapper no longer exists).
 
 Grammar (informally):
 
@@ -269,7 +266,7 @@ All three stages return `Either`-style results; errors propagate as structured `
 Converts a typed `ToolResult` into the `AgentResponse` text envelope:
 
 ```
-$ files.read path=foo.txt
+$ files_read path=foo.txt
 ok
 ─ size: 1.2 KB · lines: 47 · truncated: false
 ─────
@@ -277,7 +274,7 @@ ok
 ```
 
 Rules:
-- Line 1: command echo — always `$ family.verb arg1=val1 arg2=val2`.
+- Line 1: command echo — always `$ family_verb arg1=val1 arg2=val2`.
 - Line 2: `ok` or `error: <code>`.
 - Metadata lines prefixed with `─`.
 - Body (if any) separated by `─────`.
@@ -289,13 +286,13 @@ Rules:
 Overflow response shape:
 
 ```
-$ files.read path=big_report.txt
+$ files_read path=big_report.txt
 ok
 ─ size: 120 KB · lines: 4821 · stored: $scratch/data/big_report.txt
 ─ hint: content too large for context; use targeted tools to query it
-─ try: run(command="files.search query=\"your term\" path=big_report.txt")
-─ try: run(command="files.read path=big_report.txt lines=1-50")
-─ try: run(command="llm.summarize text=$scratch/data/big_report.txt")
+─ try: files_search query="your term" path=big_report.txt
+─ try: files_read path=big_report.txt lines=1-50
+─ try: llm_summarize text=$scratch/data/big_report.txt
 ```
 
 ### 4.6 Scratchpad — `SessionScratchpad`
@@ -327,25 +324,25 @@ class SessionScratchpad:
 
 **Lifecycle**: one `SessionScratchpad` per active session, held in a `TrieMap[sessionId, SessionScratchpad]` in `BackendServer`. Removed when the session is deleted. Lost on backend restart — the agent re-reads files on the next turn (graceful degradation).
 
-**Staleness**: when `files.read` is called for a path already in the scratchpad, `isStale()` compares the file's current `lastModifiedTime` against the stored value. If stale, the entry is replaced. If fresh, the existing ref is returned without re-reading.
+**Staleness**: when `files_read` is called for a path already in the scratchpad, `isStale()` compares the file's current `lastModifiedTime` against the stored value. If stale, the entry is replaced. If fresh, the existing ref is returned without re-reading.
 
-**Substitution pass**: the tokenizer/executor resolves `$scratch/<path>` refs in any argument value before dispatching to the tool. The tool receives the full `String` content directly — it never sees the ref. This means `llm.summarize text=$scratch/data/report.txt` passes the full content straight into `LLMProvider.complete()` without it ever appearing in the agent's conversation history.
+**Substitution pass**: the tokenizer/executor resolves `$scratch/<path>` refs in any argument value before dispatching to the tool. The tool receives the full `String` content directly — it never sees the ref. This means `llm_summarize text=$scratch/data/report.txt` passes the full content straight into `LLMProvider.complete()` without it ever appearing in the agent's conversation history.
 
 **Scope**: `ExecutionContext` carries a reference to the session's `SessionScratchpad`.
 
 ### 4.7 Automatic Scratchpad Chaining
 
-**Problem:** The scratchpad overflow path in §4.6 fires only when a tool body exceeds `BODY_BUDGET_CHARS`. Small and medium outputs are returned inline — the model receives plain text in the `[TOOL RESULT]` block with no stable `$scratch/` ref. To chain that output into a subsequent tool call (e.g. pass search results to `llm.summarize`) the model would have to copy-paste the text into an argument value, which is fragile for anything beyond trivial content and bloats conversation history.
+**Problem:** The scratchpad overflow path in §4.6 fires only when a tool body exceeds `BODY_BUDGET_CHARS`. Small and medium outputs are returned inline — the model receives plain text in the `[TOOL RESULT]` block with no stable `$scratch/` ref. To chain that output into a subsequent tool call (e.g. pass search results to `llm_summarize`) the model would have to copy-paste the text into an argument value, which is fragile for anything beyond trivial content and bloats conversation history.
 
 **Solution:** Every tool result is stored in the `SessionScratchpad` automatically, regardless of size. No opt-in argument is needed. The scratchpad uses two key tracks:
 
 - **Path-keyed** (file reads): key is the source file path relative to the workspace root, e.g. `data/report.txt`. Enables staleness detection across turns — re-reading the same file returns the same ref if the file is unchanged.
-- **Counter-keyed** (computed results): key is `__result_N__` where `N` is a monotonically-increasing integer from `SessionScratchpad.nextComputedKey()`. Used for search matches, `llm.*` outputs, and any tool result with no natural file-path key.
+- **Counter-keyed** (computed results): key is `__result_N__` where `N` is a monotonically-increasing integer from `SessionScratchpad.nextComputedKey()`. Used for search matches, `llm_*` outputs, and any tool result with no natural file-path key.
 
 **Response shape — small result** (body ≤ 8000 chars): return the inline content as normal, plus a `stored:` metadata line so the model has the ref without re-reading:
 
 ```
-$ files.read path=src/config.py
+$ files_read path=src/config.py
 ok
 ─ size: 2.1 KB · lines: 67 · stored: $scratch/src/config.py
 ─────
@@ -355,39 +352,39 @@ ok
 **Response shape — large result** (body > 8000 chars): scratchpad ref only, no inline body (unchanged from §4.6 overflow behaviour):
 
 ```
-$ files.read path=big_report.txt
+$ files_read path=big_report.txt
 ok
 ─ size: 120 KB · lines: 4821 · stored: $scratch/data/big_report.txt
 ─ hint: content too large for context; use targeted tools to query it
-─ try: run(command="files.search query=\"your term\" path=big_report.txt")
-─ try: run(command="files.read path=big_report.txt lines=1-50")
-─ try: run(command="llm.summarize text=$scratch/data/big_report.txt")
+─ try: files_search query="your term" path=big_report.txt
+─ try: files_read path=big_report.txt lines=1-50
+─ try: llm_summarize text=$scratch/data/big_report.txt
 ```
 
-**Example — chain a small file read into a summarise step:**
+**Example — chain a small file read into a summarise step** *(transcript lines show the Phase 2 textual call syntax; under native calls the model emits `files_read`/`llm_summarize` function calls and results arrive as `role=tool` messages — the scratchpad mechanics are unchanged)*:
 ```
-run(command="files.read path=src/config.py")
-→ [TOOL RESULT]
-  $ files.read path=src/config.py
+files_read path=src/config.py
+→ [tool result]
+  $ files_read path=src/config.py
   ok
   ─ size: 2.1 KB · lines: 67 · stored: $scratch/src/config.py
   ─────
   <file content>
 
-run(command="llm.summarize text=$scratch/src/config.py")
+llm_summarize text=$scratch/src/config.py
 ```
 
 **Example — chain search results into a summarise step:**
 ```
-run(command="files.search query="revenue,growth" path=reports/")
-→ [TOOL RESULT]
-  $ files.search query="revenue,growth" path=reports/
+files_search query="revenue,growth" path=reports/
+→ [tool result]
+  $ files_search query="revenue,growth" path=reports/
   ok
   ─ matches: 12 · files: 3 · stored: $scratch/__result_1__
   ─────
   <match lines>
 
-run(command="llm.summarize text=$scratch/__result_1__")
+llm_summarize text=$scratch/__result_1__
 ```
 
 **Implementation changes:**
@@ -427,7 +424,7 @@ Error code set (closed): `not_found`, `permission_denied`, `invalid_args`, `path
 ```scala
 // tools/Tool.scala
 trait Tool[I, O]:
-  def name: String      // "files.read"
+  def name: String      // "files_read"
   def schema: CommandSchema
   def validate(args: Map[String, String]): Either[ArgError, I]
   def execute(input: I, ctx: ExecutionContext): O
@@ -442,19 +439,19 @@ The `validate → execute → render` pipeline is the contract. `VirtualShell` c
 
 | Command | Args | Returns |
 |---|---|---|
-| `files.read` | `path`, `lines` (optional range, e.g. `1-50`) | File text content; always stored in `SessionScratchpad` (path-keyed); inline body + `stored:` ref if ≤8000 chars; ref only if larger |
-| `files.write` | `path`, `content` | Confirmation + bytes written |
-| `files.list` | `path` (optional), `recursive` (default false), `all` (dotfiles, default false), `depth` (default 3), `pattern` (glob filter) | Indented tree listing with size and date per file |
-| `files.search` | `query`, `path` (optional), `recursive` (default true), `ignore_case` (default false), `lines_context` (default 2), `max_matches` (default 50), `include` (glob), `regex` (default false) | Grep-style matches; always stored in `SessionScratchpad` (counter-keyed `__result_N__`); inline body + `stored:` ref if ≤8000 chars; ref only if larger |
-| `files.stat` | `path` | File size, modified time, type |
+| `files_read` | `path`, `lines` (optional range, e.g. `1-50`) | File text content; always stored in `SessionScratchpad` (path-keyed); inline body + `stored:` ref if ≤8000 chars; ref only if larger |
+| `files_write` | `path`, `content` | Confirmation + bytes written |
+| `files_list` | `path` (optional), `recursive` (default false), `all` (dotfiles, default false), `depth` (default 3), `pattern` (glob filter) | Indented tree listing with size and date per file |
+| `files_search` | `query`, `path` (optional), `recursive` (default true), `ignore_case` (default false), `lines_context` (default 2), `max_matches` (default 50), `include` (glob), `regex` (default false) | Grep-style matches; always stored in `SessionScratchpad` (counter-keyed `__result_N__`); inline body + `stored:` ref if ≤8000 chars; ref only if larger |
+| `files_stat` | `path` | File size, modified time, type |
 
-**`files.write` is a sensitive (mutating) tool** — subject to permission scope check before execution (§6).
+**`files_write` is a sensitive (mutating) tool** — subject to permission scope check before execution (§6).
 
-**Decision (Q-7):** Both tools are grep/ls-style, implemented with `java.nio.file` APIs (no subprocess, no shell). `files.search` uses a line-by-line scan with `PathMatcher` for `include` glob filtering. `files.list` uses `Files.walk()` with depth cap. Index-based search is Phase 5.
+**Decision (Q-7):** Both tools are grep/ls-style, implemented with `java.nio.file` APIs (no subprocess, no shell). `files_search` uses a line-by-line scan with `PathMatcher` for `include` glob filtering. `files_list` uses `Files.walk()` with depth cap. Index-based search is Phase 5.
 
-`files.search` output shape (in `AgentResponse` envelope):
+`files_search` output shape (in `AgentResponse` envelope):
 ```
-$ files.search query="revenue" path=reports/ lines_context=2
+$ files_search query="revenue" path=reports/ lines_context=2
 ok
 ─ matches: 7 · files: 3 · truncated: false
 ─────
@@ -465,9 +462,9 @@ reports/q3.txt:16:  compared to prior quarter
 reports/annual.txt:42:> Revenue: $4.2M
 ```
 
-`files.list` output shape:
+`files_list` output shape:
 ```
-$ files.list path=src/ recursive=true depth=2
+$ files_list path=src/ recursive=true depth=2
 ok
 ─ entries: 12 · dirs: 3 · files: 9
 ─────
@@ -487,9 +484,9 @@ Session-scoped key-value store. Memory entries are persisted in SQLite per sessi
 
 | Command | Args | Returns |
 |---|---|---|
-| `memory.set` | `key`, `value` | Confirmation |
-| `memory.get` | `key` | Stored value or not_found |
-| `memory.list` | (none) | All keys for this session |
+| `memory_set` | `key`, `value` | Confirmation |
+| `memory_get` | `key` | Stored value or not_found |
+| `memory_list` | (none) | All keys for this session |
 
 Schema additions needed to `session` DB: `memory_entries(session_id, key, value, updated_at)`.
 
@@ -501,13 +498,13 @@ Utility tools that make a **nested, non-streaming** LLM call (via `LLMProvider.c
 
 | Command | Args | Returns |
 |---|---|---|
-| `llm.summarize` | `text` (string or `$scratch/<path>` ref) | Summary paragraph |
-| `llm.extract` | `text` (string or `$scratch/<path>` ref), `fields` | JSON with extracted field values |
-| `llm.classify` | `text` (string or `$scratch/<path>` ref), `labels` | Selected label + confidence |
+| `llm_summarize` | `text` (string or `$scratch/<path>` ref) | Summary paragraph |
+| `llm_extract` | `text` (string or `$scratch/<path>` ref), `fields` | JSON with extracted field values |
+| `llm_classify` | `text` (string or `$scratch/<path>` ref), `labels` | Selected label + confidence |
 
 `$scratch/<path>` refs are resolved by the substitution pass before the tool executes. The full content goes directly into `LLMProvider.complete()` — never into the agent's conversation history.
 
-**Decision (Q-9):** Same `LLMProvider` instance as the main conversation, but each `llm.*` tool call constructs a **fresh, isolated message list** — it does not share or append to the agent's conversation history. The tool call is effectively a stateless completion: `LLMProvider.complete(List(systemMsg, userMsg))` where `userMsg` contains the tool's input (e.g., the text to summarise). No session ID is passed; no messages are persisted to `MessageStore`.
+**Decision (Q-9):** Same `LLMProvider` instance as the main conversation, but each `llm_*` tool call constructs a **fresh, isolated message list** — it does not share or append to the agent's conversation history. The tool call is effectively a stateless completion: `LLMProvider.complete(List(systemMsg, userMsg))` where `userMsg` contains the tool's input (e.g., the text to summarise). No session ID is passed; no messages are persisted to `MessageStore`.
 
 This avoids cross-contamination between the tool sub-call and the main conversation context. Token usage is recorded via `TokenAccounting` with `callType = "tool_llm"` to distinguish it from the main loop calls. Separate model routing is a Phase 3+ concern.
 
@@ -518,7 +515,7 @@ A special command (not a `Tool[I,O]`) handled directly in `CommandRegistry`:
 ```
 help                 → helpIndex (one line per family)
 help files           → all verbs for files family
-help files.read      → full arg schema + example for files.read
+help files_read      → full arg schema + example for files_read
 ```
 
 Output is in the `AgentResponse` envelope with `ok` status and body containing the help text. The system prompt references `help` as the discovery mechanism.
@@ -534,7 +531,7 @@ Output is in the `AgentResponse` envelope with `ok` status and body containing t
 case class Grant(
   id:        String,
   sessionId: Option[String],  // None = global
-  toolSet:   String,          // "files.write", "files.*", etc.
+  toolSet:   String,          // "files_write", "files_*", etc.
   pathPrefix: Option[String], // None = any path
   ttl:       GrantTTL
 )
@@ -547,7 +544,7 @@ enum GrantTTL:
 
 Stored in SQLite table `permission_grants`. Checked before any `execute()` call on a sensitive tool.
 
-Sensitive tools in Phase 2: `files.write`. (`memory.set` is not gated — it's session-scoped and low risk.)
+Sensitive tools in Phase 2: `files_write`. (`memory_set` is not gated — it's session-scoped and low risk.)
 
 `GrantDecision` carries the user's response from the modal back to the suspended agent run:
 
@@ -593,7 +590,7 @@ case PermissionRequired(requestId: String, tool: String, path: Option[String], o
 - `PermissionCoordinator` registry: `TrieMap[(runId, requestId), CompletableFuture[GrantDecision]]`
 - `POST /permissions/:runId` endpoint: resolves the exact request future without removing it before coordinator cleanup.
 
-Phase 2 scope: `files.write` only. `memory.set` is not gated in Phase 2 (low risk, session-scoped).
+Phase 2 scope: `files_write` only. `memory_set` is not gated in Phase 2 (low risk, session-scoped).
 
 ### 6.3 Path Sandboxing
 
@@ -634,15 +631,17 @@ Priority within the budget (highest to lowest):
 
 **Decision (Q-12): Deferred to Phase 5.** Dropped messages are silently discarded. No summary injection in Phase 2.
 
-Rationale: summarization requires an extra `llm.*` call mid-assembly, adding latency and tokens on every turn once the window fills. The `SessionScratchpad` mitigates the main content-loss problem for file reads; `memory.*` handles deliberate facts. For short-to-medium personal assistant tasks the window won't fill. Phase 5 (RAG + long autonomous runs) is the right time to add summarization.
+Rationale: summarization requires an extra `llm_*` call mid-assembly, adding latency and tokens on every turn once the window fills. The `SessionScratchpad` mitigates the main content-loss problem for file reads; `memory_*` handles deliberate facts. For short-to-medium personal assistant tasks the window won't fill. Phase 5 (RAG + long autonomous runs) is the right time to add summarization.
 
 ### 7.4 Workspace File Context (RAG Deferral)
 
-The task list includes "Decide how workspace files enter context." For Phase 2, workspace files enter context only via explicit `files.read` tool calls issued by the agent. Proactive file injection (embedding-based retrieval, RAG) is Phase 5. The Phase 2 decision to document: *files enter context on demand via agent tool calls, not via automatic injection.*
+The task list includes "Decide how workspace files enter context." For Phase 2, workspace files enter context only via explicit `files_read` tool calls issued by the agent. Proactive file injection (embedding-based retrieval, RAG) is Phase 5. The Phase 2 decision to document: *files enter context on demand via agent tool calls, not via automatic injection.*
 
 ---
 
 ## 8. System Prompt Design
+
+*Note: the template specification below documents the Phase 2 textual protocol (`run(command=...)`, `[TOOL RESULT]`, `<done>`). The shipped `system_prompt.txt` instructs native function calling instead — the `{{TOOL_INDEX}}`, `{{ROOT_PATH}}`, `{{TODAY}}` slot mechanism is unchanged. See §3.5 and the checked-in resource for the current text.*
 
 The system prompt is the primary interface between the codebase and the model's behavior. It must be maintained as a **checked-in text template** (not hardcoded in `ContextManager`) so it can be evolved, diffed, and tested independently.
 
@@ -682,8 +681,8 @@ Tool results arrive as:
   body
 
 If a file is too large for context it is stored as $scratch/<path>.
-Use run(command="llm.summarize text=$scratch/<path>") or targeted
-files.search / files.read with lines= to query it.
+Use run(command="llm_summarize text=$scratch/<path>") or targeted
+files_search / files_read with lines= to query it.
 
 [SAFETY]
 - Never access paths outside the workspace.
@@ -692,7 +691,7 @@ files.search / files.read with lines= to query it.
 
 The template is loaded once at `BackendServer` startup into a `String`, substitution applied per-session for `ROOT_PATH` and per-run for `TODAY`. `TOOL_INDEX` is substituted once at startup (tools don't change at runtime).
 
-### 8.1 Full Template Specification
+### 8.1 Full Template Specification *(Phase 2 record — superseded, see §8 note above)*
 
 The following is the intended content of `system_prompt.txt`. Substitution slots are marked `{{SLOT}}`.
 
@@ -725,7 +724,7 @@ Rules:
   approach. Do not retry the exact same call unchanged.
 - Call run(command="help") to see all available tools.
   Call run(command="help files") to see all verbs for a family.
-  Call run(command="help files.read") to see full arg schema and an example.
+  Call run(command="help files_read") to see full arg schema and an example.
 
 [TOOL INDEX]
 {{TOOL_INDEX}}
@@ -753,7 +752,7 @@ cancelled, internal_error.
 Every tool result is stored automatically in the scratchpad. Small results
 include their content inline and also a stored: ref:
 
-  $ files.read path=src/config.py
+  $ files_read path=src/config.py
   ok
   ─ size: 2.1 KB · lines: 67 · stored: $scratch/src/config.py
   ─────
@@ -761,15 +760,15 @@ include their content inline and also a stored: ref:
 
 Large results return only the ref (content too large for context):
 
-  $ files.read path=big_report.txt
+  $ files_read path=big_report.txt
   ok
   ─ size: 120 KB · lines: 4821 · stored: $scratch/data/big_report.txt
   ─ hint: content too large for context; use targeted tools to query it
-  ─ try: run(command="files.search query=\"term\" path=big_report.txt")
-  ─ try: run(command="files.read path=big_report.txt lines=1-50")
-  ─ try: run(command="llm.summarize text=$scratch/data/big_report.txt")
+  ─ try: run(command="files_search query=\"term\" path=big_report.txt")
+  ─ try: run(command="files_read path=big_report.txt lines=1-50")
+  ─ try: run(command="llm_summarize text=$scratch/data/big_report.txt")
 
-Computed results (search matches, llm.* outputs) get a counter ref:
+Computed results (search matches, llm_* outputs) get a counter ref:
 
   ─ stored: $scratch/__result_1__
 
@@ -780,10 +779,10 @@ Rules for scratchpad refs:
   runs — it never appears in the conversation history.
 - Re-reading the same file returns the same ref if the file has not changed.
 - Use stored refs to chain tool outputs without repeating large text in
-  argument values: run(command="llm.summarize text=$scratch/__result_1__")
+  argument values: run(command="llm_summarize text=$scratch/__result_1__")
 
 [PERMISSIONS]
-- files.write requires user approval. If you receive permission_denied, the
+- files_write requires user approval. If you receive permission_denied, the
   user has been notified and asked. Do not retry immediately; wait for the
   next user message.
 - Never attempt to access files outside the workspace ({{ROOT_PATH}}).
@@ -792,10 +791,10 @@ Rules for scratchpad refs:
 [BEHAVIOUR GUIDELINES]
 - Think step by step before issuing tool calls. State your plan briefly.
 - Prefer targeted reads over reading whole large files:
-    files.search before files.read
-    files.read with lines= for a known range
-- Use memory.set to preserve important facts across a long multi-step task.
-- If you are unsure what files exist, use files.list or files.search first.
+    files_search before files_read
+    files_read with lines= for a known range
+- Use memory_set to preserve important facts across a long multi-step task.
+- If you are unsure what files exist, use files_list or files_search first.
 - When a task is complete, give a concise summary of what was done.
 - Do not apologise for tool failures; adapt and try a different approach.
 - Do not fabricate file contents or tool results; always use run() to read
@@ -833,7 +832,7 @@ Phase 2 deliberately replaces the inline debug pane with a **"Open debug log" bu
   - Reconnects automatically with back-off on unexpected disconnect.
   - Renders lines with level-based colouring: INFO (default), WARN (yellow), ERROR (red).
   - Auto-scrolls to bottom; **"Pause scroll"** toggle.
-  - **Filter input**: client-side substring filter on log lines (type `traceId`, `files.read`, `sessionId`, etc.).
+  - **Filter input**: client-side substring filter on log lines (type `traceId`, `files_read`, `sessionId`, etc.).
   - **"Clear display"** button (clears the viewer display only, not the file).
 - The code in `log-viewer.js` targets only `log-viewer.html` DOM elements.
 
@@ -841,7 +840,7 @@ Phase 2 deliberately replaces the inline debug pane with a **"Open debug log" bu
 
 `TraceLogger` emits structured log lines to **both stdout and `agentica.log`**. Log line fields:
 - `traceId`, `sessionId`, `iteration`, `tool`, `status`, `durationMs`
-- For `llm.*` tool calls: `callType=tool_llm`, `parentTraceId` linking to the outer run trace.
+- For `llm_*` tool calls: `callType=tool_llm`, `parentTraceId` linking to the outer run trace.
 - For permission events: `tool`, `path`, `decision`, `grantTTL`.
 - For context truncation: `messagesDropped`, `budgetTokens`.
 - For parse failures: `rawResponse` (first 200 chars), `parseError`.
@@ -850,7 +849,7 @@ Phase 2 deliberately replaces the inline debug pane with a **"Open debug log" bu
 
 `RunStore` exists but its schema needs to align with Phase 2 tool events. Each `ToolRun` record should store:
 - `runId`, `sessionId`, `traceId`, `iteration`
-- `tool` (e.g., `"files.read"`), `input` (raw args as JSON), `output` (rendered response), `status`, `durationMs`
+- `tool` (e.g., `"files_read"`), `input` (raw args as JSON), `output` (rendered response), `status`, `durationMs`
 
 **Decision (Q-15):** Per-call persistence. Each tool run record is written to `RunStore` immediately after execution. Safer for crash recovery and debug replay. (See also §3.5 logging decision.)
 
@@ -958,8 +957,8 @@ workspace:
     content: "..."
 prompt: "Summarize the file data/report.txt"
 expected_tool_calls:
-  - "files.read path=data/report.txt"
-  - "llm.summarize text=..."
+  - "files_read path=data/report.txt"
+  - "llm_summarize text=..."
 success_criteria:
   final_answer_contains: ["summary", "report"]
 ```
@@ -1003,9 +1002,9 @@ enum AgentEvent:
 | ~~**Q-3/Q-4/Q-13**~~ | ~~Tool result injection and tool call format~~ | **Decided**: plain `assistant`/`user` turns; inline `run(command="...")` text; `ToolCallParser` extracts and logs all calls |
 | ~~**Q-5**~~ | ~~Final answer: absence of `run()` sufficient, or require explicit marker?~~ | **Decided**: explicit `<done>` marker required; soft fallback (accept without marker, log warning) if absent |
 | ~~**Q-6**~~ | ~~Token budget for a single tool result body?~~ | **Decided**: fixed 8000 char constant in `Presentation.scala`; overflow → `SessionScratchpad` with path-keyed stable refs + staleness check + LRU eviction (max 20 entries) |
-| ~~**Q-7**~~ | ~~`files.search`: grep-based or index-based?~~ | **Decided**: grep-based (`java.nio.file`, no subprocess); Unix-aligned args for both `files.search` (grep-style) and `files.list` (ls-style); index-based search deferred to Phase 5 |
-| ~~**Q-8**~~ | ~~`memory.*`: session-scoped only or global cross-session in Phase 2?~~ | **Decided**: session-scoped only; `MemoryStore` trait with `Option[sessionId]` ready for Phase 6 global upgrade |
-| ~~**Q-9**~~ | ~~`llm.*` tools: same provider or configurable separate model?~~ | **Decided**: same `LLMProvider`; fresh isolated message list per tool call, no session context shared; `callType="tool_llm"` in token accounting |
+| ~~**Q-7**~~ | ~~`files_search`: grep-based or index-based?~~ | **Decided**: grep-based (`java.nio.file`, no subprocess); Unix-aligned args for both `files_search` (grep-style) and `files_list` (ls-style); index-based search deferred to Phase 5 |
+| ~~**Q-8**~~ | ~~`memory_*`: session-scoped only or global cross-session in Phase 2?~~ | **Decided**: session-scoped only; `MemoryStore` trait with `Option[sessionId]` ready for Phase 6 global upgrade |
+| ~~**Q-9**~~ | ~~`llm_*` tools: same provider or configurable separate model?~~ | **Decided**: same `LLMProvider`; fresh isolated message list per tool call, no session context shared; `callType="tool_llm"` in token accounting |
 | ~~**Q-10**~~ | ~~Permission prompts: SSE-based run suspension or natural language relay + re-submit?~~ | **Decided**: Option A — `PermissionRequired` SSE event; run suspends through `PermissionCoordinator` on a per-request `CompletableFuture`; UI modal with Allow once/session/always/Deny; `POST /permissions/:runId` with `requestId`; 60s timeout → graceful `permission_denied` |
 | ~~**Q-11**~~ | ~~Context budget: fixed constant, global setting, or model-derived?~~ | **Decided**: global `AppSettings` field `contextBudgetTokens` (default 8000); newest-first history inclusion; system prompt + current user msg + in-flight tool results always included |
 | ~~**Q-12**~~ | ~~Is context summarization required for Phase 2 or deferred?~~ | **Decided**: deferred to Phase 5; silent truncation of oldest messages in Phase 2 |
@@ -1023,14 +1022,14 @@ Given the dependency graph, the recommended order is:
 1. `CommandAst` + `Tokenizer` (no dependencies; unit-testable immediately)
 2. `Tool` trait + `PathSandbox` utility
 3. `SessionScratchpad` (no tool dependencies; needed by presentation layer)
-4. `files.*` tool implementations (execution layer only, no presentation)
+4. `files_*` tool implementations (execution layer only, no presentation)
 5. `CommandRegistry` + `VirtualShell` stub dispatch
 6. `Presentation` layer + `AgentResponse` (uses `SessionScratchpad` for overflow routing)
-7. `memory.*` tool implementations + `MemoryStore` DB schema
+7. `memory_*` tool implementations + `MemoryStore` DB schema
 8. `ScopeStore` + path sandbox integration
 9. `ContextManager` Phase 2 (token-budget-aware window)
 10. `AgentLoop` Phase 2 (full iteration loop)
-11. `llm.*` tool implementations (depend on `LLMProvider.complete`; accept `$scratch` refs)
+11. `llm_*` tool implementations (depend on `LLMProvider.complete`; accept `$scratch` refs)
 12. System prompt finalization (depends on `CommandRegistry.helpIndex`)
 13. Log file output for `TraceLogger` + `GET /log/stream` endpoint + `log-viewer.html` + "Debug log" button
 14. Replay test scaffolding (`ScriptedLLMProvider` first) + first 5 golden scenarios
@@ -1104,11 +1103,11 @@ The following use cases drive tool design and are referenced throughout this sec
 
 | ID | Use Case | Triggering Input | Desired Output | Key Tools Needed |
 |---|---|---|---|---|
-| **UC1** | **Web to Presentation** | URLs or PDFs containing research/articles | PPTX slide deck summarizing content | `browser.open`, `files.read_pdf_to_markdown`, `llm.summarize`, `files.write_pptx` |
-| **UC2** | **Image to Document** | Image file (diagram, whiteboard, screenshot) | DOCX or PDF describing the image content | `vision.describe`, `files.write_docx` |
-| **UC3** | **Audio to Presentation** | Audio file (meeting recording, podcast) | PPTX with transcript summary and key points | `audio.transcribe`, `llm.summarize`, `files.write_pptx` |
+| **UC1** | **Web to Presentation** | URLs or PDFs containing research/articles | PPTX slide deck summarizing content | `browser_open`, `files_read_pdf_to_markdown`, `llm_summarize`, `files_write_pptx` |
+| **UC2** | **Image to Document** | Image file (diagram, whiteboard, screenshot) | DOCX or PDF describing the image content | `vision_describe`, `files_write_docx` |
+| **UC3** | **Audio to Presentation** | Audio file (meeting recording, podcast) | PPTX with transcript summary and key points | `audio_transcribe`, `llm_summarize`, `files_write_pptx` |
 
-### 13.1 Browser Tools (`browser.*`)
+### 13.1 Browser Tools (`browser_*`)
 
 **Goal:** Full web content extraction and automation using headless browsers.
 
@@ -1116,18 +1115,18 @@ The following use cases drive tool design and are referenced throughout this sec
 
 | Tool | Args | Output | Phase |
 |---|---|---|---|
-| `browser.open` | `url` | Page text/markdown | Phase 3 |
-| `browser.select` | `selector` (CSS), `attribute` (optional) | Selected element text | Phase 3 |
-| `browser.click` | `selector` | Confirmation + new page state | Phase 4 |
-| `browser.fill` | `selector`, `value` | Confirmation | Phase 4 |
-| `browser.screenshot` | `url` or `selector`, `fullPage` | PNG bytes (stored to scratchpad) | Phase 4 |
-| `browser.pdf` | `url` | PDF bytes (stored to scratchpad) | Phase 4 |
+| `browser_open` | `url` | Page text/markdown | Phase 3 |
+| `browser_select` | `selector` (CSS), `attribute` (optional) | Selected element text | Phase 3 |
+| `browser_click` | `selector` | Confirmation + new page state | Phase 4 |
+| `browser_fill` | `selector`, `value` | Confirmation | Phase 4 |
+| `browser_screenshot` | `url` or `selector`, `fullPage` | PNG bytes (stored to scratchpad) | Phase 4 |
+| `browser_pdf` | `url` | PDF bytes (stored to scratchpad) | Phase 4 |
 
 **Use cases:**
-- **UC1 (web→PPTX):** `browser.open` + `browser.select` to extract content from JS-rendered pages
-- **UC2 (image review):** `browser.screenshot` for visual verification of pages
+- **UC1 (web→PPTX):** `browser_open` + `browser_select` to extract content from JS-rendered pages
+- **UC2 (image review):** `browser_screenshot` for visual verification of pages
 
-### 13.2 Document Tools (`files.read_*`, `files.write_*`)
+### 13.2 Document Tools (`files_read_*`, `files_write_*`)
 
 **Goal:** Read and write Office documents. Two approaches: **Markdown-first** (recommended for LLM generation) and **Direct API** (fallback).
 
@@ -1136,7 +1135,7 @@ The following use cases drive tool design and are referenced throughout this sec
 - **Flexmark** (JVM) — parses Markdown AST for custom rendering
 - **Apache POI** (JVM) — direct DOCX/PPTX construction (fallback)
 - **Apache PDFBox** (JVM) — direct PDF generation
-- **Playwright** (external, already required for `browser.*`) — HTML → PDF
+- **Playwright** (external, already required for `browser_*`) — HTML → PDF
 
 #### Markdown-First Approach (Recommended)
 
@@ -1158,13 +1157,13 @@ Content → Markdown → [Pandoc] → DOCX/PPTX
 
 | Tool | Args | Output | Phase |
 |---|---|---|---|
-| `files.write_markdown` | `path`, `content` | Saved `.md` file | Phase 3 |
-| `files.markdown_to_docx` | `path`, `template` (optional) | DOCX file | Phase 3 |
-| `files.markdown_to_pptx` | `path`, `template` (optional) | PPTX file | Phase 3 |
-| `files.markdown_to_pdf` | `path` | PDF file | Phase 3 |
-| `files.read_pdf_to_markdown` | `path`, `enrich_images` (default true) | Path to cached `<doc>.md` | Phase 3 (done) |
-| `files.read_docx_to_markdown` | `path`, `enrich_images` (default true) | Path to cached `<doc>.md` | Phase 3 (done) |
-| `files.read_pptx_to_markdown` | `path`, `enrich_images` (default true) | Path to cached `<doc>.md` | Phase 3 (done) |
+| `files_write_markdown` | `path`, `content` | Saved `.md` file | Phase 3 |
+| `files_markdown_to_docx` | `path`, `template` (optional) | DOCX file | Phase 3 |
+| `files_markdown_to_pptx` | `path`, `template` (optional) | PPTX file | Phase 3 |
+| `files_markdown_to_pdf` | `path` | PDF file | Phase 3 |
+| `files_read_pdf_to_markdown` | `path`, `enrich_images` (default true) | Path to cached `<doc>.md` | Phase 3 (done) |
+| `files_read_docx_to_markdown` | `path`, `enrich_images` (default true) | Path to cached `<doc>.md` | Phase 3 (done) |
+| `files_read_pptx_to_markdown` | `path`, `enrich_images` (default true) | Path to cached `<doc>.md` | Phase 3 (done) |
 
 **Markdown slide format for PPTX:**
 ```markdown
@@ -1187,16 +1186,16 @@ title: Q3 2024 Results
 
 **Design notes:**
 - All document tools respect `PathSandbox` checks (workspace-scoped paths only).
-- `files.read_*` outputs plain text for LLM consumption; original file remains in workspace.
+- `files_read_*` outputs plain text for LLM consumption; original file remains in workspace.
 - Pandoc is an optional external dependency; graceful fallback to Flexmark + POI if unavailable.
 - Templates (`.docx`, `.pptx`) can be stored in workspace for branded output.
 
 **Use cases:**
-- **UC1 (web→PPTX):** `browser.open` → `llm.summarize` → `files.write_markdown` → `files.markdown_to_pptx`
-- **UC2 (image→DOCX):** `vision.describe` → `files.write_markdown` → `files.markdown_to_docx`
-- **UC3 (audio→PPTX):** `audio.transcribe` → `llm.summarize` → `files.write_markdown` → `files.markdown_to_pptx`
+- **UC1 (web→PPTX):** `browser_open` → `llm_summarize` → `files_write_markdown` → `files_markdown_to_pptx`
+- **UC2 (image→DOCX):** `vision_describe` → `files_write_markdown` → `files_markdown_to_docx`
+- **UC3 (audio→PPTX):** `audio_transcribe` → `llm_summarize` → `files_write_markdown` → `files_markdown_to_pptx`
 
-### 13.3 Vision Tools (`vision.*`)
+### 13.3 Vision Tools (`vision_*`)
 
 **Goal:** Extract structured descriptions from images.
 
@@ -1204,15 +1203,15 @@ title: Q3 2024 Results
 
 | Tool | Args | Output | Phase |
 |---|---|---|---|
-| `vision.describe` | `path` (image file in workspace) | Structured description | Phase 4 |
-| `vision.extract_text` | `path` | OCR text | Phase 4 (uses LLM or Tesseract) |
+| `vision_describe` | `path` (image file in workspace) | Structured description | Phase 4 |
+| `vision_extract_text` | `path` | OCR text | Phase 4 (uses LLM or Tesseract) |
 
 **Design notes:**
 - Images must be in the workspace (PathSandbox check applies).
 - Tool reads image bytes, base64-encodes, sends to LLM with prompt: *"Describe this image in detail..."*
-- Output is plain text suitable for downstream `files.write_docx` or `memory.set`.
+- Output is plain text suitable for downstream `files_write_docx` or `memory_set`.
 
-### 13.4 Audio Tools (`audio.*`)
+### 13.4 Audio Tools (`audio_*`)
 
 **Goal:** Transcribe audio files to text.
 
@@ -1220,10 +1219,10 @@ title: Q3 2024 Results
 
 | Tool | Args | Output | Phase |
 |---|---|---|---|
-| `audio.transcribe` | `path`, `language` (optional) | Transcribed text | Phase 4 |
+| `audio_transcribe` | `path`, `language` (optional) | Transcribed text | Phase 4 |
 
 **Use case:**
-- **UC3 (audio→PPTX):** `audio.transcribe` → `llm.summarize` → `files.write_pptx`
+- **UC3 (audio→PPTX):** `audio_transcribe` → `llm_summarize` → `files_write_pptx`
 
 **Options:**
 - **Option A (subprocess):** Call `whisper` CLI if installed on host. Graceful degradation if missing.
@@ -1232,9 +1231,9 @@ title: Q3 2024 Results
 
 **Recommendation:** Implement Option A first (subprocess with detection), add cloud fallback later.
 
-### 13.5 Web Tools (`web.*`) — Deprecated in favor of `browser.*`
+### 13.5 Web Tools (`web_*`) — Deprecated in favor of `browser_*`
 
-The original `web.fetch` using Jsoup is superseded by `browser.open`. Jsoup cannot render SPAs or execute JavaScript. Browser tools cover all static + dynamic cases.
+The original `web_fetch` using Jsoup is superseded by `browser_open`. Jsoup cannot render SPAs or execute JavaScript. Browser tools cover all static + dynamic cases.
 
 ---
 
@@ -1244,17 +1243,48 @@ Noted explicitly to avoid scope creep:
 
 - **Progress events** for long-running tools (`─ progress: N% · ...` per FTRD §10 envelope spec) — no Phase 2 tool is long-running.
 - **`$last`/`$1`/`$2` general-purpose output-capture variables** (FTRD §10) — automatic scratchpad storage (§4.7) covers the primary chaining use case: every result already carries a `$scratch/` ref. General-purpose named capture slots remain deferred.
-- **`commit()` tool** (FTRD §10) — sensitive operations remain inline in `run()` with permission checks.
+- **`commit()` tool** (FTRD §10) — sensitive operations remain guarded by their existing permission checks.
 - **Cross-session memory** — `MemoryStore` trait is ready for it but Phase 6.
 - **Context summarization on truncation** — Phase 5.
-- **RAG / proactive file injection** — Phase 5; files enter context only via explicit `files.read` in Phase 2.
-- **Cloud LLM provider routing** for `llm.*` tools — Phase 3+ once cloud providers exist.
-- **Native function-call message role** — Phase 3+ behind a `nativeFunctionCalling: Boolean` per-provider flag.
-- **Office document tools** (`files.read_docx_to_markdown`, `files.write_pptx`, etc.) — Phase 3 (see §13.2).
-- **Browser automation** (`browser.*`) — Phase 3–5 (see §13.1).
-- **Vision tools** (`vision.*`) — Phase 4 (see §13.3).
-- **Audio transcription** (`audio.*`) — Phase 4 (see §13.4).
+- **RAG / proactive file injection** — Phase 5; files enter context only via explicit `files_read` in Phase 2.
+- **Cloud LLM provider routing** for `llm_*` tools — Phase 3+ once cloud providers exist.
+- ~~**Native function-call message role**~~ — implemented as the sole model-facing tool transport; assistant calls and `role=tool` results are persisted with call IDs.
+- **Office document tools** (`files_read_docx_to_markdown`, `files_write_pptx`, etc.) — Phase 3 (see §13.2).
+- **Browser automation** (`browser_*`) — Phase 3–5 (see §13.1).
+- **Vision tools** (`vision_*`) — Phase 4 (see §13.3).
+- **Audio transcription** (`audio_*`) — Phase 4 (see §13.4).
 - **Packaging** (`jlink`, `jpackage`) — Phase 5.
+
+---
+
+## 15. History and Post-implementation Learnings
+
+### Text protocol experiment
+
+The Phase 2 implementation intentionally used a free-form `run(command="...")` envelope. That choice targeted the local-model ecosystem available at the time and retained a compact command index, progressive `help`, and a Unix-inspired execution/presentation split. The original design also deferred native function calling until cloud-provider integration.
+
+The first comparative cloud evaluation in October 2026 exposed a transport-level confound. Local Qwen through LM Studio generally followed the prompt convention, while GLM-5.3 through Valar emitted several learned tool-call dialects: tagged command text, direct `files_*` calls, JSON calls naming individual functions, and JSON calls wrapping the old `run` command. Shared and shuffled sessions amplified the mismatch as prior malformed output accumulated in context. Tool formatting failures then appeared as answer-quality or judge failures.
+
+### Decision and retained design
+
+Agentica now uses provider-native structured tool calls for both local and cloud providers, with one generated function per registered command and no production text fallback. The text grammar and `run` wrapper are not treated as a model ABI. The durable parts of the earlier design remain:
+
+- canonical `family_verb` identifiers, with family and verb retained as structured metadata, and a single command registry;
+- the `validate → execute → render` tool lifecycle;
+- path sandboxing and permission coordination;
+- scratchpad references and substitution;
+- compact result envelopes, overflow handling, and error guidance;
+- progressive discovery through the native `help` function.
+
+The main learning is that command-layer semantics and model-facing transport are separate concerns. A compact, discoverable command architecture remains useful, but its transport should match the structured interface on which current models and serving stacks are trained. Evaluation harnesses must also distinguish protocol failures from answer-quality failures.
+
+### Source reference
+
+The surviving mirror of the original Manus backend-lead post is:
+
+https://gist.github.com/thoroc/973bef1770387e1986876ab6c6d20947
+
+The post motivates a compact command layer and execution/presentation separation; it does not require parsing tool calls from unrestricted assistant text.
 
 ---
 

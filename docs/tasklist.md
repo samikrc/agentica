@@ -71,14 +71,14 @@ Goal: replace the Phase 1 single-call loop with a safe plan→act→observe agen
 *`CommandAst`, `Tokenizer`, `Tool` trait, `PathSandbox`, `SessionScratchpad`, `CommandRegistry`, `VirtualShell`, `Presentation`*
 
 - [x] Implement `CommandAst`: `case class Command(family, verb, args: Map[String, String])`.
-- [x] Implement `Tokenizer`: hand-written `family.verb key=val` parser with quoted-string and escaped-quote support; return `Right(Command)` or `Left(ParseError)`.
+- [x] Implement `Tokenizer`: hand-written `family_verb key=val` parser with quoted-string and escaped-quote support; return `Right(Command)` or `Left(ParseError)`.
 - [x] Implement `Tool[I,O]` trait: `validate / execute / render` pipeline; independently testable per stage.
 - [x] Implement `PathSandbox` utility: resolve `path=` args against `session.rootPath`, reject if result escapes sandbox; used by all file-touching tools.
 - [x] Implement `SessionScratchpad`: session-scoped in-memory content cache, path-keyed, staleness check (`lastModifiedTime` comparison), LRU eviction (max 20 entries); `store()`, `get()`, `isStale()`.
 - [x] Hold one `SessionScratchpad` per active session in `BackendServer` (`TrieMap[sessionId, SessionScratchpad]`); remove on session delete.
 - [x] Add `scratchpad: SessionScratchpad` reference to `ExecutionContext`; also carries `rootPath`, `traceId`, `sessionId`, `scopeStore`.
 - [x] Implement `CommandRegistry`: `dispatch()`, `helpIndex()`, `helpFor()`, `allSchemas()`; register all tools here at startup.
-- [x] Add `help` command (handled directly in `CommandRegistry`, not a `Tool[I,O]`): `help` / `help <family>` / `help <family.verb>`; output in `AgentResponse` envelope.
+- [x] Add `help` command (handled directly in `CommandRegistry`, not a `Tool[I,O]`): `help` / `help <family>` / `help <family_verb>`; output in `AgentResponse` envelope.
 - [x] Implement `VirtualShell`: `execute(rawCommand, ctx)` → `Tokenizer` → `CommandRegistry.dispatch` → `Presentation.render`.
 - [x] Implement `Presentation` layer: `BODY_BUDGET_CHARS = 8000` constant; route oversized bodies to `SessionScratchpad`; emit `try` suggestions with scratchpad ref; binary content → `<binary N KB mime/type>` placeholder.
 - [x] Add substitution pass in `VirtualShell` (before dispatch): resolve `$scratch/<path>` refs in any arg value to full `String` content from `SessionScratchpad`.
