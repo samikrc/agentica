@@ -102,7 +102,7 @@ class Routes(
 
     /** Serves the browser UI entrypoint. */
     @cask.get("/index.html")
-    def indexHtml(token: String = "", request: Request): Response[Response.Data] =
+    def indexHTML(token: String = "", request: Request): Response[Response.Data] =
         serveFile("index.html")
 
     /** Serves stylesheet assets from the UI root. */
@@ -136,7 +136,7 @@ class Routes(
      *  @param r  Original response.
      *  @return   Response containing the required CORS headers.
      */
-    private def withCors(r: Response[Response.Data]): Response[Response.Data] =
+    private def withCORS(r: Response[Response.Data]): Response[Response.Data] =
         r.copy(headers = r.headers ++ corsHeaders)
 
     /** 
@@ -154,9 +154,9 @@ class Routes(
         {
             Auth.validate(request) match
             {
-                case Left(err) => withCors(Response(s"""{"error":"$err"}""", statusCode = 401,
+                case Left(err) => withCORS(Response(s"""{"error":"$err"}""", statusCode = 401,
                                 headers = Seq("Content-Type" -> "application/json")))
-                case Right(_)  => withCors(body)
+                case Right(_)  => withCORS(body)
             }
         }
     }
@@ -209,7 +209,7 @@ class Routes(
         }
         else
         {
-            withCors(Response("""{"status":"ok"}""", headers = Seq("Content-Type" -> "application/json")))
+            withCORS(Response("""{"status":"ok"}""", headers = Seq("Content-Type" -> "application/json")))
         }
     }
 
@@ -499,7 +499,7 @@ class Routes(
                             }
                             sseQueues.remove(runId)
                         }
-                        withCors(Response(
+                        withCORS(Response(
                             writable,
                             headers = Seq(
                                 "Content-Type"      -> "text/event-stream",

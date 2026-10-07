@@ -75,6 +75,14 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
         {
             case None =>
                 Left(ArgError("Missing required argument: path", Some("path")))
+            case Some(rawPath) if !rawPath.toLowerCase.endsWith(".pdf") =>
+                val mdPath = if rawPath.toLowerCase.endsWith(".md") then rawPath else rawPath + ".md"
+                Left(ArgError(
+                    message = s"files_read_pdf_to_markdown only accepts .pdf files; '$rawPath' is not a PDF",
+                    arg     = Some("path"),
+                    hints   = List("Use files_read to read the already-converted Markdown file."),
+                    trySuggestions = List(s"""files_read path=\"$mdPath\"""")
+                ))
             case Some(rawPath) =>
                 val enrichImages = args.getOrElse("enrich_images", "true").toLowerCase match
                 {

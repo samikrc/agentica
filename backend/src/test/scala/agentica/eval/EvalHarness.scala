@@ -90,7 +90,9 @@ case class ProviderManifest(
     questionTimeoutMs:  Long,
     pdfTimeoutMs:       Long,
     reuseMarkdownCache: Boolean,
-    markdownCache:      Option[MarkdownCacheInfo] = None
+    markdownCache:      Option[MarkdownCacheInfo] = None,
+    startTimestamp:     String = Instant.now().toString,
+    endTimestamp:       Option[String] = None
 )
 
 /**
@@ -404,6 +406,17 @@ object JudgeVerdict:
     }
 
 /**
+ *  Parsed judge response, including optional item-level counts for list-style questions.
+ */
+case class JudgeResult(
+    verdict:          Option[JudgeVerdict],
+    rationale:        String,
+    correctItems:     Option[Int] = None,
+    referenceItems:   Option[Int] = None,
+    hallucinatedItems: Option[Int] = None
+)
+
+/**
  *  Outcome of a whole provider/session-type sweep.
  */
 enum SweepStatus:
@@ -438,6 +451,7 @@ object SweepStatus:
  *  @param judgeStatus      Outcome of the judging step for this answer.
  *  @param judgeVerdict     Categorical verdict when [[judgeStatus]] is [[JudgeStatus.Judged]].
  *  @param attempts         Number of QA attempts made for this question (1 or 2 after a timeout retry).
+ *  @param judgeAttempts    Number of judge attempts made for this answer (1 or 2 after a judge-error retry).
  */
 case class AnswerResult(
     question:         String,
@@ -452,7 +466,8 @@ case class AnswerResult(
     status:           AnswerStatus,
     judgeStatus:      JudgeStatus,
     judgeVerdict:     Option[JudgeVerdict],
-    attempts:         Int
+    attempts:         Int,
+    judgeAttempts:    Int
 )
 
 /**
@@ -602,7 +617,7 @@ object EvalHarness
      */
     private class StubSessionStore extends SessionStore(() => null)
     {
-        override def updateLastResponseId(id: String, responseId: String): Unit = ()
+        override def updateLastResponseID(id: String, responseId: String): Unit = ()
     }
 
     /**
@@ -1056,23 +1071,35 @@ object EvalHarness
         predictedAnswer: String,
         judgeProvider:   LLMProvider,
         timeoutMs:       Long = 60000L
-    ): (Option[JudgeVerdict], String, JudgeStatus) =
+    ): (Option[JudgeVerdict], String, JudgeStatus, Int) =
     {
         val prompt =
             s"""You are an expert evaluator. Compare the predicted answer to the reference answer for the given question.
                |Judge how factually correct and complete the predicted answer is, based only on the reference.
+               |
+               |For list-style or multi-item answers, extract the factual items from both the reference and predicted answers,
+               |then count:
+               |- correct_items: reference items that are present (semantically, not verbatim) in the predicted answer
+               |- reference_items: total distinct items in the reference answer
+               |- hallucinated_items: predicted items that are not present in the reference answer
+               |
+               |If the question asks for an exact value, phrase, name, or title, treat the predicted answer as correct when
+               |the exact reference answer appears verbatim somewhere within it. Surrounding context (e.g., added company
+               |name or location) must not lower the verdict below correct, unless it introduces a factual contradiction.
                |
                |Question: $question
                |Reference Answer: $referenceAnswer
                |Predicted Answer: $predictedAnswer
                |
                |Return ONLY a JSON object in this exact format:
-               |{"verdict": "correct", "rationale": "Brief explanation"}
+               |{"verdict": "partial", "rationale": "Brief explanation", "correct_items": 0, "reference_items": 0, "hallucinated_items": 0}
                |
                |The "verdict" field must be exactly one of:
                |- "correct": fully correct and complete
                |- "partial": partially correct or missing important details
                |- "wrong": incorrect, unsupported, or hallucinated
+               |
+               |For non-list answers, set correct_items, reference_items, and hallucinated_items to 0.
                |""".stripMargin
 
         val systemMsg = Message(
@@ -1100,7 +1127,7 @@ object EvalHarness
             attempt += 1
             result = judgeAttempt(systemMsg, userMsg, judgeProvider, timeoutMs, attempt)
         }
-        result
+        (result._1, result._2, result._3, attempt)
     }
 
     /** Total judge attempts per answer; a retry absorbs transient engine/protocol errors. */
@@ -1155,8 +1182,9 @@ object EvalHarness
         {
             val responseText = future.get(timeoutMs, TimeUnit.MILLISECONDS)
             log(s"Judge call complete attempt=$attempt elapsed=${System.currentTimeMillis() - t0}ms")
-            val (verdict, rationale) = parseJudgeResponse(responseText)
-            (verdict, rationale, if verdict.isDefined then JudgeStatus.Judged else JudgeStatus.JudgeError)
+            val JudgeResult(verdict, rationale, correctItems, referenceItems, hallucinatedItems) = parseJudgeResponse(responseText)
+            val (finalVerdict, finalRationale) = applyItemRubric(verdict, rationale, correctItems, referenceItems, hallucinatedItems)
+            (finalVerdict, finalRationale, if finalVerdict.isDefined then JudgeStatus.Judged else JudgeStatus.JudgeError)
         }
         catch
         {
@@ -1172,12 +1200,13 @@ object EvalHarness
     }
 
     /**
-     *  Parses the judge JSON response into (verdict, rationale).
-     *  Reads the categorical `verdict` field; falls back to bucketing a numeric
-     *  `score` field for judges that ignore the requested format.  Returns
-     *  `None` verdict only when nothing usable was returned.
+     *  Parses the judge JSON response into a [[JudgeResult]].
+     *  Reads the categorical `verdict` field, optional numeric `score` fallback,
+     *  and optional item-level counts (`correct_items`, `reference_items`,
+     *  `hallucinated_items`). Returns `None` verdict only when nothing usable
+     *  was returned.
      */
-    private def parseJudgeResponse(text: String): (Option[JudgeVerdict], String) =
+    private def parseJudgeResponse(text: String): JudgeResult =
     {
         try
         {
@@ -1191,19 +1220,63 @@ object EvalHarness
                         .flatMap(v => JudgeVerdict.parse(v.str))
                         .orElse(json.obj.get("score").map(s => JudgeVerdict.fromScore(s.num)))
                     val rationale = json.obj.get("rationale").map(_.str).getOrElse("No rationale provided")
+                    def intOpt(key: String): Option[Int] =
+                        json.obj.get(key).flatMap {
+                            case ujson.Num(n) => Some(n.toInt)
+                            case ujson.Str(s) => scala.util.Try(s.toInt).toOption
+                            case _            => None
+                        }
                     verdict match
                     {
-                        case Some(v) => (Some(v), rationale)
-                        case None    => (None, s"Unrecognized judge response: $rationale")
+                        case Some(v) =>
+                            JudgeResult(
+                                verdict           = Some(v),
+                                rationale       = rationale,
+                                correctItems     = intOpt("correct_items"),
+                                referenceItems   = intOpt("reference_items"),
+                                hallucinatedItems = intOpt("hallucinated_items")
+                            )
+                        case None =>
+                            JudgeResult(None, s"Unrecognized judge response: $rationale")
                     }
                 case None =>
-                    (None, s"No JSON object found in judge response: $text")
+                    JudgeResult(None, s"No JSON object found in judge response: $text")
             }
         }
         catch
         {
             case t: Throwable =>
-                (None, s"Failed to parse judge response: ${t.getMessage}. Raw: $text")
+                JudgeResult(None, s"Failed to parse judge response: ${t.getMessage}. Raw: $text")
+        }
+    }
+
+    /**
+     *  Applies an item-level scoring rubric for multi-item answers.
+     *  When the reference answer contains 3+ distinct items, the predicted answer
+     *  is considered correct if at least 3 reference items are present and no
+     *  hallucinated items are introduced.
+     */
+    private def applyItemRubric(
+        rawVerdict:       Option[JudgeVerdict],
+        rationale:        String,
+        correctItems:     Option[Int],
+        referenceItems:   Option[Int],
+        hallucinatedItems: Option[Int]
+    ): (Option[JudgeVerdict], String) =
+    {
+        (referenceItems, correctItems, hallucinatedItems) match
+        {
+            case (Some(ref), Some(corr), Some(hall)) if ref >= 3 =>
+                if corr >= 3 && hall == 0 then
+                    (Some(JudgeVerdict.Correct), s"Item-based: $corr/$ref correct, 0 hallucinated. $rationale")
+                else if corr > 0 && hall == 0 then
+                    (Some(JudgeVerdict.PartiallyCorrect), s"Item-based: $corr/$ref correct, 0 hallucinated. $rationale")
+                else if corr > 0 then
+                    (Some(JudgeVerdict.PartiallyCorrect), s"Item-based: $corr/$ref correct, $hall hallucinated. $rationale")
+                else
+                    (Some(JudgeVerdict.Wrong), s"Item-based: 0/$ref correct. $rationale")
+            case _ =>
+                (rawVerdict, rationale)
         }
     }
 
@@ -1231,7 +1304,8 @@ object EvalHarness
                 "verdict"         -> a.judgeVerdict.map(v => Str(v.label)).getOrElse(ujson.Null),
                 "status"          -> Str(a.status.label),
                 "judgeStatus"     -> Str(a.judgeStatus.label),
-                "attempts"        -> Num(a.attempts)
+                "attempts"        -> Num(a.attempts),
+                "judgeAttempts"   -> Num(a.judgeAttempts)
             )
         }*)
         Files.writeString(sweepDir.resolve("questions.json"), json.render(indent = 2))
@@ -1256,8 +1330,8 @@ object EvalHarness
             "judgeBaseURL"      -> manifest.judgeBaseURL.map(Str(_)).getOrElse(ujson.Null),
             "judgeModel"        -> manifest.judgeModel.map(Str(_)).getOrElse(ujson.Null),
             "sessionTypes"      -> Arr(manifest.sessionTypes.map(Str(_))*),
-            "questionTimeoutMs" -> Num(manifest.questionTimeoutMs),
-            "pdfTimeoutMs"      -> Num(manifest.pdfTimeoutMs),
+            "questionTimeoutMs" -> Num(manifest.questionTimeoutMs.toDouble),
+            "pdfTimeoutMs"      -> Num(manifest.pdfTimeoutMs.toDouble),
             "reuseMarkdownCache" -> Bool(manifest.reuseMarkdownCache),
             "markdownCache"     -> manifest.markdownCache.map { c =>
                 Obj(
@@ -1267,7 +1341,9 @@ object EvalHarness
                     "pdfSha256" -> Str(c.pdfSha256),
                     "source"    -> Str(c.source)
                 )
-            }.getOrElse(ujson.Null)
+            }.getOrElse(ujson.Null),
+            "startTimestamp"    -> Str(manifest.startTimestamp),
+            "endTimestamp"      -> manifest.endTimestamp.map(Str(_)).getOrElse(ujson.Null)
         )
         Files.writeString(providerDir.resolve("manifest.json"), json.render(indent = 2))
     }
@@ -1320,7 +1396,8 @@ object EvalHarness
             "errorCount"        -> Num(answers.count(_.status == AnswerStatus.Error)),
             "judgeTimeoutCount" -> Num(answers.count(_.judgeStatus == JudgeStatus.JudgeTimeout)),
             "judgeErrorCount"   -> Num(answers.count(_.judgeStatus == JudgeStatus.JudgeError)),
-            "retriedCount"      -> Num(answers.count(_.attempts > 1)),
+            "retryCount"        -> Num(answers.count(_.attempts > 1)),
+            "judgeRetryCount"   -> Num(answers.count(_.judgeAttempts > 1)),
             "totalToolCounts"   -> Obj.from(totalToolCounts.map { case (k, v) => k -> Num(v) }),
             "questionsFile"     -> Str("questions.json")
         )
@@ -1359,12 +1436,12 @@ object EvalHarness
 
     /**
      *  Computes the content-addressed cache entry for one PDF and conversion
-     *  identity (VLM endpoint and model).  The key covers the conversion
-     *  pipeline version, image-enrichment behavior, and the PDF bytes, so
-     *  different documents or converter settings never collide.
+     *  identity (VLM model).  The key covers the conversion pipeline version,
+     *  image-enrichment behavior, and the PDF bytes, so different documents or
+     *  converter settings never collide.
      *
      *  @param pdfPath   Source PDF whose bytes are hashed.
-     *  @param identity  Converter identity string (e.g. `vlmBaseURL|vlmModel`).
+     *  @param identity  Converter identity string (e.g. the VLM model name).
      *  @return          Tuple of (cache file path, cache key, PDF SHA-256).
      */
     private[eval] def markdownCacheEntry(pdfPath: Path, identity: String): (Path, String, String) =
@@ -1403,7 +1480,7 @@ object EvalHarness
      *  @param beforeJudge          Hook executed between answer generation and judging;
      *                              used by config-based runs for LM-Studio model unloading.
      *  @param reuseMarkdownCache   Whether a matching content-addressed Markdown cache entry may be reused.
-     *  @param markdownCacheIdentity Stable VLM identity included in the conversion cache key.
+     *  @param markdownCacheIdentity Stable VLM model name included in the conversion cache key.
      */
     case class EvalProviderBundle(
         label:                String,
@@ -1463,7 +1540,7 @@ object EvalHarness
             }
             bundle.metadata.foreach { m => saveProviderManifest(providerDir, m) }
 
-            try
+            val bundleResults = try
             {
                 val llm = bundle.llm
                 val vlm = bundle.vlm
@@ -1535,14 +1612,14 @@ object EvalHarness
                     {
                         log(s"--- Judging: ${bundle.label} / ${sessionType.label} (${qaPairs.length} answers) ---")
                         val answerResults = qaPairs.map { case (q, tr) =>
-                            val (verdict, rationale, jStatus) =
+                            val (verdict, rationale, jStatus, judgeAttempts) =
                                 if tr.status == AnswerStatus.Answered then
                                     judgeAnswer(q.question, q.referenceAnswer, tr.actual, bundle.judge, questionTimeoutMs)
                                 else
-                                    (None, s"Not judged — agent turn ${tr.status.label}", JudgeStatus.Skipped)
+                                    (None, s"Not judged — agent turn ${tr.status.label}", JudgeStatus.Skipped, 0)
                             println(s"    Verdict: ${verdict.map(_.label).getOrElse("n/a")} — $rationale")
                             val score = verdict.map(JudgeVerdict.score).getOrElse(0.0)
-                            AnswerResult(q.question, q.category, q.referenceAnswer, tr.actual, tr.thoughts, tr.toolCalls, score, rationale, tr.toolCounts, tr.status, jStatus, verdict, tr.attempts)
+                            AnswerResult(q.question, q.category, q.referenceAnswer, tr.actual, tr.thoughts, tr.toolCalls, score, rationale, tr.toolCounts, tr.status, jStatus, verdict, tr.attempts, judgeAttempts)
                         }
 
                         saveQuestions(sweepDir, answerResults)
@@ -1570,6 +1647,12 @@ object EvalHarness
                         EvalResult(bundle.label, st.label, providerDir.resolve(pdfName), EmptyMarkdownScore, Nil, status, msg)
                     }
             }
+
+            // Record the sweep end timestamp in the provider manifest.
+            val endTs = Instant.now().toString
+            bundle.metadata.foreach { m => saveProviderManifest(providerDir, m.copy(endTimestamp = Some(endTs))) }
+
+            bundleResults
         }
 
         log(s"Eval run complete. Root work directory: $rootWorkDir")
@@ -1624,7 +1707,7 @@ object EvalHarness
                     reuseMarkdownCache = config.reuseMarkdownCache
                 )),
                 reuseMarkdownCache   = config.reuseMarkdownCache,
-                markdownCacheIdentity = s"${config.vlmBaseURL.getOrElse(config.llmBaseURL)}|${config.vlmModel.getOrElse(config.llmModel)}",
+                markdownCacheIdentity = config.vlmModel.getOrElse(config.llmModel),
                 beforeJudge          = () => {
                     if LMStudioClient.isLocal(judgeBaseURL) then
                     {

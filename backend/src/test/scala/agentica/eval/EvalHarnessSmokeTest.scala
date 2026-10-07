@@ -214,7 +214,7 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         val summary = ujson.read(Files.readString(summaryPath))
         assert(summary.obj("timeoutCount").num == 1.0, s"expected timeoutCount=1 in $summaryPath")
         assert(summary.obj("judgedCount").num == 0.0, s"expected judgedCount=0 in $summaryPath")
-        assert(summary.obj("retriedCount").num == 1.0, s"expected retriedCount=1 in $summaryPath")
+        assert(summary.obj("retryCount").num == 1.0, s"expected retryCount=1 in $summaryPath")
     }
 
     test("Judge timeouts are reported distinctly from answer failures") {

@@ -16,13 +16,19 @@ class ScaladocCoverageTest extends AnyFunSuite
 
     /**
      *  Returns every Scala source file below a source root.
+     *  Skips generated/build directories such as `.scala-build`, `.bloop`, `.metals`, and `target`.
      *  @param root  Source directory to traverse recursively.
      *  @return      Scala source paths below `root`.
      */
     private def scalaFiles(root: Path): List[Path] =
     {
+        val excluded = Set(".scala-build", ".bloop", ".metals", ".bsp", ".idea", "target")
         val stream = Files.walk(root)
-        try stream.iterator().asScala.filter(path => Files.isRegularFile(path) && path.toString.endsWith(".scala")).toList
+        try stream.iterator().asScala
+            .filter(path => Files.isRegularFile(path) && path.toString.endsWith(".scala"))
+            .filter(path => path.getParent != null &&
+                !path.iterator().asScala.map(_.toString).exists(excluded.contains))
+            .toList
         finally stream.close()
     }
 

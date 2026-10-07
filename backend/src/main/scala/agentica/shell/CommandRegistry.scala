@@ -63,12 +63,14 @@ class CommandRegistry
     {
         tool.validate(args) match
         {
-            case Left(ArgError(msg, arg)) =>
+            case Left(ArgError(msg, arg, hints, trySuggestions)) =>
                 val argHint = arg.map(a => s"Offending argument: '$a'.").getOrElse("")
                 ToolResult(
                     status = ToolStatus.Err(
-                        code    = ErrorCode.InvalidArgs,
-                        message = s"$msg $argHint".trim
+                        code           = ErrorCode.InvalidArgs,
+                        message        = s"$msg $argHint".trim,
+                        hints          = hints,
+                        trySuggestions = trySuggestions
                     )
                 )
             case Right(input) =>
@@ -135,13 +137,13 @@ class CommandRegistry
             val properties = ujson.Obj.from(s.args.map { a =>
                 a.name -> ujson.Obj("type" -> "string", "description" -> a.description)
             })
+            val requiredArgs = s.args.filter(_.required).map(a => ujson.Str(a.name))
             val parameters = ujson.Obj(
                 "type"       -> "object",
-                "properties" -> properties,
-                "required"   -> ujson.Arr.from(s.args.filter(_.required).map(a => ujson.Str(a.name)))
+                "properties" -> properties
             )
-            val description = s"${s.summary} Example: ${s.example}"
-            ToolSpec(s.fullName, description, parameters)
+            if requiredArgs.nonEmpty then parameters("required") = ujson.Arr.from(requiredArgs)
+            ToolSpec(s.fullName, s.summary, parameters)
         }
         val helpSpec = ToolSpec(
             name        = "help",
@@ -152,8 +154,7 @@ class CommandRegistry
                 "properties" -> ujson.Obj(
                     "topic" -> ujson.Obj("type" -> "string",
                         "description" -> "Tool family (e.g. files) or full name (e.g. files_read)")
-                ),
-                "required"   -> ujson.Arr()
+                )
             )
         )
         helpSpec +: toolSpecs
@@ -171,7 +172,7 @@ class CommandRegistry
     {
         if (name == "help")
         {
-            val args = parseArgumentsJson(argumentsJson) match
+            val args = parseArgumentsJSON(argumentsJson) match
             {
                 case Left(err)  => return Left(err)
                 case Right(map) => map
@@ -192,7 +193,7 @@ class CommandRegistry
                     }
                     else
                     {
-                        parseArgumentsJson(argumentsJson).map { args =>
+                        parseArgumentsJSON(argumentsJson).map { args =>
                             Command(name.substring(0, separatorIdx), name.substring(separatorIdx + 1), args)
                         }
                     }
@@ -201,7 +202,7 @@ class CommandRegistry
     }
 
     /** Parses a JSON object of call arguments into a string map. */
-    private def parseArgumentsJson(raw: String): Either[String, Map[String, String]] =
+    private def parseArgumentsJSON(raw: String): Either[String, Map[String, String]] =
     {
         try
         {
