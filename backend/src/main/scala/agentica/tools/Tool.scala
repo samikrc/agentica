@@ -41,10 +41,17 @@ case class CommandSchema(
 
 /**
  *  Outcome of a tool execution's validation stage.
- *  @param message  Human-readable description of what was wrong.
- *  @param arg      Name of the offending argument, if applicable.
+ *  @param message         Human-readable description of what was wrong.
+ *  @param arg               Name of the offending argument, if applicable.
+ *  @param hints             Optional hints surfaced to the model after the error.
+ *  @param trySuggestions    Optional native tool-call suggestions the model can try instead.
  */
-case class ArgError(message: String, arg: Option[String] = None)
+case class ArgError(
+    message:         String,
+    arg:             Option[String] = None,
+    hints:           List[String]   = Nil,
+    trySuggestions:  List[String]   = Nil
+)
 
 /**
  *  Closed set of tool execution status codes.

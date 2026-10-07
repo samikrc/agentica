@@ -133,11 +133,11 @@ PDF → Markdown conversion is the slowest part of an eval run (page rendering p
 The cache key is a SHA-256 over:
 
 - the SHA-256 of the PDF bytes (filename alone is **not** used),
-- the VLM base URL and model actually used for conversion,
+- the VLM model actually used for conversion,
 - the image-enrichment setting, and
 - a pipeline version constant (bumped when rendering/prompting changes).
 
-Because the key covers the PDF bytes and the converter configuration, two files that happen to share a name but differ in content — or the same file converted with a different VLM — never collide.
+Because the key covers the PDF bytes and the converter model, two files that happen to share a name but differ in content — or the same file converted with a different VLM model — never collide. The VLM endpoint URL is intentionally not part of the key, so switching between equivalent local endpoints (e.g. `localhost` vs an IP address) for the same model does not invalidate the cache.
 
 `reuseMarkdownCache` (per-provider, default `true`) controls reads only:
 

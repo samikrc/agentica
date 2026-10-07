@@ -224,7 +224,7 @@ class AgentLoop(
                     // Persist the new response ID so the next iteration (and next run) can use it.
                     llmResponse.responseId.foreach { rid =>
                         lastResponseId = Some(rid)
-                        sessionStore.updateLastResponseId(session.id, rid)
+                        sessionStore.updateLastResponseID(session.id, rid)
                     }
                     tokenAccounting.record(traceId, session.id, llmResponse)
 
@@ -308,7 +308,7 @@ class AgentLoop(
                             role          = MessageRole.Assistant,
                             content       = responseText,
                             timestamp     = "",
-                            toolCallsJson = Some(nativeCallsJson(toolCalls))
+                            toolCallsJson = Some(nativeCallsJSON(toolCalls))
                         ))
                         toolResultTurns.append(assistantTurnMsg)
 
@@ -407,7 +407,7 @@ class AgentLoop(
      *  Serialises native tool calls into the OpenAI `tool_calls` wire shape, stored on
      *  the assistant message so it can be echoed verbatim to providers on resend.
      */
-    private def nativeCallsJson(calls: List[NativeToolCall]): String =
+    private def nativeCallsJSON(calls: List[NativeToolCall]): String =
     {
         val arr: ujson.Arr = ujson.Arr.from(calls.map { c =>
             ujson.Obj(

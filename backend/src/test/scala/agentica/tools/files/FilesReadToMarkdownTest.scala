@@ -6,7 +6,7 @@ import agentica.llm.{LLMProvider, LLMResponse, ToolSpec}
 import agentica.permissions.{GrantDecision, GrantTTL, PermissionCoordinator, ScopeStore}
 import agentica.session.{MemoryStore, Session}
 import agentica.shell.SessionScratchpad
-import agentica.tools.{ErrorCode, ExecutionContext, FilesError, ToolStatus}
+import agentica.tools.{ArgError, ErrorCode, ExecutionContext, FilesError, ToolStatus}
 import org.scalatest.funsuite.AnyFunSuite
 import java.nio.file.{Files, Path, Paths}
 import java.nio.file.attribute.FileTime
@@ -224,6 +224,20 @@ class FilesReadToMarkdownTest extends AnyFunSuite
             val pageCount = PDFPageRenderer.pageCount(pdf)
             assert(content.contains("[page 1: vision enrichment skipped]"))
             assert(content.split("---", -1).length - 1 == pageCount - 1)
+        }
+    }
+
+    test("files_read_pdf_to_markdown: validate rejects non-PDF paths with a files_read redirect") {
+        FilesReadPDFToMarkdown.validate(Map("path" -> "document.md")) match
+        {
+            case Left(err) =>
+                assert(err.message.contains("only accepts .pdf files"),
+                    s"expected PDF-only error, got: ${err.message}")
+                assert(err.hints.exists(_.contains("files_read")),
+                    s"expected hint pointing to files_read, got: ${err.hints}")
+                assert(err.trySuggestions.exists(_.contains("files_read path=\"document.md\"")),
+                    s"expected try suggestion for files_read, got: ${err.trySuggestions}")
+            case Right(_) => fail("expected validation failure for a Markdown file")
         }
     }
 

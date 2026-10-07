@@ -145,7 +145,7 @@ class SessionStore(conn: () => Connection)
      *  @param id          Session identifier.
      *  @param responseId  Response ID returned by the Responses API.
      */
-    def updateLastResponseId(id: String, responseId: String): Unit =
+    def updateLastResponseID(id: String, responseId: String): Unit =
     {
         val c  = conn()
         val ps = c.prepareStatement(

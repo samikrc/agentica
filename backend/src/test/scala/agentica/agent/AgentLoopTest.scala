@@ -65,12 +65,12 @@ class AgentLoopTest extends AnyFunSuite
     }
 
     /**
-     *  SessionStore stub that accepts `updateLastResponseId` calls without touching a database.
+     *  SessionStore stub that accepts `updateLastResponseID` calls without touching a database.
      */
     private class StubSessionStore extends agentica.session.SessionStore(() => null)
     {
         val lastResponseIds: mutable.ListBuffer[(String, String)] = mutable.ListBuffer.empty
-        override def updateLastResponseId(id: String, responseId: String): Unit =
+        override def updateLastResponseID(id: String, responseId: String): Unit =
         {
             lastResponseIds += ((id, responseId))
         }
