@@ -5,6 +5,7 @@ import agentica.llm.LLMProvider
 import agentica.permissions.{PermissionCoordinator, ScopeStore}
 import agentica.session.{MemoryStore, Session}
 import agentica.shell.SessionScratchpad
+import scala.collection.immutable.ListMap
 
 // ─── Argument schema ──────────────────────────────────────────────────────────
 
@@ -98,7 +99,8 @@ enum ToolBody
  */
 case class ToolResult(
     status:   ToolStatus,
-    metadata: Map[String, String] = Map.empty,
+    // ListMap preserves insertion order so Presentation renders metadata lines predictably.
+    metadata: ListMap[String, String] = ListMap.empty,
     body:     Option[ToolBody]    = None
 )
 

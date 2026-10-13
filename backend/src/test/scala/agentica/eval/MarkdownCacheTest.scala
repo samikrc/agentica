@@ -89,13 +89,13 @@ class MarkdownCacheTest extends AnyFunSuite
 
     /** Runs one single-session sweep and returns (rootDir, results). */
     private def runSweep(
-        pdfPath:  Path,
+        docPath:  Path,
         vlm:      CountingVisionProvider,
         reuse:    Boolean,
         identity: String
     ): (Path, List[EvalResult]) =
         EvalHarness.runEvalBundles(
-            pdfPath   = pdfPath,
+            docPath   = docPath,
             questions = questions,
             bundles   = List(EvalHarness.EvalProviderBundle(
                 label                 = "cache-provider",
@@ -106,9 +106,9 @@ class MarkdownCacheTest extends AnyFunSuite
                 reuseMarkdownCache    = reuse,
                 markdownCacheIdentity = identity
             )),
-            settings          = settings,
-            pdfTimeoutMs      = 30000L,
-            questionTimeoutMs = 30000L
+            settings            = settings,
+            conversionTimeoutMs = 30000L,
+            questionTimeoutMs   = 30000L
         )
 
     test("Cache miss converts the PDF and writes a cache entry") {

@@ -237,9 +237,17 @@ class Routes(
             val title    = body.obj.get("title").map(_.str).getOrElse("New Session")
             val model    = body.obj.get("model").map(_.str).getOrElse("llama3.2")
             val rootPath = body.obj.get("rootPath").flatMap(v => if v.isNull then None else Some(v.str))
-            val session  = sessionStore.create(title, model, rootPath)
-            TraceLogger.info("-", "session_created", Map("sessionId" -> session.id))
-            Response(write(session), statusCode = 201, headers = Seq("Content-Type" -> "application/json"))
+            val allowed  = AllowedRoots.roots(settingsValue = Option(settingsStore.load().allowedRoots))
+            rootPath match
+            {
+                case Some(p) if !AllowedRoots.isAllowed(p, allowed) =>
+                    Response("""{"error":"rootPath outside allowed roots"}""", statusCode = 403,
+                        headers = Seq("Content-Type" -> "application/json"))
+                case _ =>
+                    val session = sessionStore.create(title, model, rootPath)
+                    TraceLogger.info("-", "session_created", Map("sessionId" -> session.id))
+                    Response(write(session), statusCode = 201, headers = Seq("Content-Type" -> "application/json"))
+            }
         }
     }
 

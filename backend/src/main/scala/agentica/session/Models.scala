@@ -208,6 +208,8 @@ case class Message(
  *  @param status     Outcome: [[RunStatus.Success]], [[RunStatus.Error]], or [[RunStatus.Cancelled]].
  *  @param traceId    Trace identifier linking the run to its agent turn.
  *  @param durationMs Wall-clock duration of the tool invocation in milliseconds.
+ *  @param iteration  1-based agent-loop iteration in which this call was dispatched.
+ *                    Tool calls sharing the same iteration were batched in a single LLM response.
  */
 case class ToolRun(
     id: String,
@@ -217,7 +219,8 @@ case class ToolRun(
     output: String,
     status: RunStatus,
     traceId: String,
-    durationMs: Long
+    durationMs: Long,
+    iteration: Int = 0
 ) derives ReadWriter
 
 /** A session-scoped key-value memory entry persisted in SQLite.

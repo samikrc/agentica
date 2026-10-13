@@ -4,6 +4,7 @@ import agentica.shell.{PathSandbox, Presentation, ScratchEntry}
 import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, ToolBody, ToolResult, ToolStatus}
 import agentica.tools.Tool
 import java.nio.file.{Files, NoSuchFileException, Path}
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters.*
 import scala.util.matching.Regex
 
@@ -275,7 +276,7 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                     storedAt     = now
                 )
                 val ref          = ctx.scratchpad.store(computedKey, entry)
-                val baseMetadata = Map(
+                val baseMetadata = ListMap(
                     "matches"   -> output.matches.toString,
                     "files"     -> output.files.toString,
                     "truncated" -> output.truncated.toString

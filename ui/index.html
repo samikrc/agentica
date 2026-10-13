@@ -76,6 +76,10 @@
             <input type="checkbox" id="settings-debug-mode" />
             Debug mode <span class="label-hint">(saves VLM input images next to source document)</span>
           </label>
+          <label for="settings-allowed-roots" style="margin-top:16px">Allowed workspace roots</label>
+          <input type="text" id="settings-allowed-roots" placeholder="Leave empty for your home directory" />
+          <p class="settings-hint">Session workspaces may only be created inside these directories.
+            Separate multiple paths with <code>:</code> on Linux/macOS or <code>;</code> on Windows.</p>
         </div>
         <!-- LLM tab -->
         <div class="settings-tab-pane" data-tab="llm">

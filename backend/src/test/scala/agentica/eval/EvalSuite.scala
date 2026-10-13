@@ -11,10 +11,10 @@ import org.scalatest.funsuite.AnyFunSuite
  *  Subclasses should also be annotated with `@DoNotDiscover` so they are **not**
  *  picked up by a plain `mvn test` run. Run them explicitly by selecting the suite,
  *  e.g.:
- *    mvn test -Dsuites=agentica.eval.PDFEvalTest
+ *    mvn test -Dsuites=agentica.eval.DocEvalTest
  *
  *  The provider sweep is read from a JSON config file:
- *    - `PDF_EVAL_CONFIG` system property / env var, or
+ *    - `DOC_EVAL_CONFIG` system property / env var, or
  *    - `/eval-config.json` on the test classpath.
  */
 abstract class EvalSuite extends AnyFunSuite
@@ -33,7 +33,7 @@ abstract class EvalSuite extends AnyFunSuite
             case Some(configs) => configs
             case None =>
                 assume(false,
-                    "No eval config found. Set PDF_EVAL_CONFIG or create /eval-config.json on the test classpath.")
+                    "No eval config found. Set DOC_EVAL_CONFIG or create /eval-config.json on the test classpath.")
                 Nil
         }
     }

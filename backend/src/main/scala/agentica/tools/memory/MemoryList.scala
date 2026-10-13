@@ -3,6 +3,7 @@ package agentica.tools.memory
 import agentica.session.MemoryEntry
 import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, ToolBody, ToolResult, ToolStatus}
 import agentica.tools.Tool
+import scala.collection.immutable.ListMap
 
 /**
  *  Validated input for [[MemoryList]].
@@ -90,7 +91,7 @@ object MemoryList extends Tool[MemoryListInput, MemoryListOutput]
                 }
                 ToolResult(
                     status   = ToolStatus.Ok,
-                    metadata = Map("count" -> output.entries.length.toString),
+                    metadata = ListMap("count" -> output.entries.length.toString),
                     body     = Some(ToolBody.Inline(lines))
                 )
         }

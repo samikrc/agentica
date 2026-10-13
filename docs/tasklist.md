@@ -36,6 +36,10 @@ Goal: provide a working local app that runs as a JVM backend plus browser UI.
 - [x] Remove or update stale Tauri comments in source code.
 - [ ] Make backend bind host configurable via an environment variable such as `AGENTICA_HOST`.
 - [ ] Prefer `127.0.0.1` for packaged mode and allow `0.0.0.0` for WSL/browser development.
+- [ ] Security: remove the hardcoded `"dev-token"` fallback in `Auth` — either fail closed when `AGENTICA_TOKEN`/`AGENTICA_DEV_TOKEN` are unset, or generate a random per-launch token and print it to stdout. (High priority once the app leaves local-only use; combined with the `0.0.0.0` bind this currently exposes the agent API to the LAN with a publicly-known token.)
+- [ ] Security: constrain `POST /sessions` `rootPath` — a caller can currently point the sandbox at `/` or `$HOME`, letting `files.*` tools read/write anywhere. Options: allowlist of permitted roots, restrict to paths under a configured base dir, or require explicit user confirmation for roots outside the default workspace dir.
+- [ ] Security: fix `PathSandbox` symlink escape — `resolve()` uses `normalize()` but never `toRealPath()`, so a symlink inside the workspace pointing outside passes the containment check. Re-check the real path under `root.toRealPath()` before I/O.
+- [ ] Security: SSE `?token=` leaks the master token into URLs/logs — consider a short-lived per-run token for the log/stream endpoints instead.
 - [ ] Generalize static asset serving beyond `/css/*` and `/js/*` if additional asset folders are added.
 - [ ] Decide whether launch scripts should auto-open the browser or only print the URL.
 - [ ] Add a basic smoke-test checklist for browser mode.
@@ -233,7 +237,7 @@ Goal: expand capabilities beyond chat/files with document processing, browser au
 - [x] Rename `files.read_docx` → `files.read_docx_to_markdown`; same persist + staleness + permission logic; LibreOffice availability check with structured error.
 - [x] Rename `files.read_pptx` → `files.read_pptx_to_markdown`; same persist + staleness + permission logic.
 - [x] Use separately configured VLM provider (Settings → VLM tab) for vision calls; fall back to primary LLM if VLM not configured (`ExecutionContext.vlmProvider`, built in `BackendServer.buildVLMProvider`).
-- [x] Tests: `PDFPageRendererTest` (mock `completeVision`, PDFBox rendering, one section per page, `stubMarkdown`); `FilesReadToMarkdownTest` (`.md` generation, cache hit, staleness re-generation, small-cache rejection, `enrich_images=false`, permission denied/granted, VLM-over-LLM preference, vision-unsupported error, render) with PDF/DOCX/PPTX fixtures in `src/test/resources/files/`; `PDFEvalTest` + `EvalHarness` for opt-in LLM-backed Q&A evals.
+- [x] Tests: `PDFPageRendererTest` (mock `completeVision`, PDFBox rendering, one section per page, `stubMarkdown`); `FilesReadToMarkdownTest` (`.md` generation, cache hit, staleness re-generation, small-cache rejection, `enrich_images=false`, permission denied/granted, VLM-over-LLM preference, vision-unsupported error, render) with PDF/DOCX/PPTX fixtures in `src/test/resources/files/`; `DocEvalTest` + `EvalHarness` for opt-in LLM-backed Q&A evals.
 
 #### Stage C — Free-Form Document Generation
 

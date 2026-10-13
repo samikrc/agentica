@@ -2,6 +2,7 @@ package agentica.tools.memory
 
 import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, ToolBody, ToolResult, ToolStatus}
 import agentica.tools.Tool
+import scala.collection.immutable.ListMap
 
 /**
  *  Validated input for [[MemoryGet]].
@@ -97,7 +98,7 @@ object MemoryGet extends Tool[MemoryGetInput, MemoryGetOutput]
                     case Some(v) =>
                         ToolResult(
                             status   = ToolStatus.Ok,
-                            metadata = Map("key" -> output.key),
+                            metadata = ListMap("key" -> output.key),
                             body     = Some(ToolBody.Inline(v))
                         )
                 }

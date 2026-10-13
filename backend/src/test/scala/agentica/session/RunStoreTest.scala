@@ -81,13 +81,15 @@ class RunStoreTest extends AnyFunSuite with BeforeAndAfterEach
             output     = "{\"content\":\"hello\"}",
             status     = RunStatus.Success,
             traceId    = "trace-1",
-            durationMs = 100L
+            durationMs = 100L,
+            iteration  = 2
         )
         store.insertRun(run)
         val runs = store.listRunsForSession("sess-1")
         assert(runs.size == 1)
         assert(runs.head.id == "run-1")
         assert(runs.head.tool == "files_read")
+        assert(runs.head.iteration == 2)
     }
 
     test("tokenUsageForSession returns empty list when no usage exists") {

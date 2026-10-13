@@ -9,6 +9,7 @@ import agentica.shell.{PathSandbox, Presentation}
 import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, Tool, ToolBody, ToolResult, ToolStatus}
 import java.nio.file.{Files, Paths, Path}
 import java.nio.file.attribute.BasicFileAttributes
+import scala.collection.immutable.ListMap
 
 /**
  *  Validated input for [[FilesReadDOCXToMarkdown]].
@@ -326,7 +327,7 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
                 val cacheStatus = if (output.wasRegenerated) "generated" else "cached"
                 ToolResult(
                     status   = ToolStatus.Ok,
-                    metadata = Map(
+                    metadata = ListMap(
                         "markdown_path" -> output.markdownPath,
                         "pages"         -> output.pageCount.toString,
                         "size"          -> f"${output.sizeBytes / 1024.0}%.1f KB",

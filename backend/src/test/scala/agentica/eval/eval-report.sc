@@ -11,8 +11,8 @@
  *  Or, if your working directory is `backend/`:
  *    scala src/test/scala/agentica/eval/eval-report.sc
  *
- *  The script scans `<evals-root>/pdf-eval-*` directories.  Each run folder is
- *  expected to contain one or more PDF-stem subdirectories, each with provider
+ *  The script scans `<evals-root>/doc-eval-*` directories.  Each run folder is
+ *  expected to contain one or more document-stem subdirectories, each with provider
  *  directories that hold `manifest.json` and per-session `summary.json` files.
  */
 
@@ -22,7 +22,7 @@ import scala.jdk.CollectionConverters.*
 /** Home directory of the current user. */
 val Home = sys.props("user.home")
 
-/** Root directory used to locate `pdf-eval-*` run folders.
+/** Root directory used to locate `doc-eval-*` (and legacy `pdf-eval-*`) run folders.
  *
  *  Resolves to the first command-line argument if supplied, otherwise falls
  *  back to `$AGENTICA_STATE_DIR/evals` or `~/.local/state/Agentica/evals`.
@@ -134,7 +134,7 @@ private def fmtSummary(
 ): Option[String] =
 {
     val label     = strOpt(summary, "providerLabel").getOrElse("?")
-    val pdfFile   = strOpt(summary, "pdfFile").getOrElse("?")
+    val docFile   = strOpt(summary, "docFile").orElse(strOpt(summary, "pdfFile")).getOrElse("?")
     val avg       = objNum(summary, "averageJudgeScore")
     val answered  = objNum(summary, "answeredCount").toInt
     val timeouts  = objNum(summary, "timeoutCount").toInt
@@ -192,7 +192,7 @@ private def fmtSummary(
 
     val flagStr = if flags.isEmpty then "" else flags.mkString("; ", "; ", "")
 
-    Some(f"""  $pdfFile / $label / $sessionType
+    Some(f"""  $docFile / $label / $sessionType
       |    LLM: $llm
       |    VLM: $vlm
       |    judge: $judge
@@ -226,13 +226,13 @@ private def walkFiles(path: Path): List[Path] =
     }
 }
 
-/** Sort key that orders `pdf-eval-YYYYMMDDhhmmss[-N]` runs chronologically.
+/** Sort key that orders `doc-eval-YYYYMMDDhhmmss[-N]` (or legacy `pdf-eval-*`) runs chronologically.
  *
  *  @param name Run directory name.
  *  @return     A tuple of timestamp string and optional disambiguation suffix.
  */
 private def runSortKey(name: String): (String, Int) =
-    """pdf-eval-(\d{14})(?:-(\d+))?""".r.findFirstMatchIn(name) match
+    """(?:doc|pdf)-eval-(\d{14})(?:-(\d+))?""".r.findFirstMatchIn(name) match
     {
         case Some(m) =>
             (m.group(1), Option(m.group(2)).map(_.toInt).getOrElse(0))
@@ -247,12 +247,12 @@ if !Files.exists(EvalsRoot) then
 }
 
 val runDirs = listDirs(EvalsRoot)
-    .filter(_.getFileName.toString.startsWith("pdf-eval-"))
+    .filter(n => n.getFileName.toString.startsWith("doc-eval-") || n.getFileName.toString.startsWith("pdf-eval-"))
     .sortBy(p => runSortKey(p.getFileName.toString))
 
 if runDirs.isEmpty then
 {
-    println(s"No pdf-eval-* directories found under $EvalsRoot")
+    println(s"No doc-eval-* or pdf-eval-* directories found under $EvalsRoot")
     sys.exit(0)
 }
 

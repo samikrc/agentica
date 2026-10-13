@@ -25,9 +25,9 @@ object Presentation
 {
     /**
      *  Maximum number of characters allowed in an inline body.
-     *  Fixed constant (~2000 tokens); not user-configurable.
+     *  Fixed constant (~4000 tokens); not user-configurable.
      */
-    val BODY_BUDGET_CHARS: Int = 8000
+    val BODY_BUDGET_CHARS: Int = 15000
 
     /**
      *  Separator line used between the metadata block and the body.
@@ -85,7 +85,7 @@ object Presentation
                 val sizeKb = f"${sizeBytes / 1024.0}%.1f"
                 lines += s"─ stored: $ref"
                 lines += s"─ hint: content too large for context ($sizeKb KB, $lineCount lines); use targeted tools"
-                lines += s"""─ try: files_search query="your term" path="$sourcePath\""""
+                lines += s"""─ try: files_search query="term1, term2" path="$sourcePath\""""
                 lines += s"""─ try: files_read path="$sourcePath" lines="1-50\""""
                 lines += s"""─ try: llm_summarize text="$ref\""""
         }

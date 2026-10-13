@@ -142,6 +142,11 @@ class AgentLoop(
             assembled ++ toolResultTurns.toList
         }
 
+        // Some models intermittently return finishReason=stop with reasoning but
+        // no content and no tool calls. Retry the identical call once before
+        // surfacing empty_llm_response; a persistent empty response still fails.
+        var emptyResponseRetried = false
+
         var running = true
         while (running)
         {
@@ -249,7 +254,18 @@ class AgentLoop(
                         ))
                     }
 
-                    if (toolCalls.isEmpty && responseText.trim.isEmpty)
+                    if (toolCalls.isEmpty && responseText.trim.isEmpty && !emptyResponseRetried)
+                    {
+                        emptyResponseRetried = true
+                        TraceLogger.warn(traceId, "empty_llm_response_retry", Map(
+                            "iteration"        -> iteration.toString,
+                            "finishReason"     -> llmResponse.finishReason.getOrElse("unknown"),
+                            "reasoningChars"   -> llmResponse.reasoningContent.fold(0)(_.length).toString,
+                            "completionTokens" -> llmResponse.completionTokens.toString
+                        ))
+                        // Fall through to the next iteration, which re-issues the same call.
+                    }
+                    else if (toolCalls.isEmpty && responseText.trim.isEmpty)
                     {
                         val diagnostic =
                             s"empty_llm_response finishReason=${llmResponse.finishReason.getOrElse("unknown")} " +
@@ -364,7 +380,8 @@ class AgentLoop(
                                     output     = response.text,
                                     status     = if isErr then RunStatus.Error else RunStatus.Success,
                                     traceId    = traceId,
-                                    durationMs = durMs
+                                    durationMs = durMs,
+                                    iteration  = iteration
                                 ))
                                 turnSteps.append(AgentTurnStep(
                                     stepType   = agentica.session.StepType.ToolCall,

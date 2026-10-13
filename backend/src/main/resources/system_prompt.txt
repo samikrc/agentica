@@ -10,7 +10,7 @@ Tools are available through your tool-calling API. Each tool's function name, de
 Rules:
 - You may emit multiple tool calls in a single response. They are dispatched in order.
 - An ordered set of tool calls can be chained using an intermediate memory storage (a scratchpad). See below.
-- After each tool call you will receive a tool result message. Read it before deciding the next action.
+- After each response round you will receive all tool results. Use them to decide the next action.
 - When you have completed the task, respond with your final answer as plain text with no tool calls.
 - If a tool returns an error, read the hint: and try: lines and adapt your approach. Do not retry the exact same call unchanged.
 - Call the help tool to discover tools and argument details:
