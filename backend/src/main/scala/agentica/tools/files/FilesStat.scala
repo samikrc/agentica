@@ -6,6 +6,7 @@ import agentica.tools.Tool
 import java.nio.file.{Files, NoSuchFileException}
 import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
+import scala.collection.immutable.ListMap
 
 /**
  *  Validated input for [[FilesStat]].
@@ -135,7 +136,7 @@ object FilesStat extends Tool[FilesStatInput, FilesStatOutput]
             case None =>
                 ToolResult(
                     status   = ToolStatus.Ok,
-                    metadata = Map(
+                    metadata = ListMap(
                         "path"     -> output.sourcePath,
                         "type"     -> output.fileType,
                         "size"     -> f"${output.sizeBytes / 1024.0}%.1f KB",

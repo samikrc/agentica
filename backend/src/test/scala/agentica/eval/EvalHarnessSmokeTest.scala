@@ -83,7 +83,7 @@ class EvalHarnessSmokeTest extends AnyFunSuite
               |""".stripMargin
 
         val workDir = Files.createTempDirectory("eval-harness-smoke-")
-        val pdfPath = createSmokePDF(workDir)
+        val docPath = createSmokePDF(workDir)
 
         def makeBundle(sessionTypes: List[EvalSessionType], label: String) =
             EvalHarness.EvalProviderBundle(
@@ -109,11 +109,11 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         )
 
         val (rootDir, results) = EvalHarness.runEvalBundles(
-            pdfPath           = pdfPath,
+            docPath           = docPath,
             questions         = questions,
             bundles           = bundles,
             settings          = settings,
-            pdfTimeoutMs      = 30000L,
+            conversionTimeoutMs      = 30000L,
             questionTimeoutMs = 30000L
         )
 
@@ -176,7 +176,7 @@ class EvalHarnessSmokeTest extends AnyFunSuite
     test("Timed-out agent turns are marked timeout and skipped by the judge") {
         val questions = List(EvalQuestion("What is the answer?", "42", "direct"))
         val workDir   = Files.createTempDirectory("eval-harness-timeout-")
-        val pdfPath   = createSmokePDF(workDir)
+        val docPath   = createSmokePDF(workDir)
 
         val judge  = new ScriptedLLMProvider(List("""{"verdict": "correct", "rationale": "ok"}"""))
         val bundle = EvalHarness.EvalProviderBundle(
@@ -188,11 +188,11 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         )
 
         val (rootDir, results) = EvalHarness.runEvalBundles(
-            pdfPath           = pdfPath,
+            docPath           = docPath,
             questions         = questions,
             bundles           = List(bundle),
             settings          = smokeSettings,
-            pdfTimeoutMs      = 30000L,
+            conversionTimeoutMs      = 30000L,
             questionTimeoutMs = 1000L,
             retryDelayMs      = Some(50L)
         )
@@ -220,7 +220,7 @@ class EvalHarnessSmokeTest extends AnyFunSuite
     test("Judge timeouts are reported distinctly from answer failures") {
         val questions = List(EvalQuestion("What is the answer?", "42", "direct"))
         val workDir   = Files.createTempDirectory("eval-harness-jtimeout-")
-        val pdfPath   = createSmokePDF(workDir)
+        val docPath   = createSmokePDF(workDir)
 
         val bundle = EvalHarness.EvalProviderBundle(
             label        = "judge-hangs",
@@ -231,11 +231,11 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         )
 
         val (_, results) = EvalHarness.runEvalBundles(
-            pdfPath           = pdfPath,
+            docPath           = docPath,
             questions         = questions,
             bundles           = List(bundle),
             settings          = smokeSettings,
-            pdfTimeoutMs      = 30000L,
+            conversionTimeoutMs      = 30000L,
             questionTimeoutMs = 1000L,
             retryDelayMs      = Some(50L)
         )
@@ -289,7 +289,7 @@ class EvalHarnessSmokeTest extends AnyFunSuite
     test("Transient judge engine errors are retried once and recover") {
         val questions = List(EvalQuestion("What is the answer?", "42", "direct"))
         val workDir   = Files.createTempDirectory("eval-harness-jretry-")
-        val pdfPath   = createSmokePDF(workDir)
+        val docPath   = createSmokePDF(workDir)
 
         val bundle = EvalHarness.EvalProviderBundle(
             label        = "judge-flaky",
@@ -300,11 +300,11 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         )
 
         val (_, results) = EvalHarness.runEvalBundles(
-            pdfPath           = pdfPath,
+            docPath           = docPath,
             questions         = questions,
             bundles           = List(bundle),
             settings          = smokeSettings,
-            pdfTimeoutMs      = 30000L,
+            conversionTimeoutMs      = 30000L,
             questionTimeoutMs = 30000L,
             retryDelayMs      = Some(50L)
         )
@@ -320,7 +320,7 @@ class EvalHarnessSmokeTest extends AnyFunSuite
     test("Persistent judge errors are marked judge-error after bounded attempts") {
         val questions = List(EvalQuestion("What is the answer?", "42", "direct"))
         val workDir   = Files.createTempDirectory("eval-harness-jfail-")
-        val pdfPath   = createSmokePDF(workDir)
+        val docPath   = createSmokePDF(workDir)
         val judge     = new AlwaysThrowingLLMProvider()
 
         val bundle = EvalHarness.EvalProviderBundle(
@@ -332,11 +332,11 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         )
 
         val (_, results) = EvalHarness.runEvalBundles(
-            pdfPath           = pdfPath,
+            docPath           = docPath,
             questions         = questions,
             bundles           = List(bundle),
             settings          = smokeSettings,
-            pdfTimeoutMs      = 30000L,
+            conversionTimeoutMs      = 30000L,
             questionTimeoutMs = 30000L,
             retryDelayMs      = Some(50L)
         )
@@ -353,10 +353,13 @@ class EvalHarnessSmokeTest extends AnyFunSuite
     test("Empty post-tool response is an answer error and is not judged") {
         val questions = List(EvalQuestion("What is the answer?", "42", "direct"))
         val workDir   = Files.createTempDirectory("eval-harness-empty-final-")
-        val pdfPath   = createSmokePDF(workDir)
+        val docPath   = createSmokePDF(workDir)
         val judge = new ScriptedLLMProvider(List("""{"verdict": "correct", "rationale": "unused"}"""))
         val llm = new ScriptedLLMProvider(List(
             ScriptedResponse.toolCall("files_read", "{\"path\":\"smoke.md\"}"),
+            // Two empties: the first triggers AgentLoop's single transparent
+            // retry, the second surfaces empty_llm_response as the answer error.
+            ScriptedResponse(""),
             ScriptedResponse("")
         ))
         val bundle = EvalHarness.EvalProviderBundle(
@@ -368,11 +371,11 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         )
 
         val (_, results) = EvalHarness.runEvalBundles(
-            pdfPath = pdfPath,
+            docPath = docPath,
             questions = questions,
             bundles = List(bundle),
             settings = smokeSettings,
-            pdfTimeoutMs = 30000L,
+            conversionTimeoutMs = 30000L,
             questionTimeoutMs = 30000L,
             retryDelayMs = Some(50L)
         )
@@ -381,6 +384,18 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         assert(results.head.answers.head.judgeStatus == JudgeStatus.Skipped)
         assert(results.head.answers.head.actualAnswer.contains("empty_llm_response"))
         assert(judge.remainingResponses == 1)
+    }
+
+    test("EvalConfig.load resolves ${VAR} placeholders from the environment") {
+        val cfg = Files.createTempFile("eval-config-interp-", ".json")
+        Files.writeString(cfg,
+            """[{"label":"p","llmBaseURL":"http://x","llmModel":"m",
+               | "llmAPIKey":"${HOME}","judgeAPIKey":"${AGENTICA_TEST_UNSET_VAR_XYZZY}"}]"""
+                .stripMargin)
+        val parsed = EvalConfig.load(cfg).head
+        assert(parsed.llmAPIKey == sys.env("HOME"))
+        assert(parsed.judgeAPIKey.contains("${AGENTICA_TEST_UNSET_VAR_XYZZY}"),
+            "unset variables must be left as the literal placeholder")
     }
 
     /** First call blocks until interrupted (times out); subsequent calls serve scripted responses. */
@@ -413,7 +428,7 @@ class EvalHarnessSmokeTest extends AnyFunSuite
             EvalQuestion("What number does the document mention?", "42", "rephrase")
         )
         val workDir = Files.createTempDirectory("eval-harness-retry-")
-        val pdfPath = createSmokePDF(workDir)
+        val docPath = createSmokePDF(workDir)
 
         val bundle = EvalHarness.EvalProviderBundle(
             label        = "fail-once",
@@ -424,11 +439,11 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         )
 
         val (_, results) = EvalHarness.runEvalBundles(
-            pdfPath           = pdfPath,
+            docPath           = docPath,
             questions         = questions,
             bundles           = List(bundle),
             settings          = smokeSettings,
-            pdfTimeoutMs      = 30000L,
+            conversionTimeoutMs      = 30000L,
             questionTimeoutMs = 1000L,
             retryDelayMs      = Some(50L)
         )

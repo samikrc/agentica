@@ -386,8 +386,10 @@ class AgentLoopTest extends AnyFunSuite
     // ── Additional AgentLoop edge cases ──────────────────────────────────────
 
     test("empty LLM response emits AgentError with provider diagnostics") {
+        // Two consecutive empty responses: the first triggers the single
+        // transparent retry, the second surfaces the error.
         val store = new StubMessageStore()
-        val (loop, _, _, _, _) = makeLoop(List(ScriptedResponse("")), store = store)
+        val (loop, _, _, _, _) = makeLoop(List(ScriptedResponse(""), ScriptedResponse("")), store = store)
         var error: Option[String] = None
 
         loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
@@ -401,6 +403,25 @@ class AgentLoopTest extends AnyFunSuite
         assert(error.exists(_.contains("empty_llm_response")))
         assert(!store.appended.exists(_.role == MessageRole.Assistant),
             "An empty provider response must not be persisted as a final answer")
+    }
+
+    test("empty LLM response is retried once and recovers") {
+        // First call returns an empty response; the transparent retry gets a
+        // normal answer — no error is emitted.
+        val store = new StubMessageStore()
+        val (loop, _, _, _, _) = makeLoop(List(ScriptedResponse(""), ScriptedResponse("Recovered.")), store = store)
+        var error: Option[String] = None
+
+        loop.run(session, Nil, userMsg, "t1", new AtomicBoolean(false), new PermissionCoordinator("test-run"),
+            emitToken = _ => (),
+            emitEvent = {
+                case AgentEvent.AgentError(message) => error = Some(message)
+                case _                              => ()
+            }
+        )
+
+        assert(error.isEmpty)
+        assert(store.appended.exists(m => m.role == MessageRole.Assistant && m.content == "Recovered."))
     }
 
     test("tool result content does not affect loop termination") {

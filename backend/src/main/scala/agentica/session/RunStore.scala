@@ -28,9 +28,13 @@ class RunStore(conn: () => Connection)
                 status      TEXT NOT NULL,
                 trace_id    TEXT NOT NULL,
                 duration_ms INTEGER NOT NULL DEFAULT 0,
+                iteration   INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             )
         """)
+        // Migrate existing databases that lack the iteration column.
+        try st.execute("ALTER TABLE tool_runs ADD COLUMN iteration INTEGER NOT NULL DEFAULT 0")
+        catch case _: java.sql.SQLException => () // column already exists
         st.execute("""
             CREATE TABLE IF NOT EXISTS token_usage (
                 id                TEXT PRIMARY KEY,
@@ -54,7 +58,7 @@ class RunStore(conn: () => Connection)
     {
         val c  = conn()
         val ps = c.prepareStatement(
-            "INSERT INTO tool_runs (id, session_id, tool, input, output, status, trace_id, duration_ms) VALUES (?,?,?,?,?,?,?,?)"
+            "INSERT INTO tool_runs (id, session_id, tool, input, output, status, trace_id, duration_ms, iteration) VALUES (?,?,?,?,?,?,?,?,?)"
         )
         ps.setString(1, run.id)
         ps.setString(2, run.sessionId)
@@ -64,6 +68,7 @@ class RunStore(conn: () => Connection)
         ps.setString(6, run.status.value)
         ps.setString(7, run.traceId)
         ps.setLong(8, run.durationMs)
+        ps.setInt(9, run.iteration)
         ps.executeUpdate()
         ps.close()
         c.close()
@@ -111,7 +116,8 @@ class RunStore(conn: () => Connection)
                 output     = rs.getString("output"),
                 status     = RunStatus.unsafe(rs.getString("status")),
                 traceId    = rs.getString("trace_id"),
-                durationMs = rs.getLong("duration_ms")
+                durationMs = rs.getLong("duration_ms"),
+                iteration  = rs.getInt("iteration")
             )
         }
         rs.close()

@@ -8,27 +8,27 @@
     },
     {
       "question": "Does the Even OPD plan have a waiting period?",
-      "answer": "No",
+      "answer": "No waiting period",
       "category": "direct"
     },
     {
       "question": "What is the co-pay amount for the Even OPD plan?",
-      "answer": "₹0",
+      "answer": "₹0 co-pay (no co-payment)",
       "category": "direct"
     },
     {
       "question": "What is the deductible under the Even OPD plan?",
-      "answer": "None",
+      "answer": "No deductible (deductible is none)",
       "category": "direct"
     },
     {
       "question": "What type of claims process does the Even OPD plan use?",
-      "answer": "Cashless",
+      "answer": "Cashless claims process",
       "category": "direct"
     },
     {
       "question": "How can a member contact Even if they have questions?",
-      "answer": "080 4749 5555, hello@even.in, +91 - 8867900461",
+      "answer": "080 4749 5555, hello@even.in, +91 - 8867900461, or text your personal Even Care team on private chat",
       "category": "rephrase"
     },
     {
@@ -43,7 +43,7 @@
     },
     {
       "question": "Which dental services are excluded, and what is the only dental diagnostic exception?",
-      "answer": "Diagnostics or treatment related to teeth or structures supporting teeth are not covered; dental X-rays are the exception",
+      "answer": "Consultations with a general dentist are covered. Any diagnostics or treatment related to teeth or structures supporting teeth, including examinations, cleanings, implants, fillings, crowns, extractions and surgery, are not covered. Exception: dental X-rays are covered.",
       "category": "rephrase"
     },
     {

@@ -31,9 +31,19 @@ object PageVisionTranscriber
           |
           |Rules:
           |- Output ONLY what is visible on this page. Do not infer, invent, or add headings, titles, or structure that is not present.
+          |- Transcribe content column-by-column in natural reading order. Finish one column's tables and text completely before starting the next column.
           |- Transcribe lists as Markdown lists (- for bullets, 1. for numbered). Continue the list exactly as it appears.
-          |- Transcribe headings that are visually present (bold, larger text, underlined titles) using # ## ### as appropriate.
-          |- Transcribe tables as Markdown tables.
+          |- Transcribe headings that are visually present (bold, larger text, underlined titles) using # ## ### as appropriate. Transcribe captions and exhibit labels (e.g. "Exhibit 8:") verbatim as headings.
+          |- Transcribe tables as Markdown tables:
+          |  - Preserve numbers, dates, symbols, and footnote markers (*, #, ‡) exactly as printed. Never round, reformat, or correct them.
+          |  - Transcribe blank cells and dashes exactly as they appear — do not fill in values by guessing or by continuing a pattern.
+          |  - If a header or label spans multiple columns, repeat it in each affected row or flatten it into the column headers — do not drop it.
+          |  - If the table continues from a previous page, transcribe the visible rows as-is; do not invent a header row.
+          |- Charts and figures:
+          |  - If data values are printed on or near the chart (bar labels, callouts, percentages), transcribe them as a Markdown table.
+          |  - If no values are printed, describe the chart type, title, axis labels, and trend in one sentence. Do not estimate or invent values.
+          |  - Flow diagrams and process graphics: transcribe the stage/step labels and their associated text as a Markdown list; ignore the visual styling.
+          |  - Decorative images (photos, logos, icons, illustrations with no informational content): output `[Figure: decorative]` and nothing else for them.
           |- Preserve bold and italic formatting where visually present. If uncertain, use plain text — do not guess.
           |- Preserve code blocks and inline code where present.
           |- Do NOT add explanatory text, commentary, reasoning, or "Page X of Y" markers.
@@ -41,7 +51,7 @@ object PageVisionTranscriber
           |- Read each region ONCE. Commit to your first reading. Do not re-examine or second-guess.
           |- If the page contains no meaningful text, output only: [Empty page]
           |
-          |Begin the Markdown output immediately with the first visible content on the page. DO NOT THINK (thinking mode = off).
+          |Begin the Markdown output immediately with the first visible content on the page.
           |""".stripMargin.trim
 
     /**

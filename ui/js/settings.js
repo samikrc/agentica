@@ -10,7 +10,8 @@ const Settings = (() => {
     vlmAPIKey: '',
     vlmModel: '',
     debugMode: false,
-    vlmParallelism: 4
+    vlmParallelism: 4,
+    allowedRoots: ''
   };
 
   const btnSettings = document.getElementById('btn-settings');
@@ -24,6 +25,7 @@ const Settings = (() => {
   // General tab
   const themeSelect = document.getElementById('settings-theme');
   const showStatusLineCheckbox = document.getElementById('settings-show-status-line');
+  const allowedRootsInput = document.getElementById('settings-allowed-roots');
 
   // LLM tab
   const serverURLInput = document.getElementById('settings-server-url');
@@ -65,13 +67,15 @@ const Settings = (() => {
       vlmAPIKey: settings?.vlmAPIKey ?? '',
       vlmModel: settings?.vlmModel ?? '',
       debugMode: !!settings?.debugMode,
-      vlmParallelism: Math.max(1, Math.min(32, parseInt(settings?.vlmParallelism) || 4))
+      vlmParallelism: Math.max(1, Math.min(32, parseInt(settings?.vlmParallelism) || 4)),
+      allowedRoots: settings?.allowedRoots ?? ''
     };
     document.documentElement.dataset.theme = _settings.theme;
 
     // General
     if (themeSelect) themeSelect.value = _settings.theme;
     if (showStatusLineCheckbox) showStatusLineCheckbox.checked = _settings.showStatusLine;
+    if (allowedRootsInput) allowedRootsInput.value = _settings.allowedRoots;
 
     // LLM
     if (serverURLInput) serverURLInput.value = _settings.serverURL;
@@ -118,6 +122,7 @@ const Settings = (() => {
     // General
     themeSelect.value = _settings.theme;
     showStatusLineCheckbox.checked = _settings.showStatusLine;
+    if (allowedRootsInput) allowedRootsInput.value = _settings.allowedRoots;
     // LLM
     serverURLInput.value = _settings.serverURL;
     apiKeyInput.value = _settings.apiKey;
@@ -200,7 +205,8 @@ const Settings = (() => {
         vlmAPIKey: vlmAPIKeyInput.value.trim(),
         vlmModel: vlmModelInput.value.trim(),
         debugMode: debugModeCheckbox.checked,
-        vlmParallelism: vlmParallelCheckbox.checked ? Math.max(1, Math.min(32, parseInt(vlmParallelismInput.value) || 4)) : 1
+        vlmParallelism: vlmParallelCheckbox.checked ? Math.max(1, Math.min(32, parseInt(vlmParallelismInput.value) || 4)) : 1,
+        allowedRoots: allowedRootsInput ? allowedRootsInput.value.trim() : ''
       });
       closeModal();
     } catch (err) {

@@ -6,6 +6,7 @@ import agentica.tools.Tool
 import java.nio.file.{Files, NoSuchFileException, Path}
 import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
+import scala.collection.immutable.ListMap
 import scala.jdk.CollectionConverters.*
 
 /**
@@ -194,7 +195,7 @@ object FilesList extends Tool[FilesListInput, FilesListOutput]
                 ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"Directory listing failed: ${error.toErrorCode}"))
             case None =>
                 val text     = output.lines.mkString("\n")
-                val metadata = Map(
+                val metadata = ListMap(
                     "entries" -> output.entries.toString,
                     "dirs"    -> output.dirs.toString,
                     "files"   -> output.files.toString

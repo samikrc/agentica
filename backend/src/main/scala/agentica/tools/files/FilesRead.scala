@@ -6,6 +6,7 @@ import agentica.tools.Tool
 import agentica.shell.Presentation
 import java.nio.file.{Files, NoSuchFileException}
 import java.nio.file.attribute.BasicFileAttributes
+import scala.collection.immutable.ListMap
 
 
 /**
@@ -264,13 +265,18 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
                             sizeBytes  = output.sizeBytes,
                             lineCount  = output.totalLines
                         )
+                    val meta = ListMap(
+                        "size"   -> f"${output.sizeBytes / 1024.0}%.1f KB",
+                        "lines"  -> s"${output.totalLines}",
+                        "stored" -> ref
+                    )
+                    val fullMeta = body match
+                        case ToolBody.Inline(_) =>
+                            meta + ("hint" -> "complete file returned — answer from content above before searching")
+                        case _ => meta
                     ToolResult(
                         status   = ToolStatus.Ok,
-                        metadata = Map(
-                            "size"   -> f"${output.sizeBytes / 1024.0}%.1f KB",
-                            "lines"  -> s"${output.totalLines}",
-                            "stored" -> ref
-                        ),
+                        metadata = fullMeta,
                         body = Some(body)
                     )
                 }
@@ -279,7 +285,7 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
                     // Range (truncated) read: return inline only; don't store partial content.
                     ToolResult(
                         status   = ToolStatus.Ok,
-                        metadata = Map(
+                        metadata = ListMap(
                             "size"  -> f"${output.sizeBytes / 1024.0}%.1f KB",
                             "lines" -> s"${output.totalLines}$rangeNote"
                         ),

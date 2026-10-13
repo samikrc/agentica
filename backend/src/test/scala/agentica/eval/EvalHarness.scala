@@ -12,7 +12,7 @@ import agentica.settings.AppSettings
 import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
 import agentica.testutil.LMStudioClient
 import agentica.tools.{AgentResponse, ExecutionContext, ToolBody}
-import agentica.tools.files.{FilesList, FilesRead, FilesReadDOCXToMarkdown, FilesReadPDFToMarkdown, FilesReadPDFToMarkdownInput, FilesReadPPTXToMarkdown, FilesSearch, FilesStat, FilesWrite}
+import agentica.tools.files.{FilesList, FilesRead, FilesReadDOCXToMarkdown, FilesReadDOCXToMarkdownInput, FilesReadPDFToMarkdown, FilesReadPDFToMarkdownInput, FilesReadPPTXToMarkdown, FilesReadPPTXToMarkdownInput, FilesSearch, FilesStat, FilesWrite}
 import agentica.tools.memory.{MemoryGet, MemoryList, MemorySet}
 import ujson.*
 import java.nio.file.{Files, Path, Paths, StandardCopyOption}
@@ -42,7 +42,9 @@ import scala.collection.mutable
  *                                for local endpoints if not specified.
  *  @param sessionTypes           Session modes to run for this provider. Defaults to
  *                                `List(AllQuestionsPerSession)`.
- *  @param reuseMarkdownCache     Whether matching cached Markdown may skip PDF conversion.
+ *  @param reuseMarkdownCache     Whether matching cached Markdown may skip document conversion.
+ *  @param temperature            Optional sampling temperature sent on every eval request
+ *                                (agent, VLM, and judge). `None` uses the server default.
  */
 case class EvalProviderConfig(
     label:                String,
@@ -57,7 +59,8 @@ case class EvalProviderConfig(
     judgeAPIKey:          Option[String]          = None,
     pauseBetweenPhasesMs: Option[Long]            = None,
     sessionTypes:         List[EvalSessionType]   = List(EvalSessionType.AllQuestionsPerSession),
-    reuseMarkdownCache:   Boolean                 = true
+    reuseMarkdownCache:   Boolean                 = true,
+    temperature:          Option[Double]          = None
 )
 
 /**
@@ -74,7 +77,7 @@ case class EvalProviderConfig(
  *  @param judgeModel        Optional judge model identifier.
  *  @param sessionTypes      Session modes executed for this provider.
  *  @param questionTimeoutMs Timeout applied to each QA agent turn.
- *  @param pdfTimeoutMs      Timeout applied to PDF-to-Markdown conversion.
+ *  @param conversionTimeoutMs Timeout applied to document-to-Markdown conversion.
  *  @param reuseMarkdownCache Whether matching cached Markdown may skip conversion.
  *  @param markdownCache     Cache decision details; `None` when conversion never ran.
  */
@@ -88,7 +91,7 @@ case class ProviderManifest(
     judgeModel:         Option[String],
     sessionTypes:       List[String],
     questionTimeoutMs:  Long,
-    pdfTimeoutMs:       Long,
+    conversionTimeoutMs: Long,
     reuseMarkdownCache: Boolean,
     markdownCache:      Option[MarkdownCacheInfo] = None,
     startTimestamp:     String = Instant.now().toString,
@@ -101,15 +104,15 @@ case class ProviderManifest(
  *
  *  @param enabled   Whether cache reuse was permitted by configuration.
  *  @param hit       Whether an existing valid entry was reused instead of converting.
- *  @param key       Content-addressed cache key (SHA-256 of version, PDF hash, identity).
- *  @param pdfSha256 SHA-256 digest of the source PDF bytes.
+ *  @param key       Content-addressed cache key (SHA-256 of version, document hash, identity).
+ *  @param docSha256 SHA-256 digest of the source document bytes.
  *  @param source    Absolute path of the cache entry that was read or written.
  */
 case class MarkdownCacheInfo(
     enabled:   Boolean,
     hit:       Boolean,
     key:       String,
-    pdfSha256: String,
+    docSha256: String,
     source:    String
 )
 
@@ -261,15 +264,15 @@ object EvalConfig
      *  Resolves the active eval configuration.
      *
      *  Priority:
-     *    1. If the `PDF_EVAL_CONFIG` Java system property is set, load that file.
-     *    2. Else if the `PDF_EVAL_CONFIG` environment variable is set, load that file.
+     *    1. If the `DOC_EVAL_CONFIG` Java system property is set, load that file.
+     *    2. Else if the `DOC_EVAL_CONFIG` environment variable is set, load that file.
      *    3. Otherwise try the default classpath resource `/eval-config.json`.
      *
      *  @return  Some(configs) if a config source is found, None otherwise.
      */
     def resolve(): Option[List[EvalProviderConfig]] =
     {
-        val pathProp = sys.props.get("PDF_EVAL_CONFIG").orElse(sys.env.get("PDF_EVAL_CONFIG"))
+        val pathProp = sys.props.get("DOC_EVAL_CONFIG").orElse(sys.env.get("DOC_EVAL_CONFIG"))
         pathProp match
         {
             case Some(pathStr) => Some(load(Paths.get(pathStr)))
@@ -278,7 +281,20 @@ object EvalConfig
     }
 
     /**
+     *  Resolves `${VAR}` placeholders in a config string from the process
+     *  environment. Unset variables are left as the literal placeholder so
+     *  providers that ignore credentials (e.g. local LM Studio) keep working.
+     *  Secrets such as API keys can therefore be written as `"${VALAR_API_KEY}"`
+     *  without storing the value on disk.
+     */
+    private def interp(s: String): String =
+        "\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}".r.replaceAllIn(s,
+            m => java.util.regex.Matcher.quoteReplacement(
+                sys.env.getOrElse(m.group(1), m.matched)))
+
+    /**
      *  Parses the provider array from the config JSON.
+     *  String fields support `${VAR}` environment interpolation (see [[interp]]).
      *
      *  @param json  JSON array of provider objects.
      *  @return      List of [[EvalProviderConfig]] entries.
@@ -290,19 +306,20 @@ object EvalConfig
                 .map(_.arr.toList.map(v => EvalSessionType.fromString(v.str)))
                 .getOrElse(List(EvalSessionType.AllQuestionsPerSession))
             EvalProviderConfig(
-                label                = c.obj("label").str,
-                llmBaseURL           = c.obj("llmBaseURL").str,
-                llmModel             = c.obj("llmModel").str,
-                llmAPIKey            = c.obj.get("llmAPIKey").map(_.str).getOrElse("lm-studio"),
-                vlmBaseURL           = c.obj.get("vlmBaseURL").map(_.str),
-                vlmModel             = c.obj.get("vlmModel").map(_.str),
-                vlmAPIKey            = c.obj.get("vlmAPIKey").map(_.str),
-                judgeBaseURL         = c.obj.get("judgeBaseURL").map(_.str),
-                judgeModel           = c.obj.get("judgeModel").map(_.str),
-                judgeAPIKey          = c.obj.get("judgeAPIKey").map(_.str),
+                label                = interp(c.obj("label").str),
+                llmBaseURL           = interp(c.obj("llmBaseURL").str),
+                llmModel             = interp(c.obj("llmModel").str),
+                llmAPIKey            = c.obj.get("llmAPIKey").map(v => interp(v.str)).getOrElse("lm-studio"),
+                vlmBaseURL           = c.obj.get("vlmBaseURL").map(v => interp(v.str)),
+                vlmModel             = c.obj.get("vlmModel").map(v => interp(v.str)),
+                vlmAPIKey            = c.obj.get("vlmAPIKey").map(v => interp(v.str)),
+                judgeBaseURL         = c.obj.get("judgeBaseURL").map(v => interp(v.str)),
+                judgeModel           = c.obj.get("judgeModel").map(v => interp(v.str)),
+                judgeAPIKey          = c.obj.get("judgeAPIKey").map(v => interp(v.str)),
                 pauseBetweenPhasesMs = c.obj.get("pauseBetweenPhasesMs").map(_.num.toLong),
                 sessionTypes         = sessionTypes,
-                reuseMarkdownCache   = c.obj.get("reuseMarkdownCache").forall(_.bool)
+                reuseMarkdownCache   = c.obj.get("reuseMarkdownCache").forall(_.bool),
+                temperature          = c.obj.get("temperature").map(_.num)
             )
         }
     }
@@ -422,7 +439,7 @@ case class JudgeResult(
 enum SweepStatus:
     /** Sweep produced answers for all questions. */
     case Ok
-    /** Sweep failed because a phase exceeded its timeout (e.g. PDF conversion). */
+    /** Sweep failed because a phase exceeded its timeout (e.g. document conversion). */
     case FailedTimeout
     /** Sweep failed with a non-timeout error. */
     case FailedError
@@ -436,6 +453,15 @@ object SweepStatus:
     }
 
 /**
+ *  A single tool invocation with its agent-loop iteration number.
+ *  Tool calls sharing the same [[iteration]] were batched in a single LLM response.
+ *
+ *  @param call      Human-readable command string (e.g. `files_read path="doc.md"`).
+ *  @param iteration 1-based agent-loop iteration in which this call was dispatched.
+ */
+case class ToolCall(call: String, iteration: Int)
+
+/**
  *  Result of judging one predicted answer.
  *
  *  @param question         Original question.
@@ -443,7 +469,9 @@ object SweepStatus:
  *  @param referenceAnswer  Ground-truth answer from the eval JSON.
  *  @param actualAnswer     Final answer produced by the agent (last iteration only).
  *  @param thoughts         All reasoning and intermediate text from earlier iterations.
- *  @param toolCalls        Ordered list of raw tool call commands issued by the agent.
+ *  @param toolCalls        Ordered list of tool calls issued by the agent, each tagged with its
+ *                          agent-loop iteration. Calls sharing the same iteration were batched
+ *                          in a single LLM response.
  *  @param judgeScore       Numeric score from 0.0 to 1.0; meaningless unless [[judgeStatus]] is [[JudgeStatus.Judged]].
  *  @param judgeRationale   Short rationale produced by the judge LLM.
  *  @param toolCounts       Map of tool name -> number of calls while answering this question.
@@ -459,7 +487,7 @@ case class AnswerResult(
     referenceAnswer:  String,
     actualAnswer:     String,
     thoughts:         String,
-    toolCalls:        List[String],
+    toolCalls:        List[ToolCall],
     judgeScore:       Double,
     judgeRationale:   String,
     toolCounts:       Map[String, Int],
@@ -494,9 +522,10 @@ case class EvalResult(
 /**
  *  Reusable harness for end-to-end document QA evaluation.
  *
- *  Given a PDF, a JSON question set, and a list of (LLM, VLM) configurations, the harness:
- *    1. Copies the PDF into a temporary workspace.
- *    2. Generates Markdown via the real `files_read_pdf_to_markdown` tool path.
+ *  Given a document (PDF, DOCX, or PPTX), a JSON question set, and a list of
+ *  (LLM, VLM) configurations, the harness:
+ *    1. Copies the document into a temporary workspace.
+ *    2. Generates Markdown via the appropriate document-to-Markdown tool.
  *    3. Scores the Markdown with [[MarkdownScorer]].
  *    4. Runs each question through the real AgentLoop.
  *    5. Judges predicted answers with an LLM-as-judge.
@@ -520,7 +549,7 @@ object EvalHarness
     private def log(msg: String): Unit = println(s"[${ts()}] $msg")
 
     /**
-     *  Creates a directory `pdf-eval-YYYYMMDD-HHMMSS` under the persistent Agentica
+     *  Creates a directory `doc-eval-YYYYMMDD-HHMMSS` under the persistent Agentica
      *  eval state directory. On collision (two runs started within the same second,
      *  e.g. back-to-back tests) a `-N` counter suffix is appended.
      */
@@ -530,7 +559,7 @@ object EvalHarness
         val stamp       = java.time.LocalDateTime.now().format(formatter)
         Files.createDirectories(AppDirs.evalsDir)
         Iterator.iterate(0)(_ + 1)
-            .map(i => AppDirs.evalsDir.resolve(if i == 0 then s"pdf-eval-$stamp" else s"pdf-eval-$stamp-$i"))
+            .map(i => AppDirs.evalsDir.resolve(if i == 0 then s"doc-eval-$stamp" else s"doc-eval-$stamp-$i"))
             .find { dir =>
                 try { Files.createDirectory(dir); true }
                 catch { case _: java.nio.file.FileAlreadyExistsException => false }
@@ -740,39 +769,35 @@ object EvalHarness
     // ─── Document conversion and scoring ───────────────────────────────────────────
 
     /**
-     *  Converts the PDF in `pdfPath` to Markdown using the real document tool.
-     *  Returns the generated Markdown content and the relative Markdown path.
+     *  Converts a document (PDF, DOCX, or PPTX) to Markdown using the appropriate
+     *  vision-first ingestion tool.
      *
-     *  @param pdfPath   Absolute path to the PDF inside the workspace.
-     *  @param session   Session whose rootPath is the PDF's parent workspace.
-     *  @param llm       Primary LLM provider (used as VLM fallback if vlm is None).
-     *  @param vlm       Optional dedicated VLM provider.
-     *  @param settings  Settings controlling debug mode and VLM parallelism.
-     *  @return          Tuple of (markdown content, relative markdown path).
+     *  @param docPath   Absolute path to the source document.
+     *  @param session   Session whose [[Session.rootPath]] anchors relative paths.
+     *  @param llm       Primary LLM provider.
+     *  @param vlm       Optional VLM provider for page transcription.
+     *  @param settings  Application settings (debug mode, VLM parallelism).
+     *  @return          Tuple of (Markdown content, relative Markdown path).
+     *  @throws RuntimeException if the conversion tool reports an error.
      */
-    def convertPDFToMarkdown(
-        pdfPath:  Path,
+    def convertDocumentToMarkdown(
+        docPath:  Path,
         session:  Session,
         llm:      LLMProvider,
         vlm:      Option[LLMProvider],
         settings: AppSettings
     ): (String, String) =
     {
-        val relPDF = session.rootPath match
+        val relDoc = session.rootPath match
         {
             case Some(root) => Paths.get(root).toAbsolutePath.normalize()
-                .relativize(pdfPath.toAbsolutePath.normalize()).toString
-            case None => pdfPath.getFileName.toString
+                .relativize(docPath.toAbsolutePath.normalize()).toString
+            case None => docPath.getFileName.toString
         }
-
-        val input = FilesReadPDFToMarkdownInput(
-            path         = Paths.get(relPDF),
-            enrichImages = ConversionEnrichImages
-        )
 
         val ctx = agentica.tools.ExecutionContext(
             session         = session,
-            traceId         = s"eval-pdf-${session.id}",
+            traceId         = s"eval-convert-${session.id}",
             scopeStore      = new AutoGrantScopeStore(),
             scratchpad      = SessionScratchpad(),
             memoryStore     = new StubMemoryStore(),
@@ -784,31 +809,65 @@ object EvalHarness
             vlmParallelism  = settings.vlmParallelism
         )
 
-        val output = FilesReadPDFToMarkdown.execute(input, ctx)
-        if (output.error.isDefined)
+        val ext = docPath.getFileName.toString.toLowerCase match
+        {
+            case n if n.endsWith(".pdf")  => "pdf"
+            case n if n.endsWith(".docx") => "docx"
+            case n if n.endsWith(".pptx") => "pptx"
+            case _ => throw new IllegalArgumentException(
+                s"Unsupported document type: ${docPath.getFileName}. Supported: .pdf, .docx, .pptx")
+        }
+
+        val (markdownPath, error) = ext match
+        {
+            case "pdf" =>
+                val out = FilesReadPDFToMarkdown.execute(
+                    FilesReadPDFToMarkdownInput(Paths.get(relDoc), ConversionEnrichImages), ctx)
+                (out.markdownPath, out.error)
+            case "docx" =>
+                val out = FilesReadDOCXToMarkdown.execute(
+                    FilesReadDOCXToMarkdownInput(Paths.get(relDoc), ConversionEnrichImages), ctx)
+                (out.markdownPath, out.error)
+            case "pptx" =>
+                val out = FilesReadPPTXToMarkdown.execute(
+                    FilesReadPPTXToMarkdownInput(Paths.get(relDoc), ConversionEnrichImages), ctx)
+                (out.markdownPath, out.error)
+        }
+
+        if error.isDefined then
         {
             throw new RuntimeException(
-                s"PDF conversion failed: ${output.error.getOrElse("unknown error")}"
+                s"Document conversion failed for ${docPath.getFileName}: ${error.getOrElse("unknown error")}"
             )
         }
 
-        val mdPath = pdfPath.getParent.resolve(output.markdownPath)
+        val mdPath = docPath.getParent.resolve(markdownPath)
         val markdown = Files.readString(mdPath)
-        (markdown, output.markdownPath)
+        (markdown, markdownPath)
     }
 
     /**
-     *  Scores generated Markdown against the PDFBox reference text.
+     *  Scores generated Markdown against reference text extracted from the source document.
+     *
+     *  For PDFs, reference text is extracted via PDFBox and pages are counted for the
+     *  non-empty ratio. For DOCX and PPTX, reference-text extraction is not yet
+     *  supported; an empty [[MarkdownScore]] is returned.
      *
      *  @param markdown  VLM-generated Markdown string.
-     *  @param pdfPath   Source PDF path (for PDFBox text extraction and page count).
-     *  @return          MarkdownScore with all sub-metrics.
+     *  @param docPath   Source document path.
+     *  @return          [[MarkdownScore]] with all sub-metrics, or [[EmptyMarkdownScore]]
+     *                   for unsupported document types.
      */
-    def scoreMarkdown(markdown: String, pdfPath: Path): MarkdownScore =
+    def scoreMarkdown(markdown: String, docPath: Path): MarkdownScore =
     {
-        val referenceText = MarkdownScorer.extractPDFText(pdfPath)
-        val pageCount     = PDFPageRenderer.pageCount(pdfPath)
-        MarkdownScorer.score(markdown, referenceText, pageCount)
+        val name = docPath.getFileName.toString.toLowerCase
+        if name.endsWith(".pdf") then
+        {
+            val referenceText = MarkdownScorer.extractPDFText(docPath)
+            val pageCount     = PDFPageRenderer.pageCount(docPath)
+            MarkdownScorer.score(markdown, referenceText, pageCount)
+        }
+        else EmptyMarkdownScore
     }
 
     // ─── Question answering ────────────────────────────────────────────────────────
@@ -902,7 +961,7 @@ object EvalHarness
     private case class TurnResult(
         actual:     String,
         thoughts:   String,
-        toolCalls:  List[String],
+        toolCalls:  List[ToolCall],
         toolCounts: Map[String, Int],
         status:     AnswerStatus,
         attempts:   Int = 1
@@ -1001,10 +1060,10 @@ object EvalHarness
             (actual, thoughts)
         }
 
-        def capturedTools: (List[String], Map[String, Int]) =
+        def capturedTools: (List[ToolCall], Map[String, Int]) =
         {
             val runs = agent.runStore.forTrace(traceId)
-            val calls = runs.map(_.input)
+            val calls = runs.map(r => ToolCall(r.input, r.iteration))
             val counts = runs.groupMapReduce(_.tool)(_ => 1)(_ + _)
             (calls, counts)
         }
@@ -1086,6 +1145,10 @@ object EvalHarness
                |If the question asks for an exact value, phrase, name, or title, treat the predicted answer as correct when
                |the exact reference answer appears verbatim somewhere within it. Surrounding context (e.g., added company
                |name or location) must not lower the verdict below correct, unless it introduces a factual contradiction.
+               |
+               |If the predicted answer uses a widely accepted synonym or equivalent term for the reference answer
+               |and no factual contradiction is introduced, treat it as correct. Only penalize when the predicted
+               |term changes the meaning, not merely the wording.
                |
                |Question: $question
                |Reference Answer: $referenceAnswer
@@ -1297,7 +1360,7 @@ object EvalHarness
                 "referenceAnswer" -> Str(a.referenceAnswer),
                 "actualAnswer"    -> Str(a.actualAnswer),
                 "thoughts"        -> Str(a.thoughts),
-                "toolCalls"       -> Arr(a.toolCalls.map(Str(_))*),
+                "toolCalls"       -> Arr(a.toolCalls.map(tc => Obj("call" -> Str(tc.call), "iteration" -> Num(tc.iteration)))*),
                 "toolCounts"      -> Obj.from(a.toolCounts.map { case (k, v) => k -> Num(v) }),
                 "judgeScore"      -> Num(a.judgeScore),
                 "judgeRationale"  -> Str(a.judgeRationale),
@@ -1331,14 +1394,14 @@ object EvalHarness
             "judgeModel"        -> manifest.judgeModel.map(Str(_)).getOrElse(ujson.Null),
             "sessionTypes"      -> Arr(manifest.sessionTypes.map(Str(_))*),
             "questionTimeoutMs" -> Num(manifest.questionTimeoutMs.toDouble),
-            "pdfTimeoutMs"      -> Num(manifest.pdfTimeoutMs.toDouble),
+            "conversionTimeoutMs" -> Num(manifest.conversionTimeoutMs.toDouble),
             "reuseMarkdownCache" -> Bool(manifest.reuseMarkdownCache),
             "markdownCache"     -> manifest.markdownCache.map { c =>
                 Obj(
                     "enabled"   -> Bool(c.enabled),
                     "hit"       -> Bool(c.hit),
                     "key"       -> Str(c.key),
-                    "pdfSha256" -> Str(c.pdfSha256),
+                    "docSha256" -> Str(c.docSha256),
                     "source"    -> Str(c.source)
                 )
             }.getOrElse(ujson.Null),
@@ -1372,7 +1435,7 @@ object EvalHarness
         }
         val json = Obj(
             "providerLabel" -> Str(providerLabel),
-            "pdfFile"       -> Str(fileStem),
+            "docFile"       -> Str(fileStem),
             "markdownScore" -> Obj(
                 "wordCountRatio" -> Num(mdScore.wordCountRatio),
                 "tokenOverlap"   -> Num(mdScore.tokenOverlap),
@@ -1410,7 +1473,7 @@ object EvalHarness
     /** Version marker invalidating entries when the conversion pipeline or prompt changes. */
     private val MarkdownCacheVersion = "vision-v1"
 
-    /** Whether PDF conversion requests image enrichment; part of the cache key. */
+    /** Whether document conversion requests image enrichment; part of the cache key. */
     private val ConversionEnrichImages: Boolean = true
 
     /** Minimum size for a cache entry to be trusted as a completed conversion. */
@@ -1435,23 +1498,23 @@ object EvalHarness
         MessageDigest.getInstance("SHA-256").digest(bytes).map("%02x".format(_)).mkString
 
     /**
-     *  Computes the content-addressed cache entry for one PDF and conversion
+     *  Computes the content-addressed cache entry for one document and conversion
      *  identity (VLM model).  The key covers the conversion pipeline version,
-     *  image-enrichment behavior, and the PDF bytes, so different documents or
-     *  converter settings never collide.
+     *  image-enrichment behavior, and the document bytes, so different documents
+     *  or converter settings never collide.
      *
-     *  @param pdfPath   Source PDF whose bytes are hashed.
+     *  @param docPath   Source document whose bytes are hashed.
      *  @param identity  Converter identity string (e.g. the VLM model name).
-     *  @return          Tuple of (cache file path, cache key, PDF SHA-256).
+     *  @return          Tuple of (cache file path, cache key, document SHA-256).
      */
-    private[eval] def markdownCacheEntry(pdfPath: Path, identity: String): (Path, String, String) =
+    private[eval] def markdownCacheEntry(docPath: Path, identity: String): (Path, String, String) =
     {
-        val pdfHash = sha256(Files.readAllBytes(pdfPath))
+        val docHash = sha256(Files.readAllBytes(docPath))
         val key = sha256(
-            s"$MarkdownCacheVersion|enrichImages=$ConversionEnrichImages|$pdfHash|$identity"
+            s"$MarkdownCacheVersion|enrichImages=$ConversionEnrichImages|$docHash|$identity"
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8)
         )
-        (Files.createDirectories(markdownCacheDir).resolve(s"$key.md"), key, pdfHash)
+        (Files.createDirectories(markdownCacheDir).resolve(s"$key.md"), key, docHash)
     }
 
     /** Writes a cache entry atomically so interrupted conversions cannot leave partial Markdown. */
@@ -1496,28 +1559,29 @@ object EvalHarness
     )
 
     /**
-     *  Runs the full evaluation pipeline for one PDF against a list of provider bundles.
+     *  Runs the full evaluation pipeline for one document against a list of provider bundles.
      *
      *  This is the provider-agnostic core used by both config-driven runs and smoke tests.
+     *  Supported document types: PDF, DOCX, PPTX.
      *
-     *  @param pdfPath           Source PDF to evaluate.
-     *  @param questions         List of EvalQuestion entries.
-     *  @param bundles           Provider bundles to test.
-     *  @param settings          AppSettings used for AgentLoop and VLM options.
-     *  @param pdfTimeoutMs      Timeout for PDF-to-Markdown conversion.
-     *  @param questionTimeoutMs Timeout for each QA agent turn.
-     *  @param retryDelayMs      Fixed delay before a question timeout retry;
-     *                           `None` picks a random 5–10s delay.
-     *  @return                  Tuple of (root work directory, list of EvalResult).
+     *  @param docPath              Source document to evaluate.
+     *  @param questions            List of EvalQuestion entries.
+     *  @param bundles              Provider bundles to test.
+     *  @param settings             AppSettings used for AgentLoop and VLM options.
+     *  @param conversionTimeoutMs  Timeout for document-to-Markdown conversion.
+     *  @param questionTimeoutMs    Timeout for each QA agent turn.
+     *  @param retryDelayMs         Fixed delay before a question timeout retry;
+     *                              `None` picks a random 5–10s delay.
+     *  @return                     Tuple of (root work directory, list of EvalResult).
      */
     def runEvalBundles(
-        pdfPath:           Path,
-        questions:         List[EvalQuestion],
-        bundles:           List[EvalProviderBundle],
-        settings:          AppSettings,
-        pdfTimeoutMs:      Long = 600000L,
-        questionTimeoutMs: Long = 120000L,
-        retryDelayMs:      Option[Long] = None
+        docPath:              Path,
+        questions:            List[EvalQuestion],
+        bundles:              List[EvalProviderBundle],
+        settings:             AppSettings,
+        conversionTimeoutMs:  Long = 600000L,
+        questionTimeoutMs:    Long = 120000L,
+        retryDelayMs:         Option[Long] = None
     ): (Path, List[EvalResult]) =
     {
         ensureToolIndexApplied()
@@ -1525,10 +1589,14 @@ object EvalHarness
         val rootWorkDir = createEvalWorkDir()
         log(s"Root work directory: $rootWorkDir")
 
-        val pdfName   = pdfPath.getFileName.toString
-        val fileStem  = if (pdfName.toLowerCase.endsWith(".pdf")) pdfName.dropRight(4) else pdfName
+        val docName   = docPath.getFileName.toString
+        val fileStem  = docName.lastIndexOf('.') match
+        {
+            case -1 => docName
+            case i  => docName.substring(0, i)
+        }
         val fileDir   = Files.createDirectory(rootWorkDir.resolve(fileStem))
-        Files.copy(pdfPath, fileDir.resolve(pdfName), StandardCopyOption.REPLACE_EXISTING)
+        Files.copy(docPath, fileDir.resolve(docName), StandardCopyOption.REPLACE_EXISTING)
 
         val allResults = bundles.flatMap { bundle =>
             log(s"=== Provider: ${bundle.label} | session types: ${bundle.sessionTypes.map(_.label).mkString(", ")} ===")
@@ -1546,11 +1614,11 @@ object EvalHarness
                 val vlm = bundle.vlm
                 val agent = makeAgentLoop(llm, vlm, settings)
 
-                // Convert PDF to Markdown once per provider (VLM-intensive).
-                val workPDF = providerDir.resolve(pdfName)
-                Files.copy(fileDir.resolve(pdfName), workPDF, StandardCopyOption.REPLACE_EXISTING)
+                // Convert document to Markdown once per provider (VLM-intensive).
+                val workDoc = providerDir.resolve(docName)
+                Files.copy(fileDir.resolve(docName), workDoc, StandardCopyOption.REPLACE_EXISTING)
 
-                val (cachePath, cacheKey, pdfHash) = markdownCacheEntry(workPDF, bundle.markdownCacheIdentity)
+                val (cachePath, cacheKey, docHash) = markdownCacheEntry(workDoc, bundle.markdownCacheIdentity)
                 val cacheHit = bundle.reuseMarkdownCache && Files.exists(cachePath) && Files.size(cachePath) > MinMarkdownCacheBytes
 
                 bundle.metadata.foreach { m =>
@@ -1558,7 +1626,7 @@ object EvalHarness
                         enabled   = bundle.reuseMarkdownCache,
                         hit       = cacheHit,
                         key       = cacheKey,
-                        pdfSha256 = pdfHash,
+                        docSha256 = docHash,
                         source    = cachePath.toString
                     ))))
                 }
@@ -1570,17 +1638,17 @@ object EvalHarness
                 }
                 else
                 {
-                    log(s"--- Converting PDF to Markdown: ${bundle.label} ---")
+                    log(s"--- Converting document to Markdown: ${bundle.label} ---")
                     val conversionSession = makeSession(providerDir)
                     val converted = runWithTimeout(
-                        convertPDFToMarkdown(workPDF, conversionSession, llm, vlm, settings),
-                        pdfTimeoutMs,
-                        "PDF conversion"
+                        convertDocumentToMarkdown(workDoc, conversionSession, llm, vlm, settings),
+                        conversionTimeoutMs,
+                        "document conversion"
                     )
                     writeMarkdownCache(cachePath, converted._1)
                     converted
                 }
-                val mdScore = scoreMarkdown(markdown, workPDF)
+                val mdScore = scoreMarkdown(markdown, workDoc)
                 log(s"Markdown score: ${mdScore.pretty}")
 
                 // Phase 1: generate answers for every session type.
@@ -1644,7 +1712,7 @@ object EvalHarness
                     val msg    = s"${t.getClass.getSimpleName}: ${t.getMessage}"
                     log(s"ERROR for ${bundle.label}: $msg")
                     bundle.sessionTypes.map { st =>
-                        EvalResult(bundle.label, st.label, providerDir.resolve(pdfName), EmptyMarkdownScore, Nil, status, msg)
+                        EvalResult(bundle.label, st.label, providerDir.resolve(docName), EmptyMarkdownScore, Nil, status, msg)
                     }
             }
 
@@ -1660,27 +1728,27 @@ object EvalHarness
     }
 
     /**
-     *  Runs the full evaluation pipeline for one PDF against all provider configs.
+     *  Runs the full evaluation pipeline for one document against all provider configs.
      *
      *  For each provider, every session type configured on that provider is executed,
      *  producing one [[EvalResult]] per (provider, sessionType) combination.  Output
-     *  artifacts land in `<provider-label>/<sessionType>/` under the PDF's directory.
+     *  artifacts land in `<provider-label>/<sessionType>/` under the document's directory.
      *
-     *  @param pdfPath          Source PDF to evaluate.
-     *  @param questions        List of EvalQuestion entries.
-     *  @param providerConfigs  List of provider configurations to test.
-     *  @param settings         AppSettings used for AgentLoop and VLM options.
-     *  @param pdfTimeoutMs     Timeout for PDF-to-Markdown conversion.
-     *  @param questionTimeoutMs Timeout for each QA agent turn.
-     *  @return                 Tuple of (root work directory, list of EvalResult).
+     *  @param docPath              Source document (PDF, DOCX, or PPTX) to evaluate.
+     *  @param questions            List of EvalQuestion entries.
+     *  @param providerConfigs      List of provider configurations to test.
+     *  @param settings             AppSettings used for AgentLoop and VLM options.
+     *  @param conversionTimeoutMs  Timeout for document-to-Markdown conversion.
+     *  @param questionTimeoutMs    Timeout for each QA agent turn.
+     *  @return                     Tuple of (root work directory, list of EvalResult).
      */
     def runEval(
-        pdfPath:           Path,
-        questions:         List[EvalQuestion],
-        providerConfigs:   List[EvalProviderConfig],
-        settings:          AppSettings,
-        pdfTimeoutMs:      Long = 600000L,
-        questionTimeoutMs: Long = 120000L
+        docPath:              Path,
+        questions:            List[EvalQuestion],
+        providerConfigs:      List[EvalProviderConfig],
+        settings:             AppSettings,
+        conversionTimeoutMs:  Long = 600000L,
+        questionTimeoutMs:    Long = 120000L
     ): (Path, List[EvalResult]) =
     {
         val bundles = providerConfigs.map { config =>
@@ -1702,9 +1770,9 @@ object EvalHarness
                     judgeBaseURL      = config.judgeBaseURL,
                     judgeModel        = config.judgeModel,
                     sessionTypes      = config.sessionTypes.map(_.label),
-                    questionTimeoutMs = questionTimeoutMs,
-                    pdfTimeoutMs      = pdfTimeoutMs,
-                    reuseMarkdownCache = config.reuseMarkdownCache
+                    questionTimeoutMs    = questionTimeoutMs,
+                    conversionTimeoutMs  = conversionTimeoutMs,
+                    reuseMarkdownCache   = config.reuseMarkdownCache
                 )),
                 reuseMarkdownCache   = config.reuseMarkdownCache,
                 markdownCacheIdentity = config.vlmModel.getOrElse(config.llmModel),
@@ -1721,7 +1789,7 @@ object EvalHarness
                 }
             )
         }
-        runEvalBundles(pdfPath, questions, bundles, settings, pdfTimeoutMs, questionTimeoutMs)
+        runEvalBundles(docPath, questions, bundles, settings, conversionTimeoutMs, questionTimeoutMs)
     }
 
     /** Fixed seed used by [[EvalSessionType.AllQuestionsPerSessionShuffled]] for deterministic question reordering. */
@@ -1855,82 +1923,156 @@ object EvalHarness
     }
 
     /**
-     *  Calls the judge LLM to produce a short summary of zero-score failures,
-     *  explaining why each occurred based on the judge rationales.
+     *  Loads a question set from a `.eval.json` file.
      *
-     *  @param summaryText     Pre-formatted summary of scores, distributions, and
-     *                         per-question rationales for zero-score answers.
-     *  @param judgeProvider   LLM provider to use for generating the summary.
-     *  @param timeoutMs       Maximum time to wait for the summary.
-     *  @return                Summary string, or an error message on failure.
+     *  The file must contain a top-level object with a `"qset"` array.  Each element
+     *  must have `"question"` and `"answer"` string fields, and may optionally have
+     *  a `"category"` string (defaults to `"direct"`).
+     *
+     *  @param path  Path to the `.eval.json` file.
+     *  @return      List of [[EvalQuestion]] entries.
      */
-    def generateCommentary(
-        summaryText:   String,
-        judgeProvider: LLMProvider,
-        timeoutMs:     Long = 120000L
-    ): String =
+    def loadQuestions(path: Path): List[EvalQuestion] =
     {
-        val prompt =
-            s"""You are an expert QA evaluation analyst. Below are the aggregated results from an
-               |end-to-end document question-answering evaluation. The system converts a PDF to
-               |Markdown using a VLM, then answers questions using an LLM agent, and the answers
-               |are judged with categorical verdicts: correct, partial, or wrong.
-               |
-               |$summaryText
-               |
-               |Write a concise analysis covering:
-               |1. Which session types perform best/worst and why that might be.
-               |2. Whether derived questions are harder than direct questions and what that implies.
-               |3. Where the biggest quality gaps are (specific categories, session types, or verdict buckets).
-               |4. A summary of every answer judged "wrong" — explain why it failed
-               |   based on the judge rationale provided. Group by common patterns if applicable
-               |   (e.g. hallucination, missing data, wrong entity).
-               |5. Whether timeouts or other infrastructure failures skewed the results.
-               |
-               |If there are no wrong answers, briefly note that for point 4.
-               |
-               |Be specific and reference the numbers. Keep it under 400 words.
-               |""".stripMargin
+        val json = ujson.read(Files.readString(path))
+        json.obj("qset").arr.toList.map { q =>
+            EvalQuestion(
+                question        = q.obj("question").str,
+                referenceAnswer = q.obj("answer").str,
+                category        = q.obj.get("category").map(_.str).getOrElse("direct")
+            )
+        }
+    }
 
-        val systemMsg = Message(
-            id = "commentary-system", sessionId = "", role = MessageRole.System,
-            content = "You are an expert evaluation analyst. Summarize failures factually.",
-            timestamp = ""
-        )
-        val userMsg = Message(
-            id = "commentary-user", sessionId = "", role = MessageRole.User,
-            content = prompt, timestamp = ""
-        )
+    /**
+     *  Writes an aggregated result summary to `result_summary.txt` in the given directory.
+     *
+     *  Includes per-provider score distributions by category, wrong-answer listings,
+     *  unanswered questions, and a tool-call summary table.  Also prints the summary
+     *  to stdout for immediate visibility in CI / test runners.
+     *
+     *  @param docName  Document filename (used as the summary header).
+     *  @param results  All [[EvalResult]] entries for this document.
+     *  @param workDir  Root work directory where `result_summary.txt` is written.
+     */
+    def writeResultSummary(
+        docName: String,
+        results: List[EvalResult],
+        workDir: Path
+    ): Unit =
+    {
+        println(s"\n${"-" * 72}")
+        println(s"SUMMARY: $docName")
+        println("-" * 72)
 
-        log(s"Commentary call start timeout=${timeoutMs}ms")
-        val t0 = System.currentTimeMillis()
-        val future = evalExecutor.submit(new java.util.concurrent.Callable[String]
-        {
-            override def call(): String =
+        val summaryBuf = new StringBuilder()
+        summaryBuf.append(s"File: $docName\n")
+        summaryBuf.append(s"Work directory: $workDir\n\n")
+        summaryBuf.append("Verdicts are mapped to numeric scores for the average: correct=1.0, partial=0.5, wrong=0.0\n\n")
+
+        results.foreach { r =>
+            if r.status != SweepStatus.Ok then
             {
-                val buf = new StringBuilder()
-                judgeProvider.streamChatCompletions(List(systemMsg, userMsg), tok => buf.append(tok))
-                buf.toString()
+                val header = s"  ${r.providerLabel} / ${r.sessionType}  —  FAILED (${r.status.label}): ${r.statusMessage}"
+                println(header)
+                summaryBuf.append(s"$header\n\n")
             }
-        })
+            else
+            {
+                val answers   = r.answers
+                val judged    = answers.filter(_.judgeStatus == JudgeStatus.Judged)
+                val avgScore  = if (judged.isEmpty) 0.0 else judged.map(_.judgeScore).sum / judged.length
 
-        try
-        {
-            val text = future.get(timeoutMs, TimeUnit.MILLISECONDS)
-            log(s"Commentary call complete elapsed=${System.currentTimeMillis() - t0}ms")
-            text
+                val timeouts   = answers.count(_.status == AnswerStatus.Timeout)
+                val errors     = answers.count(_.status == AnswerStatus.Error)
+                val retried    = answers.count(_.attempts > 1)
+                val jTimeouts  = answers.count(_.judgeStatus == JudgeStatus.JudgeTimeout)
+                val jErrors    = answers.count(_.judgeStatus == JudgeStatus.JudgeError)
+                val flags = List(
+                    Option.when(retried > 0)(s"$retried retried"),
+                    Option.when(timeouts > 0)(s"$timeouts timeout"),
+                    Option.when(errors > 0)(s"$errors error"),
+                    Option.when(jTimeouts > 0)(s"$jTimeouts judge-timeout"),
+                    Option.when(jErrors > 0)(s"$jErrors judge-error")
+                ).flatten
+                val annot = if flags.isEmpty then "" else flags.mkString("; ", "; ", "")
+
+                val byCategory = judged.groupBy(_.category)
+                val categoryLines = byCategory.toList.sortBy(_._1).map { case (cat, as) =>
+                    val correct  = as.count(_.judgeVerdict.contains(JudgeVerdict.Correct))
+                    val partial  = as.count(_.judgeVerdict.contains(JudgeVerdict.PartiallyCorrect))
+                    val wrong    = as.count(_.judgeVerdict.contains(JudgeVerdict.Wrong))
+                    val catAvg   = if (as.isEmpty) 0.0 else as.map(_.judgeScore).sum / as.length
+                    f"    $cat%-12s  avg=$catAvg%.2f  (correct:$correct%d  partial:$partial%d  wrong:$wrong%d  n=${as.length}%d)"
+                }
+
+                val header = f"  ${r.providerLabel} / ${r.sessionType}  —  avg=${avgScore}%.2f  (${answers.length} questions$annot)"
+                println(header)
+                categoryLines.foreach(println)
+
+                summaryBuf.append(s"$header\n")
+                categoryLines.foreach(l => summaryBuf.append(s"$l\n"))
+
+                val wrong = judged.filter(_.judgeVerdict.contains(JudgeVerdict.Wrong))
+                if wrong.nonEmpty then
+                {
+                    summaryBuf.append("    Questions judged wrong:\n")
+                    wrong.foreach { a =>
+                        summaryBuf.append(f"      [${a.judgeVerdict.map(_.label).getOrElse("?")}] (${a.category}) ${a.question}\n")
+                    }
+                }
+
+                val notAnswered = answers.filter(_.status != AnswerStatus.Answered)
+                if notAnswered.nonEmpty then
+                {
+                    summaryBuf.append("    Questions not answered:\n")
+                    notAnswered.foreach { a =>
+                        val tries = if a.attempts > 1 then s" after ${a.attempts} attempts" else ""
+                        summaryBuf.append(s"      [${a.status.label}$tries] (${a.category}) ${a.question}\n")
+                    }
+                }
+                summaryBuf.append("\n")
+            }
         }
-        catch
-        {
-            case _: TimeoutException =>
-                log(s"Commentary call TIMEOUT after ${timeoutMs}ms; cancelling worker")
-                future.cancel(true)
-                "[Commentary generation timed out]"
-            case t: Throwable =>
-                log(s"Commentary call ERROR ${t.getClass.getSimpleName}: ${t.getMessage}")
-                future.cancel(true)
-                s"[Commentary generation failed: ${t.getClass.getSimpleName}: ${t.getMessage}]"
+
+        // Tool-call summary table.
+        summaryBuf.append(s"${"-" * 72}\n")
+        summaryBuf.append("TOOL-CALL SUMMARY\n")
+        summaryBuf.append(s"${"-" * 72}\n\n")
+
+        val okResults = results.filter(_.status == SweepStatus.Ok)
+        okResults.foreach { r =>
+            val answers = r.answers
+            val totalToolCounts = answers.foldLeft(Map.empty[String, Int]) { (acc, a) =>
+                a.toolCounts.foldLeft(acc) { case (m, (k, v)) => m.updated(k, m.getOrElse(k, 0) + v) }
+            }
+            val totalCalls = totalToolCounts.values.sum
+            val maxIterations = if answers.isEmpty then 0
+                else answers.map(a => if a.toolCalls.isEmpty then 0 else a.toolCalls.map(_.iteration).max).max
+            val avgCallsPerQ = if answers.isEmpty then 0.0 else totalCalls.toDouble / answers.length
+
+            val sweepLine = f"  ${r.providerLabel} / ${r.sessionType}  —  $totalCalls%d calls  (${avgCallsPerQ}%.1f avg/question, max iteration: $maxIterations%d)"
+            summaryBuf.append(s"$sweepLine\n")
+            println(sweepLine)
+
+            totalToolCounts.toList.sortBy(-_._2).foreach { case (tool, count) =>
+                val toolLine = f"    $tool%-30s $count%d"
+                summaryBuf.append(s"$toolLine\n")
+                println(toolLine)
+            }
+            summaryBuf.append("\n")
         }
+
+        // Write to file.
+        val output = new StringBuilder()
+        output.append(s"${"-" * 72}\n")
+        output.append(s"SUMMARY: $docName\n")
+        output.append(s"${"-" * 72}\n\n")
+        output.append(summaryBuf.toString())
+
+        val summaryPath = workDir.resolve("result_summary.txt")
+        Files.writeString(summaryPath, output.toString())
+        println(s"\n  Summary written to: $summaryPath")
     }
 
     // ─── Helpers on provider config ────────────────────────────────────────────────
@@ -1944,7 +2086,8 @@ object EvalHarness
             OpenAIProvider(
                 baseURL   = config.llmBaseURL,
                 modelName = config.llmModel,
-                apiKey    = config.llmAPIKey
+                apiKey    = config.llmAPIKey,
+                temperature = config.temperature
             )
 
         def vlmProvider: Option[LLMProvider] =
@@ -1953,7 +2096,8 @@ object EvalHarness
                     OpenAIProvider(
                         baseURL   = url,
                         modelName = model,
-                        apiKey    = config.vlmAPIKey.getOrElse("lm-studio")
+                        apiKey    = config.vlmAPIKey.getOrElse("lm-studio"),
+                        temperature = config.temperature
                     )
                 }
             }
@@ -1964,7 +2108,8 @@ object EvalHarness
                     OpenAIProvider(
                         baseURL   = url,
                         modelName = model,
-                        apiKey    = config.judgeAPIKey.getOrElse("lm-studio")
+                        apiKey    = config.judgeAPIKey.getOrElse("lm-studio"),
+                        temperature = config.temperature
                     )
                 }
             }.getOrElse(llmProvider)

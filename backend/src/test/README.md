@@ -73,8 +73,9 @@ Fields:
 - `judgeBaseURL`, `judgeModel`, `judgeAPIKey` — optional separate judge LLM; if omitted the primary LLM is used as the judge.
 - `pauseBetweenPhasesMs` — optional pause (ms) between answer generation and judging so you can unload the answer model and load the judge model on the same server (e.g., LM Studio).
 - `reuseMarkdownCache` — optional boolean (default `true`); when `true`, a matching content-addressed Markdown cache entry skips PDF rendering and VLM transcription. Set `false` to force a fresh conversion.
+- `temperature` — optional number sent on every eval request (agent, VLM, and judge). Omit to use the server's default; set a low value (e.g. `0.1`) for reproducible results.
 
-You can also point at a config file outside the repo by setting the environment variable or Java system property `PDF_EVAL_CONFIG`.
+You can also point at a config file outside the repo by setting the environment variable or Java system property `DOC_EVAL_CONFIG`.
 
 ### Running an evaluation test
 
@@ -87,19 +88,19 @@ cd backend
 The project uses `scalatest-maven-plugin`, so select the suite with `-Dsuites`:
 
 ```bash
-mvn test -Dsuites=agentica.eval.PDFEvalTest
+mvn test -Dsuites=agentica.eval.DocEvalTest
 ```
 
 If you placed the config at `src/test/resources/eval-config.json`, it will be picked up automatically. Otherwise set the path:
 
 ```bash
-PDF_EVAL_CONFIG=/path/to/eval-config.json mvn test -Dsuites=agentica.eval.PDFEvalTest
+DOC_EVAL_CONFIG=/path/to/eval-config.json mvn test -Dsuites=agentica.eval.DocEvalTest
 ```
 
 If you prefer to run from the repository root, add `-pl backend`:
 
 ```bash
-PDF_EVAL_CONFIG=/path/to/eval-config.json mvn -pl backend test -Dsuites=agentica.eval.PDFEvalTest
+DOC_EVAL_CONFIG=/path/to/eval-config.json mvn -pl backend test -Dsuites=agentica.eval.DocEvalTest
 ```
 
 ### Session types
@@ -214,6 +215,52 @@ scala-cli backend/src/test/scala/agentica/eval/eval-report.sc
 # or point it at a custom evals root:
 scala-cli backend/src/test/scala/agentica/eval/eval-report.sc /path/to/evals
 ```
+
+### Re-scoring persisted answers (`EvalRescorer`)
+
+`agentica.eval.EvalRescorer` re-judges the answers saved in a run's `questions.json`
+files **without re-running answer generation**. Use it to recover runs whose judge
+calls failed (endpoint down, model not loaded) or to compare judge variants
+(prompt, rubric, model) against an existing baseline.
+
+It is driven by the `RESCORE_ARGS` environment variable through a gated suite:
+
+```bash
+# Repair mode (default): re-judge only answers whose judge call failed
+# (judgeStatus = judge-timeout / judge-error), update files in place.
+RESCORE_ARGS="latest" mvn test -Dsuites=agentica.eval.EvalRescorerSuite
+
+# Target an explicit run directory instead of the most recent doc-eval-*:
+RESCORE_ARGS="/abs/path/doc-eval-20261011-053012" mvn test -Dsuites=agentica.eval.EvalRescorerSuite
+
+# Dry run — list how many answers per sweep would be re-judged; no judge calls.
+RESCORE_ARGS="latest --dry-run" mvn test -Dsuites=agentica.eval.EvalRescorerSuite
+
+# Compare mode — re-score EVERY answered question into side-by-side files
+# questions.<label>.json / summary.<label>.json; canonical files untouched.
+RESCORE_ARGS="latest --label=gptoss-v2 --judge-model=google/gemma-4-12b" \
+    mvn test -Dsuites=agentica.eval.EvalRescorerSuite
+
+# Judge endpoint overrides (defaults come from eval-config.json judge fields,
+# falling back to the primary LLM fields):
+RESCORE_ARGS="latest --judge-url=http://localhost:1234 --judge-model=openai/gpt-oss-20b" \
+    mvn test -Dsuites=agentica.eval.EvalRescorerSuite
+```
+
+Behaviour notes:
+
+- `latest` resolves to the most recently modified `doc-eval-*` directory under
+  `~/.local/state/Agentica/evals/` — smoke-test runs also create such directories,
+  so prefer an explicit path for real runs.
+- Before judging, the tool pre-flights `GET <judge-url>/v1/models` and aborts if the
+  endpoint is unreachable or does not serve the configured model id.
+- Repair mode backs up `questions.json`/`summary.json` to `.bak` on the first run
+  only (subsequent repairs keep the true original).
+- Every re-scored entry is stamped `"rejudged": true`, `"rejudgeModel"`, and
+  `"rejudgedAt"`; the previous verdict is appended to a per-question
+  `judgeHistory` array so original scores are never lost.
+- Compare mode re-scores all `status=answered` questions; repair mode only touches
+  answered questions whose `judgeStatus` is `judge-timeout` or `judge-error`.
 
 ### Adding a new evaluation suite
 

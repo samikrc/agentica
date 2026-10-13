@@ -7,6 +7,7 @@ import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionCon
 import agentica.tools.Tool
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, NoSuchFileException, StandardOpenOption}
+import scala.collection.immutable.ListMap
 
 
 /**
@@ -198,7 +199,7 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
             case None =>
                 ToolResult(
                     status   = ToolStatus.Ok,
-                    metadata = Map(
+                    metadata = ListMap(
                         "path"         -> output.sourcePath,
                         "bytesWritten" -> output.bytesWritten.toString
                     )

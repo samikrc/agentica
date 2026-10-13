@@ -34,6 +34,9 @@ object APIMode:
  *                              in a `<stem>_debug/` subdirectory for inspection.
  *  @param vlmParallelism       Number of concurrent VLM calls when transcribing document pages (default 4).
  *                              Values above 1 enable parallel page processing, useful with hosted APIs.
+ *  @param allowedRoots         Workspace roots permitted for session `rootPath`, joined by the OS
+ *                              path separator (`:` on Linux/macOS, `;` on Windows). Empty means the
+ *                              OS user home directory. `AGENTICA_ALLOWED_ROOTS` overrides this.
  */
 case class AppSettings(
     theme:                String  = "light",
@@ -48,7 +51,8 @@ case class AppSettings(
     vlmAPIKey:            String  = "",
     vlmModel:             String  = "",
     debugMode:            Boolean = false,
-    vlmParallelism:       Int     = 4
+    vlmParallelism:       Int     = 4,
+    allowedRoots:         String  = ""
 )
 
 object AppSettings:
@@ -121,7 +125,8 @@ class SettingsStore(path: Path)
                 "vlmAPIKey"           -> ujson.Str(normalized.vlmAPIKey),
                 "vlmModel"            -> ujson.Str(normalized.vlmModel),
                 "debugMode"           -> ujson.Bool(normalized.debugMode),
-                "vlmParallelism"      -> ujson.Num(normalized.vlmParallelism)
+                "vlmParallelism"      -> ujson.Num(normalized.vlmParallelism),
+                "allowedRoots"        -> ujson.Str(normalized.allowedRoots)
             )
             Files.createDirectories(path.getParent)
             Files.writeString(

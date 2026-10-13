@@ -42,7 +42,8 @@ class OpenAIProvider(
     baseURL:             String = "http://localhost:1234",
     val modelName:       String = "local-model",
     apiKey:              String = "lm-studio",
-    requestTimeoutSeconds: Int  = 300
+    requestTimeoutSeconds: Int  = 300,
+    temperature:         Option[Double] = None
 ) extends LLMProvider
 {
 
@@ -188,6 +189,7 @@ class OpenAIProvider(
             "messages" -> toMessagesJSON(messages),
             "stream"   -> false
         )
+        temperature.foreach(t => body("temperature") = t)
         if tools.nonEmpty then
         {
             body("tools")       = toCCFunctionSpecs(tools)
@@ -378,6 +380,7 @@ class OpenAIProvider(
             ),
             "stream" -> false
         )
+        temperature.foreach(t => body("temperature") = t)
 
         val json    = ujson.read(doRequest("/v1/chat/completions", body))
         val content = json.obj.get("choices")
