@@ -29,65 +29,50 @@ class DocEvalTest extends EvalSuite
         Paths.get(getClass.getResource("/files").toURI)
 
     /**
-     *  Documents to evaluate, resolved from test resources.
-     *  The matching question file is expected at `<stem>.eval.json` where `<stem>`
-     *  is the document filename without the extension.
+     *  Loads explicit document selection and providers from the active run configuration.
+     *
+     *  @return Configuration shared by all document sweeps.
+     *  @throws IllegalArgumentException if no evaluation configuration exists.
      */
-    private val evalDocs: List[String] = List(
-        //"IT Support Analyst - India.pdf",
-        "Even OPD Policy Document.pdf"
-    )
+    private def loadRunConfig(): EvalRunConfig =
+        EvalConfig.resolveRun().getOrElse(throw new IllegalArgumentException(
+            "No eval config found. Set DOC_EVAL_CONFIG or create /eval-config.json on the test classpath."))
 
     /**
-     *  Runs the full document-to-Markdown + QA evaluation for every document in [[evalDocs]].
+     *  Runs the full document-to-Markdown + QA evaluation for every configured document.
      *
-     *  If a document or its corresponding `.eval.json` question file is missing, that
-     *  document is reported and skipped.
+     *  All document and matching `.eval.json` inputs are validated before model calls.
      */
     test("Document-to-Markdown + QA evaluation for all configured documents") {
-        val configs  = loadProviderConfigs()
+        val runConfig = loadRunConfig()
+        val inputs = runConfig.documentInputs(evalResourceDir)
+        val configs = runConfig.providers
         val settings = AppSettings()
 
         println(s"Providers: ${configs.map(c => s"${c.label} [${c.sessionTypes.map(_.label).mkString(",")}]").mkString(", ")}")
 
-        evalDocs.foreach { docName =>
-            val docPath      = evalResourceDir.resolve(docName)
-            val stem         = docName.lastIndexOf('.') match { case -1 => docName; case i => docName.substring(0, i) }
-            val evalJsonName = s"$stem.eval.json"
+        inputs.foreach { case (docPath, questions) =>
+            val docName = docPath.getFileName.toString
+            println(s"\nRunning evaluation on: $docPath")
 
-            if !docPath.toFile.exists() then
-            {
-                println(s"\n[SKIP] Missing document: $docPath")
+            val (workDir, results) = EvalHarness.runEval(
+                docPath             = docPath,
+                questions           = questions,
+                providerConfigs     = configs,
+                settings            = settings,
+                conversionTimeoutMs = 600000L,
+                questionTimeoutMs   = 150000L
+            )
+
+            // Soft sanity checks: every successful sweep must produce answers for all questions.
+            results.filter(_.status == SweepStatus.Ok).foreach { r =>
+                assert(r.answers.length == questions.length,
+                    s"${r.providerLabel}/${r.sessionType}: expected ${questions.length} answers, got ${r.answers.length}")
             }
-            else if !evalResourceDir.resolve(evalJsonName).toFile.exists() then
+
+            if results.nonEmpty then
             {
-                println(s"\n[SKIP] Missing question file: $evalJsonName for: $docName")
-            }
-            else
-            {
-                val questions = EvalHarness.loadQuestions(evalResourceDir.resolve(evalJsonName))
-
-                println(s"\nRunning evaluation on: $docPath")
-
-                val (workDir, results) = EvalHarness.runEval(
-                    docPath             = docPath,
-                    questions           = questions,
-                    providerConfigs     = configs,
-                    settings            = settings,
-                    conversionTimeoutMs = 600000L,
-                    questionTimeoutMs   = 150000L
-                )
-
-                // Soft sanity checks: every successful sweep must produce answers for all questions.
-                results.filter(_.status == SweepStatus.Ok).foreach { r =>
-                    assert(r.answers.length == questions.length,
-                        s"${r.providerLabel}/${r.sessionType}: expected ${questions.length} answers, got ${r.answers.length}")
-                }
-
-                if results.nonEmpty then
-                {
-                    EvalHarness.writeResultSummary(docName, results, workDir)
-                }
+                EvalHarness.writeResultSummary(docName, results, workDir)
             }
         }
     }

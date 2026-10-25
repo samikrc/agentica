@@ -5,17 +5,21 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, StandardOpenOption}
 
 /** LLM API endpoint to use for inference calls. */
-enum APIMode:
+enum APIMode
+{
     case ChatCompletions // Chat Completions — stateless, full context sent each turn (default)
     case Responses       // Responses API   — stateful, server retains context via response ID
+}
 
-object APIMode:
+object APIMode
+{
     given ReadWriter[APIMode] = readwriter[String].bimap(
         mode => mode.toString.toLowerCase,
         str  => str.toLowerCase match
             case "responses" => Responses
             case _           => ChatCompletions
     )
+}
 
 /**
  *  User-configurable application settings persisted outside the SQLite database.

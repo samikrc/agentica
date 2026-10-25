@@ -14,13 +14,13 @@ set -euo pipefail
 # For remote providers (e.g. Valar), write the API key as a ${VAR} placeholder —
 # the eval harness resolves it from the environment at runtime, so no secret is
 # stored on disk. Example:
-#   "valar-gpt5|gpt-5|https://api.valar.dev/v1|\${VALAR_API_KEY}"
+#   "valar-gpt5|gpt-5|https://api.valarhq.ai|\${VALAR_API_KEY}"
 # then run with:  VALAR_API_KEY=sk-... ./run-eval-loop.sh
 #
 # To run only Valar (without editing this file), override MODELS on the command
 # line — the secret still comes from the environment:
 #   VALAR_API_KEY=sk-... \
-#     MODELS=("valar-gpt5|gpt-5|https://api.valar.dev/v1|\${VALAR_API_KEY}") \
+#     MODELS=("valar-gpt5|gpt-5|https://api.valarhq.ai|\${VALAR_API_KEY}") \
 #     ./src/test/resources/run-eval-loop.sh
 #
 # To run only Valar by editing this file, comment out the local entries and
@@ -50,7 +50,9 @@ MODELS=(
     "local-ministral-3|mistralai/ministral-3-14b-reasoning|http://192.168.2.126:1234|lm-studio"
     "local-gemma4-it|google/gemma-4-12b|http://192.168.2.126:1234|lm-studio"
     "local-gemma4-e4b|google/gemma-4-e4b|http://192.168.2.126:1234|lm-studio"
-    # "valar-gpt5|gpt-5|https://api.valar.dev/v1|\${VALAR_API_KEY}"
+    # "valar-glm-5.3|zai-org/GLM-5.3|https://api.valarhq.ai|\${VALAR_API_KEY}"
+    # "valar-glm-5.3-flash|zai-org/GLM-5.3-Flash|https://api.valarhq.ai|\${VALAR_API_KEY}"
+    # "valar-kimi-k3|moonshotai/Kimi-K3|https://api.valarhq.ai|\${VALAR_API_KEY}"
 )
 
 for entry in "${MODELS[@]}"; do
@@ -67,18 +69,23 @@ for entry in "${MODELS[@]}"; do
     echo "Base URL: ${base_url}"
     echo "========================================"
 
-    python3 - <<PY
+    CONFIG_PATH="${CONFIG_FILE}" EVAL_LABEL="${label}" EVAL_MODEL="${model}" \
+        EVAL_BASE_URL="${base_url}" EVAL_API_KEY="${api_key}" python3 - <<'PY'
 import json
-import sys
+import os
 
-config_path = "${CONFIG_FILE}"
+config_path = os.environ["CONFIG_PATH"]
 with open(config_path, "r") as f:
     config = json.load(f)
 
-config[0]["label"] = "${label}"
-config[0]["llmModel"] = "${model}"
-config[0]["llmBaseURL"] = "${base_url}"
-config[0]["llmAPIKey"] = "${api_key}"
+if not isinstance(config, dict) or not config.get("documents") or not config.get("providers"):
+    raise SystemExit('Use a run config object with non-empty "documents" and "providers" arrays.')
+provider = dict(config["providers"][0])
+provider["label"] = os.environ["EVAL_LABEL"]
+provider["llmModel"] = os.environ["EVAL_MODEL"]
+provider["llmBaseURL"] = os.environ["EVAL_BASE_URL"]
+provider["llmAPIKey"] = os.environ["EVAL_API_KEY"]
+config["providers"] = [provider]
 
 with open(config_path, "w") as f:
     json.dump(config, f, indent=2)

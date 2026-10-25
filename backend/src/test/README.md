@@ -44,28 +44,44 @@ Create an active configuration from the example file:
 cp src/test/resources/eval-config.json.example src/test/resources/eval-config.json
 ```
 
-Edit `src/test/resources/eval-config.json` to point at your endpoints and models. The file is a JSON array of provider sweep entries:
+Edit `src/test/resources/eval-config.json` to select documents and configure your endpoints and models. The file is a run-level object:
 
 ```json
-[
+{
+  "documents": ["ind_nifty50.pdf", "Even OPD Policy Document.pdf"],
+  "providers": [
   {
     "label": "local-qwen-vlm",
-    "llmBaseURL": "http://localhost:1234/v1",
+    "llmBaseURL": "http://localhost:1234",
     "llmModel": "mistralai/ministral-3-14b-reasoning",
     "llmAPIKey": "lm-studio",
-    "vlmBaseURL": "http://localhost:1234/v1",
+    "vlmBaseURL": "http://localhost:1234",
     "vlmModel": "qwen2.5-vl-7b-instruct",
     "vlmAPIKey": "lm-studio",
-    "judgeBaseURL": "http://localhost:1234/v1",
+    "judgeBaseURL": "http://localhost:1234",
     "judgeModel": "claude-3-5-sonnet",
     "judgeAPIKey": "lm-studio",
     "pauseBetweenPhasesMs": 30000,
     "reuseMarkdownCache": true
   }
-]
+  ]
+}
 ```
 
-Fields:
+`documents` is a non-empty list of filenames under `src/test/resources/files` (PDF, DOCX, or PPTX).
+Each document requires a matching `<stem>.eval.json` question file. All selected inputs are
+validated before any model calls; missing inputs, duplicate documents, empty question sets,
+and empty provider lists fail the run instead of silently skipping work. Every document runs
+against every provider. Absolute paths and directory traversal are not accepted.
+
+Legacy top-level provider arrays remain readable by provider-only consumers such as
+`EvalRescorer`, but `DocEvalTest` requires explicit document selection. To migrate, wrap your
+existing array as `{"documents": ["ind_nifty50.pdf"], "providers": <existing array>}`.
+The loop script preserves `documents` and uses the first provider as its template, running
+one provider from its `MODELS` list per invocation and restoring the original config on exit.
+Provider string fields continue to support `${VAR}` environment placeholders.
+
+Provider fields:
 
 - `label` — display name for this provider sweep entry.
 - `llmBaseURL`, `llmModel`, `llmAPIKey` — primary LLM (required).
