@@ -10,12 +10,16 @@ import java.nio.file.{Files, Path, StandardCopyOption}
  *  Standalone comparison test: renders a PDF and runs each configured VLM
  *  provider against every page, writing one Markdown output file per provider.
  *
- *  Edit [[pdfPath]] and [[Providers]] before running.
+ *  Edit [[pdfPaths]] and [[providers]] before running.
  *
- *  Run with:
- *    mvn test -pl backend -Dtest=VLMCompareTest -Dsurefire.failIfNoSpecifiedTests=false
+ *  Run from backend/ with:
+ *    mvn test-compile exec:exec -Dexec.classpathScope=test \
+ *      -Dexec.args="-Djava.awt.headless=true -Dorg.jboss.logging.provider=jdk -classpath %classpath agentica.misctests.VLMCompareTest"
+ *  Append --sweep inside exec.args for the default grid, or
+ *  --dpi 150 --max-dimension 1650 for a fixed override.
+ *  Sweep overrides: --dpi-values 50,100,150 --max-dimensions 1024,1200,1400,1650.
  *
- *  Output files are written next to the source PDF, named `<stem>_<label>.md`.
+ *  Markdown and results.json are saved under the printed temporary work directory.
  */
 object VLMCompareTest
 {
@@ -29,7 +33,7 @@ object VLMCompareTest
      *  dynamic/native-resolution models (e.g. Qwen2.5-VL) without materially
      *  hurting OCR quality for fixed-resolution encoders.
      */
-    val maxImageDimension: Int = 1024
+    val maxImageDimension: Int = PDFPageRenderer.MaxImageDimension
 
     /** Paths to the PDFs to transcribe, resolved from test resources. */
     val pdfPaths: List[java.nio.file.Path] = List(
@@ -57,7 +61,7 @@ object VLMCompareTest
     // ─── Sweep-mode constants ───
 
     /** Set to `true` to run the DPI×maxDim parameter sweep, `false` for the fixed single-pass run. */
-    val runSweepMode: Boolean = true
+    val runSweepMode: Boolean = false
 
     /** DPI values to sweep in the parameter search. */
     val dpiValues: List[Int] = List(50, 100, 150)
@@ -69,18 +73,101 @@ object VLMCompareTest
     val sweepPageTimeoutMs: Long = 180000L
 
     /**
-     *  Entry point: dispatches to either the fixed single-pass run or the
-     *  DPI×maxDim parameter sweep based on [[runSweepMode]].
+     *  Validated image configuration for a comparison run.
+     *  @param sweep Whether to evaluate a grid instead of one fixed configuration.
+     *  @param dpis Positive rendering DPI values.
+     *  @param maxDimensions Positive longest-side caps in pixels.
+     */
+    case class ImageOptions(sweep: Boolean, dpis: List[Int], maxDimensions: List[Int])
+
+    /**
+     *  Parses fixed or sweep image settings before any model calls.
+     *  @param args Command-line flags and values.
+     *  @return Validated image settings using production defaults for fixed runs.
+     *  @throws IllegalArgumentException if flags conflict or values are invalid.
+     */
+    def parseOptions(args: List[String]): ImageOptions =
+    {
+        val values = scala.collection.mutable.Map.empty[String, String]
+        var sweep = false
+        var rest = args
+        val flags = Set("--dpi", "--max-dimension", "--dpi-values", "--max-dimensions")
+        while (rest.nonEmpty)
+        {
+            rest match
+            {
+                case "--sweep" :: tail =>
+                    require(!sweep, "Duplicate --sweep")
+                    sweep = true
+                    rest = tail
+                case flag :: value :: tail if flags.contains(flag) =>
+                    require(!values.contains(flag), s"Duplicate $flag")
+                    values(flag) = value
+                    rest = tail
+                case _ => throw IllegalArgumentException(s"Unknown or incomplete option: ${rest.head}")
+            }
+        }
+        require(!sweep || !values.keys.exists(Set("--dpi", "--max-dimension")),
+            "Fixed overrides cannot be used with --sweep")
+        require(sweep || !values.keys.exists(Set("--dpi-values", "--max-dimensions")),
+            "Grid overrides require --sweep")
+        def numbers(flag: String, fallback: List[Int]): List[Int] =
+        {
+            val result = values.get(flag).map(_.split(",", -1).toList.map { token =>
+                token.trim.toIntOption.filter(_ > 0).getOrElse(
+                    throw IllegalArgumentException(s"$flag requires positive integers"))
+            }).getOrElse(fallback)
+            require(result.nonEmpty && result.distinct.size == result.size, s"Invalid or duplicate values for $flag")
+            require(sweep || result.size == 1, s"$flag requires one value")
+            result
+        }
+        ImageOptions(sweep,
+            numbers(if (sweep) "--dpi-values" else "--dpi", if (sweep) dpiValues else List(PDFPageRenderer.RenderDPI.toInt)),
+            numbers(if (sweep) "--max-dimensions" else "--max-dimension", if (sweep) maxDimValues else List(PDFPageRenderer.MaxImageDimension)))
+    }
+
+    /**
+     *  Determines whether every page remains at original resolution under a size cap.
+     *  @param longestSides Longest pixel dimensions of all rendered pages.
+     *  @param maxDimension Requested pixel cap.
+     *  @return True only for a non-empty document with no page requiring resizing.
+     */
+    def originalResolution(longestSides: List[Int], maxDimension: Int): Boolean =
+        longestSides.nonEmpty && longestSides.forall(_ <= maxDimension)
+
+    /**
+     *  Applies the production resizing operation to all page images.
+     *  @param pages Rendered PNG page images.
+     *  @param maxDimension Longest-side cap, defaulting to the production setting.
+     *  @return Resized PNG images in page order, without upscaling.
+     */
+    def prepareImages(pages: List[Array[Byte]], maxDimension: Int = PDFPageRenderer.MaxImageDimension): List[Array[Byte]] =
+        pages.map(PDFPageRenderer.resizeToMaxDimension(_, maxDimension))
+
+    /**
+     *  Selects a successful original-resolution result only when all page inputs are unchanged.
+     *  @param previous Previously measured result at the same DPI for this model and document.
+     *  @param longestSides Longest dimensions of all rendered pages.
+     *  @param maxDimension Requested size cap.
+     *  @return The reusable result, or None when either configuration resizes a page.
+     */
+    def reusableResult(previous: Option[SweepResult], longestSides: List[Int], maxDimension: Int): Option[SweepResult] =
+        previous.filter(r => r.status == "completed" && r.failedPages == 0 &&
+            originalResolution(longestSides, r.maxImageDimension) && originalResolution(longestSides, maxDimension))
+
+    /**
+     *  Runs the shared comparison pipeline using fixed production defaults or an opt-in sweep.
      *
-     *  @param args  Unused command-line arguments.
+     *  @param args Image configuration flags accepted by [[parseOptions]].
+     *  @throws IllegalArgumentException if the requested configuration is invalid.
      */
     def main(args: Array[String]): Unit =
     {
+        val options = parseOptions(args.toList)
         System.setProperty("java.awt.headless", "true")
         DocFontLoader.init()
 
-        if (runSweepMode) { runSweep() }
-        else              { runFixed() }
+        runSweep(options)
     }
 
     // ─── Fixed mode (original single-pass) ───
@@ -144,7 +231,8 @@ object VLMCompareTest
                         {
                             val markdown = PageVisionTranscriber.transcribe(
                                 totalPages    = totalPages,
-                                renderBatch   = (from, to) => PDFPageRenderer.renderBatch(workPDF, from, to),
+                                renderBatch   = (from, to) => PDFPageRenderer.renderBatch(workPDF, from, to)
+                                    .map(PDFPageRenderer.resizeToMaxDimension(_, PDFPageRenderer.MaxImageDimension)),
                                 llmProvider   = provider,
                                 traceId       = s"vlm-compare-$label",
                                 debugImageDir = Some(workDir),
@@ -211,10 +299,13 @@ object VLMCompareTest
      *  all PDFs across all DPI/maxDim combinations, then unloads.
      *  Results are collected in memory and a summary table is printed at the end.
      */
-    private def runSweep(): Unit =
+    private def runSweep(options: ImageOptions): Unit =
     {
+        val dpiValues = options.dpis
+        val maxDimValues = options.maxDimensions
         // Single root temp directory shared by all PDFs, one subfolder per PDF
-        val rootWorkDir = Files.createTempDirectory("vlm-sweep-")
+        val rootWorkDir = Files.createTempDirectory("vlm-compare-")
+        println(s"Mode                : ${if (options.sweep) "sweep" else "fixed"} (PNG)")
         println(s"Root work directory : $rootWorkDir")
         println(s"DPI values          : ${dpiValues.mkString(", ")}")
         println(s"MaxDim values       : ${maxDimValues.mkString(", ")}")
@@ -309,24 +400,27 @@ object VLMCompareTest
                             PDFPageRenderer.renderBatch(workPDF, 0, totalPages, dpi.toFloat)
                         })
 
-                        // Determine the longest side of the first page at this DPI
-                        val renderedLongest = if (renderedPages.nonEmpty)
-                            PDFPageRenderer.imageLongestSide(renderedPages.head)
-                        else 0
+                        // Determine the longest sides of every page at this DPI
+                        val longestSides = renderedPages.map(PDFPageRenderer.imageLongestSide)
+                        val renderedLongest = longestSides.maxOption.getOrElse(0)
 
                         // Iterate maxDim values; skip no-op combos that reuse prior results
                         for (maxDim <- maxDimValues if !modelTimedOut)
                         {
                             // No-op: maxDim ≥ rendered longest side means resizeToMaxDimension
                             // returns the original image, so the VLM sees identical input
-                            val isNoOp = maxDim >= renderedLongest
+                            val isNoOp = originalResolution(longestSides, maxDim)
 
-                            if (isNoOp && prevResultPerDpi.contains(dpi))
+                            val reusable = reusableResult(prevResultPerDpi.get(dpi), longestSides, maxDim)
+                            if (reusable.nonEmpty)
                             {
                                 // Reuse previous result — same image goes to the VLM
-                                val prev = prevResultPerDpi(dpi)
+                                val prev = reusable.get
                                 println(s"    [DPI=$dpi, maxDim=$maxDim] no-op (rendered longest=$renderedLongest px ≤ $maxDim) — reusing previous result")
-                                allResults += prev.copy(maxImageDimension = maxDim)
+                                allResults += prev.copy(maxImageDimension = maxDim,
+                                    status = "reused", reusedFrom = Some(prev.maxImageDimension),
+                                    notes = s"Reused original-resolution input from maxDim=${prev.maxImageDimension}")
+                                saveResults(rootWorkDir, options, allResults.toList)
                             }
                             else
                             {
@@ -334,19 +428,25 @@ object VLMCompareTest
 
                                 // Per-page timing for this (DPI, maxDim) combo
                                 val pageTimes = scala.collection.mutable.ArrayBuffer.empty[Long]
+                                var dimensions = List.empty[(Int, Int)]
+                                var started = System.nanoTime()
 
                                 try
                                 {
                                     // Transcribe using cached renders resized to maxDim;
                                     // no debug images written — scoring is done in memory
+                                    val inputPages = prepareImages(renderCache(dpi), maxDim)
+                                    dimensions = inputPages.map { bytes =>
+                                        val image = javax.imageio.ImageIO.read(new java.io.ByteArrayInputStream(bytes))
+                                        (image.getWidth, image.getHeight)
+                                    }
+                                    started = System.nanoTime()
                                     val markdown = PageVisionTranscriber.transcribe(
                                         totalPages    = totalPages,
                                         renderBatch   = (from, to) =>
                                         {
                                             // Slice cached renders for this DPI and resize to maxDim
-                                            val cached = renderCache(dpi)
-                                            cached.slice(from, to)
-                                                .map(PDFPageRenderer.resizeToMaxDimension(_, maxDim))
+                                            inputPages.slice(from, to)
                                         },
                                         llmProvider   = p,
                                         traceId       = s"vlm-sweep-$label-dpi$dpi-maxdim$maxDim",
@@ -366,9 +466,13 @@ object VLMCompareTest
                                         }
                                     )
 
-                                    // Collect statistics and score in memory (no .md files written)
-                                    val totalMs = pageTimes.sum
-                                    val avgMs   = if (pageTimes.nonEmpty) totalMs / pageTimes.size else 0L
+                                    // Collect statistics and persist Markdown for inspection
+                                    val totalMs = (System.nanoTime() - started) / 1000000L
+                                    val avgMs   = if (totalPages > 0) totalMs / totalPages else 0L
+                                    val outPath = workDir.resolve(s"${stem}_${label}_dpi${dpi}_max${maxDim}.md")
+                                    Files.writeString(outPath, markdown)
+                                    val failedPages = markdown.linesIterator.count(line =>
+                                        line.startsWith("[Page ") && line.contains(": transcription failed"))
                                     val score   = MarkdownScorer.score(markdown, referenceText, totalPages)
                                     val words   = markdown.split("\\s+").count(_.length > 1)
 
@@ -390,10 +494,16 @@ object VLMCompareTest
                                         headingCount     = score.headingCount,
                                         tableRowCount    = score.tableRowCount,
                                         nonEmptyRatio    = score.nonEmptyRatio,
-                                        notes            = ""
+                                        notes            = "",
+                                        status           = if (failedPages > 0) "partial-error" else "completed",
+                                        model            = modelName,
+                                        pageDimensions   = dimensions,
+                                        markdownPath     = Some(outPath.toString),
+                                        failedPages      = failedPages
                                     )
                                     allResults += result
-                                    prevResultPerDpi(dpi) = result
+                                    saveResults(rootWorkDir, options, allResults.toList)
+                                    if (isNoOp && failedPages == 0) { prevResultPerDpi(dpi) = result }
                                 }
                                 catch
                                 {
@@ -402,7 +512,8 @@ object VLMCompareTest
                                         allResults += SweepResult(stem, label, dpi, maxDim, timedOut = true,
                                             NotApplicable, NotApplicable, NotApplicable, NotApplicable,
                                             NotApplicable, NotApplicable, NotApplicable, NotApplicable, NotApplicable,
-                                            "timeout")
+                                            "timeout", status = "timeout", model = modelName, pageDimensions = dimensions)
+                                            .copy(totalTimeMs = (System.nanoTime() - started) / 1000000L)
                                         modelTimedOut = true
 
                                     case t: Throwable =>
@@ -410,13 +521,25 @@ object VLMCompareTest
                                         allResults += SweepResult(stem, label, dpi, maxDim, timedOut = false,
                                             NotApplicable, NotApplicable, NotApplicable, NotApplicable,
                                             NotApplicable, NotApplicable, NotApplicable, NotApplicable, NotApplicable,
-                                            s"error: ${t.getMessage}")
+                                            s"error: ${t.getMessage}", status = "error", model = modelName, pageDimensions = dimensions)
+                                            .copy(totalTimeMs = (System.nanoTime() - started) / 1000000L)
                                         // Don't set modelTimedOut — try next combo
                                 }
+                                saveResults(rootWorkDir, options, allResults.toList)
                             }
                         }
                     }
                 }
+
+                for ((_, stem, _, _, _, _) <- pdfInfos; dpi <- dpiValues; maxDim <- maxDimValues
+                     if !allResults.exists(r => r.pdfStem == stem && r.providerLabel == label && r.dpi == dpi && r.maxImageDimension == maxDim))
+                {
+                    allResults += SweepResult(stem, label, dpi, maxDim, timedOut = false,
+                        NotApplicable, NotApplicable, NotApplicable, NotApplicable,
+                        NotApplicable, NotApplicable, NotApplicable, NotApplicable, NotApplicable,
+                        "skipped after model timeout", status = "skipped", model = modelName)
+                }
+                saveResults(rootWorkDir, options, allResults.toList)
 
                 // Unload local model after all PDFs and DPI/maxDim combos for this provider are done
                 if (LMStudioClient.isLocal(serverURL))
@@ -431,8 +554,52 @@ object VLMCompareTest
         }
 
         println("\n\n========== SWEEP RESULTS ==========\n")
+        saveResults(rootWorkDir, options, allResults.toList)
         printSummaryTable(allResults.toList)
+        println(s"\nArtifacts: $rootWorkDir")
         println("\nDone.")
+    }
+
+    /**
+     *  Saves a structured snapshot after completed configurations, without credentials.
+     *  @param directory Run artifact directory.
+     *  @param options Requested image configuration.
+     *  @param results Results collected so far.
+     */
+    def saveResults(directory: Path, options: ImageOptions, results: List[SweepResult]): Unit =
+    {
+        def number(value: Any): ujson.Value = value match
+        {
+            case n: Int => ujson.Num(n.toDouble)
+            case n: Long => ujson.Num(n.toDouble)
+            case n: Double => ujson.Num(n)
+            case _ => ujson.Null
+        }
+        val rows = results.map { r =>
+            val status = if (r.status.nonEmpty) r.status
+                else if (r.timedOut) "timeout"
+                else if (r.notes == "no vision support") "unsupported"
+                else "error"
+            ujson.Obj(
+                "pdf" -> r.pdfStem, "provider" -> r.providerLabel,
+                "model" -> (if (r.model.nonEmpty) r.model else providers.find(_._1 == r.providerLabel).map(_._3).getOrElse("")),
+                "dpi" -> r.dpi, "maxDimension" -> r.maxImageDimension,
+                "status" -> status, "notes" -> r.notes,
+                "pageDimensions" -> ujson.Arr.from(r.pageDimensions.map { case (w, h) => ujson.Obj("width" -> w, "height" -> h) }),
+                "markdownPath" -> r.markdownPath.map(ujson.Str(_)).getOrElse(ujson.Null),
+                "reusedFromMaxDimension" -> r.reusedFrom.map(n => ujson.Num(n.toDouble)).getOrElse(ujson.Null),
+                "failedPages" -> (if (Set("completed", "partial-error", "reused").contains(status)) ujson.Num(r.failedPages.toDouble) else ujson.Null),
+                "transcriptionWallTimeMs" -> (if (r.reusedFrom.nonEmpty) ujson.Null else number(r.totalTimeMs)),
+                "averageWallTimePerPageMs" -> (if (r.reusedFrom.nonEmpty) ujson.Null else number(r.avgTimePerPageMs)),
+                "chars" -> number(r.totalChars), "words" -> number(r.totalWords),
+                "wordCountRatio" -> number(r.wordCountRatio), "tokenOverlap" -> number(r.tokenOverlap),
+                "headings" -> number(r.headingCount), "tableRows" -> number(r.tableRowCount),
+                "nonEmptyRatio" -> number(r.nonEmptyRatio))
+        }
+        val json = ujson.Obj("mode" -> (if (options.sweep) "sweep" else "fixed"),
+            "format" -> "PNG", "dpis" -> ujson.Arr.from(options.dpis),
+            "maxDimensions" -> ujson.Arr.from(options.maxDimensions), "results" -> ujson.Arr.from(rows))
+        Files.writeString(directory.resolve("results.json"), ujson.write(json, indent = 2))
     }
 
     /**
@@ -481,7 +648,9 @@ object VLMCompareTest
 
             val row = List(
                 r.pdfStem, r.providerLabel, r.dpi.toString, r.maxImageDimension.toString,
-                fmtStr(r.totalChars), fmtStr(r.totalWords), fmtTime(r.totalTimeMs), fmtTime(r.avgTimePerPageMs),
+                fmtStr(r.totalChars), fmtStr(r.totalWords),
+                (if (r.reusedFrom.nonEmpty) "reused" else fmtTime(r.totalTimeMs)),
+                (if (r.reusedFrom.nonEmpty) "reused" else fmtTime(r.avgTimePerPageMs)),
                 fmtNum(r.wordCountRatio), fmtNum(r.tokenOverlap), fmtNum(r.headingCount), fmtNum(r.tableRowCount), fmtPct(r.nonEmptyRatio),
                 r.notes
             )
@@ -508,6 +677,12 @@ object VLMCompareTest
  *  @param tableRowCount     Number of Markdown table rows found.
  *  @param nonEmptyRatio     Ratio of non-empty pages to total pages (0–1).
  *  @param notes             Additional notes (e.g. "timeout", "no vision support", error message).
+ *  @param status            Completion, reuse, partial-error, or skip status.
+ *  @param model             Model identifier without credentials.
+ *  @param pageDimensions    Effective PNG width and height for each page.
+ *  @param markdownPath      Saved transcription, or the original artifact for reused results.
+ *  @param reusedFrom        Original measured configuration's maximum dimension.
+ *  @param failedPages       Number of transcription failure placeholders.
  */
 case class SweepResult(
     pdfStem:           String,
@@ -524,7 +699,13 @@ case class SweepResult(
     headingCount:      Any,
     tableRowCount:     Any,
     nonEmptyRatio:     Any,
-    notes:             String
+    notes:             String,
+    status:            String = "",
+    model:             String = "",
+    pageDimensions:    List[(Int, Int)] = Nil,
+    markdownPath:      Option[String] = None,
+    reusedFrom:        Option[Int] = None,
+    failedPages:       Int = 0
 )
 
 /**

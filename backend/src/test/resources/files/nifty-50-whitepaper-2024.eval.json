@@ -1,0 +1,65 @@
+{
+  "file": "/files/nifty-50-whitepaper-2024.pdf",
+  "qset": [
+    {
+      "question": "According to the calendar-year performance chart in Exhibit 10, what was the Nifty 50 TR index return in 2001?",
+      "answer": "The Nifty 50 TR index return in 2001 was -15.05%.",
+      "category": "direct"
+    },
+    {
+      "question": "According to the options chart in Exhibit 15, what was the average daily premium turnover of Nifty 50 index options in Q3 of FY2024, in rupees crore?",
+      "answer": "The average daily premium turnover of Nifty 50 index options in Q3 of FY2024 was Rs. 6,796 crore.",
+      "category": "direct"
+    },
+    {
+      "question": "In the daily rolling-return table in Exhibit 12, for the five-year investment horizon, what percentage of instances had negative returns and what was the minimum CAGR?",
+      "answer": "For the five-year horizon, 0.1% of instances had negative returns and the minimum CAGR was -1.03%.",
+      "category": "direct"
+    },
+    {
+      "question": "According to the 'About Nifty 50 Index' text, what is the index's base date, and how is each stock's weight determined?",
+      "answer": "The base date is November 3, 1995. Each stock's weight is based on its free-float market capitalization.",
+      "category": "direct"
+    },
+    {
+      "question": "According to the table in Exhibit 16, what were Navi Mutual Fund's Nifty 50 ETF AUM and index-fund AUM as of March 28, 2024, in rupees billion?",
+      "answer": "Navi Mutual Fund's ETF AUM was Rs. 0 billion and its index-fund AUM was Rs. 17 billion, as reported in the table.",
+      "category": "direct"
+    },
+    {
+      "question": "According to the 'International Presence – ETFs & Index Funds' text, how many international ETFs and international index funds were based on Nifty 50 as of March 28, 2024, and what was the total AUM of each group?",
+      "answer": "There were 9 international ETFs with total AUM of USD 2,266 million and 6 international index funds with total AUM of USD 855 million.",
+      "category": "direct"
+    },
+    {
+      "question": "Using the calendar-year Nifty 50 TR returns in Exhibit 10, suppose an investment was worth Rs. 100 at the start of 2008 and remained invested through the end of 2009, with no deposits or withdrawals. Did the 2009 rebound fully recover the 2008 loss? Calculate the approximate ending value and cumulative percentage return using compounded annual returns.",
+      "answer": "No. The return was -51.27% in 2008 and +77.59% in 2009. The ending value is Rs. 100 × (1 - 0.5127) × (1 + 0.7759) = approximately Rs. 86.54. The cumulative return is approximately -13.46%, so the rebound did not fully recover the loss.",
+      "category": "derived"
+    },
+    {
+      "question": "Using the sector-by-year table in Exhibit 6, by how many percentage points did the Financial Services sector weight change between 1995 and March 28, 2024? Using the table's footnote, explain why this is not a comparison on an unchanged market-capitalization weighting basis.",
+      "answer": "The weight increased from 20.00% in 1995 to 33.53% in 2024, an increase of 13.53 percentage points. The footnote states that the 1995 weights use full market capitalization whereas the 2024 weights use free-float market capitalization, so the weighting basis changed.",
+      "category": "derived"
+    },
+    {
+      "question": "Using the March 2020 and March 2024 endpoints in Exhibit 17, which grew faster in percentage terms: Nifty 50 ETF AUM or Nifty 50 index-fund AUM? Calculate the approximate percentage growth of each, rather than comparing their plotted heights or absolute increases.",
+      "answer": "Index-fund AUM grew faster in percentage terms. ETF AUM increased from Rs. 726 billion to Rs. 2,775 billion, giving (2775 - 726) / 726 × 100 ≈ 282.23% growth. Index-fund AUM increased from Rs. 53 billion to Rs. 522 billion, giving (522 - 53) / 53 × 100 ≈ 884.91% growth.",
+      "category": "derived"
+    },
+    {
+      "question": "Using the sector-exposure table in Exhibit 4, compare Financial Services and Information Technology with their weights in the overall NSE listed-and-permitted-to-trade universe. Which is overweight and which is underweight in Nifty 50, and by how many percentage points in each case?",
+      "answer": "Financial Services is overweight: its Nifty 50 weight is 33.53% versus 27.91% in the overall universe, a difference of +5.62 percentage points. Information Technology is underweight: 13.04% versus 15.79%, a difference of -2.75 percentage points.",
+      "category": "derived"
+    },
+    {
+      "question": "The index-performance text says that the Nifty 50 Total Return index assumes dividends are reinvested and reports a 14.10% annualized return since June 30, 1999. An analyst treats that 14.10% as price appreciation alone and adds a separate dividend return to estimate total return. Is this valid, and can the price-only annualized return be determined from the 14.10% figure alone? Explain.",
+      "answer": "No. The 14.10% is already a total-return figure incorporating price return and reinvested dividends, so adding a separate dividend return would double-count the dividend component. The price-only annualized return cannot be determined from that total-return figure alone without additional information about the dividend component or the price-return series.",
+      "category": "derived"
+    },
+    {
+      "question": "Using the fund counts in the 'Domestic Presence' text, was Nifty 50 tracked by a larger proportion of India's equity ETFs or of its equity index funds as of March 28, 2024? Calculate both proportions from the reported counts.",
+      "answer": "Nifty 50 was tracked by a larger proportion of equity index funds. It was tracked by 18 of 152 ETFs, approximately 11.84%, and 19 of 122 index funds, approximately 15.57%.",
+      "category": "derived"
+    }
+  ]
+}
