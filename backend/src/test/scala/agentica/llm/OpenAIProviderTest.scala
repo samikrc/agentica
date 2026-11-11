@@ -97,4 +97,52 @@ class OpenAIProviderTest extends AnyFunSuite
         assert(json(1)("role").str == "tool")
         assert(json(1)("tool_call_id").str == "call-1")
     }
+
+    /**
+     *  Runs a request against a local stub Chat Completions server and returns the request bodies it received.
+     *  @param call  Function issuing requests to the supplied base URL.
+     *  @return      Parsed JSON request bodies in arrival order.
+     */
+    private def captureRequests(call: String => Unit): List[ujson.Value] =
+    {
+        val bodies = java.util.concurrent.ConcurrentLinkedQueue[String]()
+        val server = com.sun.net.httpserver.HttpServer.create(java.net.InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/v1/chat/completions", exchange =>
+        {
+            bodies.add(String(exchange.getRequestBody.readAllBytes(), "UTF-8"))
+            val reply = """{"choices":[{"message":{"role":"assistant","content":"ok"}}]}""".getBytes("UTF-8")
+            exchange.sendResponseHeaders(200, reply.length)
+            exchange.getResponseBody.write(reply)
+            exchange.close()
+        })
+        server.start()
+        try
+        {
+            call(s"http://127.0.0.1:${server.getAddress.getPort}")
+            import scala.jdk.CollectionConverters.*
+            bodies.asScala.toList.map(ujson.read(_))
+        }
+        finally server.stop(0)
+    }
+
+    test("reasoning_effort is sent only when configured, and enable_thinking only when none") {
+        val bodies = captureRequests { url =>
+            assert(OpenAIProvider(baseURL = url, modelName = "m", reasoningEffort = Some("none"))
+                .completeVision("data:image/png;base64,AA==", "prompt") == "ok")
+            OpenAIProvider(baseURL = url, modelName = "m").completeVision("data:image/png;base64,AA==", "prompt")
+            OpenAIProvider(baseURL = url, modelName = "m", reasoningEffort = Some("none"))
+                .streamChatCompletions(List(agentica.session.Message("u", "s", agentica.session.MessageRole.User, "hi", "")), _ => ())
+            OpenAIProvider(baseURL = url, modelName = "m", reasoningEffort = Some("low"))
+                .streamChatCompletions(List(agentica.session.Message("u", "s", agentica.session.MessageRole.User, "hi", "")), _ => ())
+        }
+        assert(bodies.size == 4)
+        assert(bodies(0)("reasoning_effort").str == "none")
+        assert(bodies(0)("chat_template_kwargs")("enable_thinking").bool == false)
+        assert(!bodies(1).obj.contains("reasoning_effort"))
+        assert(!bodies(1).obj.contains("chat_template_kwargs"))
+        assert(bodies(2)("reasoning_effort").str == "none")
+        assert(bodies(2)("chat_template_kwargs")("enable_thinking").bool == false)
+        assert(bodies(3)("reasoning_effort").str == "low")
+        assert(!bodies(3).obj.contains("chat_template_kwargs"))
+    }
 }

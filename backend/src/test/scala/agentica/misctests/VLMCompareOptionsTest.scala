@@ -21,6 +21,39 @@ class VLMCompareOptionsTest extends AnyFunSuite
         assert(VLMCompareTest.parseOptions(List("--sweep")).dpis == List(50, 100, 150))
     }
 
+    test("providers default to all configured labels and can be selected") {
+        assert(VLMCompareTest.parseOptions(Nil).providerLabels == VLMCompareTest.providers.map(_._1))
+        val selected = VLMCompareTest.parseOptions(List("--providers", "lfm3-vl-2b, lfm2.5-vl-3b"))
+        assert(selected.providerLabels == List("lfm3-vl-2b", "lfm2.5-vl-3b"))
+        assert(VLMCompareTest.parseOptions(List("--sweep", "--providers", "lfm3-vl-2b")).sweep)
+        List(List("--providers", "no-such-model"), List("--providers", ""),
+             List("--providers", "lfm3-vl-2b,lfm3-vl-2b"), List("--providers", "lfm3-vl-2b,"))
+            .foreach(args => intercept[IllegalArgumentException](VLMCompareTest.parseOptions(args)))
+    }
+
+    test("PDFs default to all configured files and can be filtered by filename substring") {
+        val all = VLMCompareTest.pdfPaths.map(_.getFileName.toString)
+        assert(VLMCompareTest.parseOptions(Nil).pdfNames == all)
+        assert(VLMCompareTest.parseOptions(List("--pdfs", "WHITEPAPER")).pdfNames == List("nifty-50-whitepaper-2024.pdf"))
+        assert(VLMCompareTest.parseOptions(List("--pdfs", "nifty")).pdfNames ==
+            List("ind_nifty50.pdf", "nifty-50-whitepaper-2024.pdf"))
+        List(List("--pdfs", "no-such-file"), List("--pdfs", ""), List("--pdfs", "nifty,"))
+            .foreach(args => intercept[IllegalArgumentException](VLMCompareTest.parseOptions(args)))
+    }
+
+    test("fact disagreements list only facts whose outcomes differ") {
+        val same = ExpectedFact("same", 1, "", "table", Some("r"), None, Some("1"), Nil, Nil, "")
+        val diff = same.copy(id = "diff")
+        def result(label: String, diffOutcome: FactOutcome): SweepResult =
+            SweepResult("doc", label, 150, 1200, false, 0, 0, 0L, 0L, 0.0, 0.0, 0, 0, 0.0, "",
+                factReport = Some(FactReport(List(FactResult(same, FactOutcome.PassCell),
+                    FactResult(diff, diffOutcome, observed = Some("| r | 2 |"))))))
+        val lines = VLMCompareTest.factDisagreements(List(result("a", FactOutcome.PassCell), result("b", FactOutcome.Wrong)))
+        assert(lines.exists(_.contains("diff")) && !lines.exists(_.contains("same")))
+        assert(lines.exists(l => l.contains("b@150/1200") && l.contains("wrong") && l.contains("| r | 2 |")))
+        assert(VLMCompareTest.factDisagreements(List(result("a", FactOutcome.PassCell))) == List("  (all outcomes agree)"))
+    }
+
     test("invalid options fail before model access") {
         List(
             List("--unknown"), List("--dpi"), List("--dpi", "0"), List("--dpi", "-1"),

@@ -91,9 +91,52 @@ object PageVisionTranscriber
         pageTimeoutMs: Long             = 0L
     ): String =
     {
+        if (totalPages <= 0) { "[No pages found in document]" }
+        else
+        {
+            transcribePages(totalPages, renderBatch, llmProvider, traceId, prompt, parallelism,
+                debugImageDir, debugStem, onProgress, pageTimeoutMs).mkString(PageSeparator)
+        }
+    }
+
+    /** Separator placed between page transcriptions by [[transcribe]]. */
+    val PageSeparator: String = "\n\n---\n\n"
+
+    /**
+     *  Transcribes document pages like [[transcribe]], but returns one Markdown string per page
+     *  instead of joining them, so callers can analyse pages individually.
+     *
+     *  @param totalPages     Total number of pages/slides in the document.
+     *  @param renderBatch    Function `(fromPage, toPage) => List[Array[Byte]]` rendering a 0-based,
+     *                        exclusive-end slice of pages on demand.
+     *  @param llmProvider    Vision-capable LLM provider.
+     *  @param traceId        Trace identifier for logging.
+     *  @param prompt         Transcription prompt (defaults to [[defaultPrompt]]).
+     *  @param parallelism    Number of concurrent VLM calls per batch (default 1 = sequential).
+     *  @param debugImageDir  When `Some(dir)`, each page PNG is saved to `dir` before the VLM call.
+     *  @param debugStem      Filename stem for debug image names.
+     *  @param onProgress     Callback `(completedPages, totalPages)` invoked after each page.
+     *  @param pageTimeoutMs  Per-page VLM call timeout in milliseconds. 0 = no timeout.
+     *  @return               Page Markdown in page order; empty when `totalPages <= 0`. Pages that
+     *                        fail after all retries contain a `[Page N: transcription failed — …]` placeholder.
+     *  @throws PageTimeoutException if any page VLM call exceeds `pageTimeoutMs`.
+     */
+    def transcribePages(
+        totalPages:    Int,
+        renderBatch:   (Int, Int) => List[Array[Byte]],
+        llmProvider:   LLMProvider,
+        traceId:       String,
+        prompt:        String           = defaultPrompt,
+        parallelism:   Int              = 1,
+        debugImageDir: Option[Path]     = None,
+        debugStem:     String           = "",
+        onProgress:    (Int, Int) => Unit = (_, _) => (),
+        pageTimeoutMs: Long             = 0L
+    ): List[String] =
+    {
         if (totalPages <= 0)
         {
-            return "[No pages found in document]"
+            return Nil
         }
 
         val effectiveParallelism = parallelism.max(1)
@@ -162,9 +205,10 @@ object PageVisionTranscriber
                 }
             }
 
-            val result = allMarkdowns.mkString("\n\n---\n\n")
+            val result = allMarkdowns.toList
             TraceLogger.info(traceId, "page_vision_transcriber_complete",
-                Map("pages" -> totalPages.toString, "total_chars" -> result.length.toString))
+                Map("pages" -> totalPages.toString,
+                    "total_chars" -> (result.map(_.length).sum + PageSeparator.length * (totalPages - 1)).toString))
             result
         }
         finally

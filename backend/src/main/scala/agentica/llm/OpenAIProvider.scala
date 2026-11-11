@@ -15,6 +15,10 @@ import java.time.Duration
  *  @param baseURL    Base URL of the LLM server.
  *  @param modelName  Model identifier to send in requests.
  *  @param apiKey     Bearer token for the Authorization header.
+ *  @param reasoningEffort  Optional `reasoning_effort` sent with Chat Completions and vision requests,
+ *                          e.g. `"none"` to disable thinking on reasoning models served by LM Studio.
+ *                          When `"none"`, `chat_template_kwargs.enable_thinking=false` is sent as well,
+ *                          covering llama.cpp/vLLM servers that only honour the template kwarg.
  */
 object OpenAIProvider:
     /**
@@ -43,7 +47,8 @@ class OpenAIProvider(
     val modelName:       String = "local-model",
     apiKey:              String = "lm-studio",
     requestTimeoutSeconds: Int  = 300,
-    temperature:         Option[Double] = None
+    temperature:         Option[Double] = None,
+    reasoningEffort:     Option[String] = None
 ) extends LLMProvider
 {
 
@@ -175,6 +180,19 @@ class OpenAIProvider(
     }
 
     /**
+     *  Applies the configured reasoning settings to a request body. Sends
+     *  `reasoning_effort`, and when it is `"none"` also sends
+     *  `chat_template_kwargs.enable_thinking=false` for servers (llama.cpp,
+     *  vLLM) that only honour the template kwarg.
+     *  @param body  Mutable request body to update.
+     */
+    private def applyReasoning(body: ujson.Obj): Unit =
+        reasoningEffort.foreach { e =>
+            body("reasoning_effort") = e
+            if (e == "none") body("chat_template_kwargs") = ujson.Obj("enable_thinking" -> false)
+        }
+
+    /**
      *  Calls the Chat Completions API (`/v1/chat/completions`) and forwards the
      *  response content to `onToken`.
      *  @param messages  Full conversation history to send as context.
@@ -190,6 +208,7 @@ class OpenAIProvider(
             "stream"   -> false
         )
         temperature.foreach(t => body("temperature") = t)
+        applyReasoning(body)
         if tools.nonEmpty then
         {
             body("tools")       = toCCFunctionSpecs(tools)
@@ -381,6 +400,7 @@ class OpenAIProvider(
             "stream" -> false
         )
         temperature.foreach(t => body("temperature") = t)
+        applyReasoning(body)
 
         val json    = ujson.read(doRequest("/v1/chat/completions", body))
         val content = json.obj.get("choices")

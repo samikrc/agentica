@@ -18,6 +18,9 @@ import java.nio.file.{Files, Path, StandardCopyOption}
  *  Append --sweep inside exec.args for the default grid, or
  *  --dpi 150 --max-dimension 1650 for a fixed override.
  *  Sweep overrides: --dpi-values 50,100,150 --max-dimensions 1024,1200,1400,1650.
+ *  Select models by label with --providers lfm2.5-vl-3b,lfm3-vl-2b (default: all of [[providers]]).
+ *  Select PDFs by case-insensitive filename substring with --pdfs whitepaper,nifty50 (default: all of [[pdfPaths]]).
+ *  PDFs with a `<stem>.facts.json` next to them are also fact-checked (see [[MarkdownScorer.checkFacts]]).
  *
  *  Markdown and results.json are saved under the printed temporary work directory.
  */
@@ -38,7 +41,9 @@ object VLMCompareTest
     /** Paths to the PDFs to transcribe, resolved from test resources. */
     val pdfPaths: List[java.nio.file.Path] = List(
         java.nio.file.Paths.get(getClass.getResource("/files/IT Support Analyst - India.pdf").toURI),
-        java.nio.file.Paths.get(getClass.getResource("/files/Even OPD Policy Document.pdf").toURI)
+        java.nio.file.Paths.get(getClass.getResource("/files/Even OPD Policy Document.pdf").toURI),
+        java.nio.file.Paths.get(getClass.getResource("/files/ind_nifty50.pdf").toURI),
+        java.nio.file.Paths.get(getClass.getResource("/files/nifty-50-whitepaper-2024.pdf").toURI)
     )
 
     /**
@@ -55,13 +60,18 @@ object VLMCompareTest
         ("ministral-3-14b", lmStudioServerURL, "mistralai/ministral-3-14b-reasoning", "lm-studio"),
         ("qwen3.5-9b-mtp", lmStudioServerURL, "qwen3.5-9b-mtp", "lm-studio"),
         ("qwen2.5-vl-7b-instruct", lmStudioServerURL, "qwen2.5-vl-7b-instruct", "lm-studio"),
-        ("lfm2.5-vl-3b", lmStudioServerURL, "lfm2.5-vl-3b", "lm-studio")
+        ("lfm2.5-vl-3b", lmStudioServerURL, "lfm2.5-vl-3b", "lm-studio"),
+        ("lfm3-vl-2b", lmStudioServerURL, "lfm3-vl-2b", "lm-studio"),
+        ("lfm3-vl-2b-nothink", lmStudioServerURL, "lfm3-vl-2b", "lm-studio")
     )
 
-    // ─── Sweep-mode constants ───
+    /**
+     *  Per-label `reasoning_effort` request values. LM Studio's per-model thinking toggle does not
+     *  apply to API requests; `"none"` disables LFM3 reasoning per request.
+     */
+    val providerReasoningEffort: Map[String, String] = Map("lfm3-vl-2b-nothink" -> "none")
 
-    /** Set to `true` to run the DPI×maxDim parameter sweep, `false` for the fixed single-pass run. */
-    val runSweepMode: Boolean = false
+    // ─── Sweep-mode constants ───
 
     /** DPI values to sweep in the parameter search. */
     val dpiValues: List[Int] = List(50, 100, 150)
@@ -77,21 +87,26 @@ object VLMCompareTest
      *  @param sweep Whether to evaluate a grid instead of one fixed configuration.
      *  @param dpis Positive rendering DPI values.
      *  @param maxDimensions Positive longest-side caps in pixels.
+     *  @param providerLabels Labels from [[providers]] to run, in configured order.
+     *  @param pdfNames File names from [[pdfPaths]] to run, in configured order.
      */
-    case class ImageOptions(sweep: Boolean, dpis: List[Int], maxDimensions: List[Int])
+    case class CompareOptions(sweep: Boolean, dpis: List[Int], maxDimensions: List[Int],
+                              providerLabels: List[String] = providers.map(_._1),
+                              pdfNames: List[String] = pdfPaths.map(_.getFileName.toString))
 
     /**
-     *  Parses fixed or sweep image settings before any model calls.
+     *  Parses image settings, provider selection, and PDF selection before any model calls.
      *  @param args Command-line flags and values.
-     *  @return Validated image settings using production defaults for fixed runs.
-     *  @throws IllegalArgumentException if flags conflict or values are invalid.
+     *  @return Validated options using production image defaults for fixed runs and all providers and PDFs by default.
+     *  @throws IllegalArgumentException if flags conflict, values are invalid, a provider label is unknown,
+     *                                   or a PDF filter matches no file.
      */
-    def parseOptions(args: List[String]): ImageOptions =
+    def parseOptions(args: List[String]): CompareOptions =
     {
         val values = scala.collection.mutable.Map.empty[String, String]
         var sweep = false
         var rest = args
-        val flags = Set("--dpi", "--max-dimension", "--dpi-values", "--max-dimensions")
+        val flags = Set("--dpi", "--max-dimension", "--dpi-values", "--max-dimensions", "--providers", "--pdfs")
         while (rest.nonEmpty)
         {
             rest match
@@ -121,9 +136,26 @@ object VLMCompareTest
             require(sweep || result.size == 1, s"$flag requires one value")
             result
         }
-        ImageOptions(sweep,
+        val known = providers.map(_._1)
+        val labels = values.get("--providers").map(_.split(",", -1).toList.map(_.trim)).getOrElse(known)
+        require(labels.nonEmpty && labels.forall(_.nonEmpty) && labels.distinct.size == labels.size,
+            "--providers requires distinct, non-empty labels")
+        labels.find(l => !known.contains(l)).foreach { l =>
+            throw IllegalArgumentException(s"Unknown provider label '$l'; known: ${known.mkString(", ")}")
+        }
+        val allPDFs = pdfPaths.map(_.getFileName.toString)
+        val pdfNames = values.get("--pdfs").map { spec =>
+            val filters = spec.split(",", -1).toList.map(_.trim.toLowerCase)
+            require(filters.forall(_.nonEmpty), "--pdfs requires non-empty filename filters")
+            filters.find(f => !allPDFs.exists(_.toLowerCase.contains(f))).foreach { f =>
+                throw IllegalArgumentException(s"No PDF matches '$f'; known: ${allPDFs.mkString(", ")}")
+            }
+            allPDFs.filter(name => filters.exists(name.toLowerCase.contains))
+        }.getOrElse(allPDFs)
+        CompareOptions(sweep,
             numbers(if (sweep) "--dpi-values" else "--dpi", if (sweep) dpiValues else List(PDFPageRenderer.RenderDPI.toInt)),
-            numbers(if (sweep) "--max-dimensions" else "--max-dimension", if (sweep) maxDimValues else List(PDFPageRenderer.MaxImageDimension)))
+            numbers(if (sweep) "--max-dimensions" else "--max-dimension", if (sweep) maxDimValues else List(PDFPageRenderer.MaxImageDimension)),
+            labels, pdfNames)
     }
 
     /**
@@ -170,128 +202,7 @@ object VLMCompareTest
         runSweep(options)
     }
 
-    // ─── Fixed mode (original single-pass) ───
-
-    /**
-     *  Runs each configured VLM provider once per PDF at the default DPI and
-     *  max image dimension, writing one Markdown file per provider per PDF.
-     *  Providers are the outer loop so each local model loads once, processes
-     *  all PDFs, then unloads — minimising load/unload cycles.
-     */
-    private def runFixed(): Unit =
-    {
-        // Single root temp directory shared by all PDFs, one subfolder per PDF
-        val rootWorkDir = Files.createTempDirectory("vlm-compare-")
-        println(s"Root work directory : $rootWorkDir")
-
-        // Pre-copy all PDFs into subfolders and cache their metadata
-        val pdfInfos = pdfPaths.map { pdfPath =>
-            val fileName = pdfPath.getFileName.toString
-            val stem     = if (fileName.toLowerCase.endsWith(".pdf")) fileName.dropRight(4) else fileName
-            val workDir  = Files.createDirectory(rootWorkDir.resolve(stem))
-            val workPDF  = workDir.resolve(fileName)
-            Files.copy(pdfPath, workPDF, StandardCopyOption.REPLACE_EXISTING)
-            val totalPages   = PDFPageRenderer.pageCount(workPDF)
-            val referenceText = MarkdownScorer.extractPDFText(workPDF)
-            (pdfPath, stem, workDir, workPDF, totalPages, referenceText)
-        }
-
-        // Pre-run cleanup: unload any models already loaded on local servers
-        for ((_, serverURL, _, apiKey) <- providers if LMStudioClient.isLocal(serverURL))
-        {
-            println(s"\nPre-run cleanup: unloading any loaded models on $serverURL...")
-            LMStudioClient.unloadAllLocalModels(serverURL, apiKey)
-        }
-        println("Waiting 10s for cleanup to settle...")
-        Thread.sleep(10000)
-
-        for ((label, serverURL, modelName, apiKey) <- providers)
-        {
-            println(s"\n=== Running provider: $label ($modelName @ $serverURL) ===")
-
-            var providerTimedOut = false
-
-            try
-            {
-                val provider = OpenAIProvider(baseURL = serverURL, modelName = modelName, apiKey = apiKey)
-                if (!provider.supportsVision)
-                {
-                    println(s"  SKIP — $modelName does not report vision support")
-                }
-                else
-                {
-                    for ((pdfPath, stem, workDir, workPDF, totalPages, referenceText) <- pdfInfos if !providerTimedOut)
-                    {
-                        println(s"\n  --- PDF: ${pdfPath.getFileName} ---")
-
-                        val outPath   = workDir.resolve(s"${stem}_${label}.md")
-                        val pageTimes = scala.collection.mutable.ArrayBuffer.empty[Long]
-
-                        try
-                        {
-                            val markdown = PageVisionTranscriber.transcribe(
-                                totalPages    = totalPages,
-                                renderBatch   = (from, to) => PDFPageRenderer.renderBatch(workPDF, from, to)
-                                    .map(PDFPageRenderer.resizeToMaxDimension(_, PDFPageRenderer.MaxImageDimension)),
-                                llmProvider   = provider,
-                                traceId       = s"vlm-compare-$label",
-                                debugImageDir = Some(workDir),
-                                debugStem     = label,
-                                pageTimeoutMs = 180000L, // 3 minutes per page
-                                onProgress    =
-                                {
-                                    var pageStartMs = System.currentTimeMillis()
-                                    (cur, total) =>
-                                    {
-                                        val elapsed = System.currentTimeMillis() - pageStartMs
-                                        pageTimes += elapsed
-                                        println(f"    Page $cur / $total — ${elapsed / 1000.0}%.1f s")
-                                        pageStartMs = System.currentTimeMillis()
-                                    }
-                                }
-                            )
-                            Files.writeString(outPath, markdown)
-
-                            val totalMs = pageTimes.sum
-                            val avgMs   = if (pageTimes.nonEmpty) totalMs / pageTimes.size else 0L
-                            println(s"    Written      : $outPath")
-                            println(s"    Output size  : ${markdown.length} chars")
-                            println(f"    VLM total    : ${totalMs / 1000.0}%.1f s  (avg ${avgMs / 1000.0}%.1f s/page over ${pageTimes.size} pages)")
-                            println(s"    ${MarkdownScorer.score(markdown, referenceText, totalPages).pretty}")
-                        }
-                        catch
-                        {
-                            case _: PageTimeoutException =>
-                                println(s"    TIMEOUT — $label exceeded 3 min on a page. Skipping remaining PDFs for this model.")
-                                providerTimedOut = true
-
-                            case t: Throwable =>
-                                println(s"    ERROR for $label: ${t.getClass.getSimpleName}: ${t.getMessage}")
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                case t: Throwable =>
-                    println(s"  ERROR creating provider $label: ${t.getClass.getSimpleName}: ${t.getMessage}")
-            }
-
-            // Unload local model after all PDFs for this provider are done (or timeout)
-            if (LMStudioClient.isLocal(serverURL))
-            {
-                println(s"  Unloading local model: $modelName")
-                LMStudioClient.unloadLocalModel(serverURL, modelName, apiKey)
-                println(s"  Waiting 15s for model to fully unload...")
-                Thread.sleep(15000)
-                println(s"  Done waiting.")
-            }
-        }
-
-        println("\nDone.")
-    }
-
-    // ─── Sweep mode (DPI × maxImageDimension) ───
+    // ─── Comparison run (fixed or DPI × maxImageDimension sweep) ───
 
     /**
      *  Runs the DPI×maxDim parameter sweep for all providers across all PDFs.
@@ -299,10 +210,11 @@ object VLMCompareTest
      *  all PDFs across all DPI/maxDim combinations, then unloads.
      *  Results are collected in memory and a summary table is printed at the end.
      */
-    private def runSweep(options: ImageOptions): Unit =
+    private def runSweep(options: CompareOptions): Unit =
     {
         val dpiValues = options.dpis
         val maxDimValues = options.maxDimensions
+        val providers = options.providerLabels.flatMap(l => VLMCompareTest.providers.find(_._1 == l))
         // Single root temp directory shared by all PDFs, one subfolder per PDF
         val rootWorkDir = Files.createTempDirectory("vlm-compare-")
         println(s"Mode                : ${if (options.sweep) "sweep" else "fixed"} (PNG)")
@@ -310,24 +222,33 @@ object VLMCompareTest
         println(s"DPI values          : ${dpiValues.mkString(", ")}")
         println(s"MaxDim values       : ${maxDimValues.mkString(", ")}")
         println(s"Providers           : ${providers.map(_._1).mkString(", ")}")
+        println(s"PDFs                : ${options.pdfNames.mkString(", ")}")
 
-        // Pre-copy all PDFs into subfolders and cache their metadata
-        val pdfInfos = pdfPaths.map { pdfPath =>
+        // Pre-copy selected PDFs (and any facts file) into subfolders and cache their metadata
+        val factsByStem = scala.collection.mutable.Map.empty[String, List[ExpectedFact]]
+        val pdfInfos = pdfPaths.filter(p => options.pdfNames.contains(p.getFileName.toString)).map { pdfPath =>
             val fileName = pdfPath.getFileName.toString
             val stem     = if (fileName.toLowerCase.endsWith(".pdf")) fileName.dropRight(4) else fileName
             val workDir  = Files.createDirectory(rootWorkDir.resolve(stem))
             val workPDF  = workDir.resolve(fileName)
             Files.copy(pdfPath, workPDF, StandardCopyOption.REPLACE_EXISTING)
-            val totalPages   = PDFPageRenderer.pageCount(workPDF)
-            val referenceText = MarkdownScorer.extractPDFText(workPDF)
-            (pdfPath, stem, workDir, workPDF, totalPages, referenceText)
+            val factsFile = pdfPath.resolveSibling(s"$stem.facts.json")
+            if (Files.isRegularFile(factsFile))
+            {
+                factsByStem(stem) = MarkdownScorer.loadFacts(factsFile)
+                Files.copy(factsFile, workDir.resolve(factsFile.getFileName), StandardCopyOption.REPLACE_EXISTING)
+                println(s"Facts               : ${factsByStem(stem).size} for $stem")
+            }
+            val totalPages     = PDFPageRenderer.pageCount(workPDF)
+            val referencePages = MarkdownScorer.extractPDFPageTexts(workPDF)
+            (pdfPath, stem, workDir, workPDF, totalPages, referencePages)
         }
 
         // Collects one SweepResult per (PDF, provider, DPI, maxDim) combination
         val allResults = scala.collection.mutable.ArrayBuffer.empty[SweepResult]
 
         // Pre-run cleanup: unload any models already loaded on local servers
-        for ((_, serverURL, _, apiKey) <- providers if LMStudioClient.isLocal(serverURL))
+        for ((_, serverURL, _, apiKey) <- providers.distinctBy(_._2) if LMStudioClient.isLocal(serverURL))
         {
             println(s"\nPre-run cleanup: unloading any loaded models on $serverURL...")
             LMStudioClient.unloadAllLocalModels(serverURL, apiKey)
@@ -343,7 +264,8 @@ object VLMCompareTest
             // combos if the model doesn't support vision or fails to initialise
             val provider = try
             {
-                val p = OpenAIProvider(baseURL = serverURL, modelName = modelName, apiKey = apiKey)
+                val p = OpenAIProvider(baseURL = serverURL, modelName = modelName, apiKey = apiKey,
+                    reasoningEffort = providerReasoningEffort.get(label))
                 if (!p.supportsVision)
                 {
                     println(s"  SKIP — $modelName does not report vision support")
@@ -378,7 +300,7 @@ object VLMCompareTest
                 // remaining PDFs and combos for this model
                 var modelTimedOut = false
 
-                for ((pdfPath, stem, workDir, workPDF, totalPages, referenceText) <- pdfInfos if !modelTimedOut)
+                for ((pdfPath, stem, workDir, workPDF, totalPages, referencePages) <- pdfInfos if !modelTimedOut)
                 {
                     println(s"\n  --- PDF: ${pdfPath.getFileName} ---")
 
@@ -441,7 +363,7 @@ object VLMCompareTest
                                         (image.getWidth, image.getHeight)
                                     }
                                     started = System.nanoTime()
-                                    val markdown = PageVisionTranscriber.transcribe(
+                                    val pages = PageVisionTranscriber.transcribePages(
                                         totalPages    = totalPages,
                                         renderBatch   = (from, to) =>
                                         {
@@ -469,15 +391,23 @@ object VLMCompareTest
                                     // Collect statistics and persist Markdown for inspection
                                     val totalMs = (System.nanoTime() - started) / 1000000L
                                     val avgMs   = if (totalPages > 0) totalMs / totalPages else 0L
-                                    val outPath = workDir.resolve(s"${stem}_${label}_dpi${dpi}_max${maxDim}.md")
+                                    val markdown = pages.mkString(PageVisionTranscriber.PageSeparator)
+                                    val baseName = s"${stem}_${label}_dpi${dpi}_max${maxDim}"
+                                    val outPath = workDir.resolve(s"$baseName.md")
                                     Files.writeString(outPath, markdown)
-                                    val failedPages = markdown.linesIterator.count(line =>
-                                        line.startsWith("[Page ") && line.contains(": transcription failed"))
-                                    val score   = MarkdownScorer.score(markdown, referenceText, totalPages)
+                                    Files.writeString(workDir.resolve(s"$baseName.pages.json"),
+                                        ujson.write(ujson.Arr.from(pages.map(ujson.Str(_))), indent = 2))
+                                    val failedPages = pages.count(page =>
+                                        page.startsWith("[Page ") && page.contains(": transcription failed"))
+                                    val score   = MarkdownScorer.score(markdown, referencePages.mkString("\n"), totalPages)
+                                    val textScore = MarkdownScorer.scoreTextPages(pages, referencePages)
+                                    val factReport = factsByStem.get(stem).map(MarkdownScorer.checkFacts(pages, _))
                                     val words   = markdown.split("\\s+").count(_.length > 1)
 
-                                    println(s"      Output: ${markdown.length} chars, $words words, ${totalMs / 1000.0}%.1f s total")
+                                    println(f"      Output: ${markdown.length} chars, $words words, ${totalMs / 1000.0}%.1f s total")
                                     println(s"      ${score.pretty}")
+                                    println(textScore.pretty)
+                                    factReport.foreach(r => println(r.pretty))
 
                                     val result = SweepResult(
                                         pdfStem          = stem,
@@ -499,7 +429,9 @@ object VLMCompareTest
                                         model            = modelName,
                                         pageDimensions   = dimensions,
                                         markdownPath     = Some(outPath.toString),
-                                        failedPages      = failedPages
+                                        failedPages      = failedPages,
+                                        textScore        = Some(textScore),
+                                        factReport       = factReport
                                     )
                                     allResults += result
                                     saveResults(rootWorkDir, options, allResults.toList)
@@ -563,10 +495,10 @@ object VLMCompareTest
     /**
      *  Saves a structured snapshot after completed configurations, without credentials.
      *  @param directory Run artifact directory.
-     *  @param options Requested image configuration.
+     *  @param options Requested image configuration and providers.
      *  @param results Results collected so far.
      */
-    def saveResults(directory: Path, options: ImageOptions, results: List[SweepResult]): Unit =
+    def saveResults(directory: Path, options: CompareOptions, results: List[SweepResult]): Unit =
     {
         def number(value: Any): ujson.Value = value match
         {
@@ -575,6 +507,35 @@ object VLMCompareTest
             case n: Double => ujson.Num(n)
             case _ => ujson.Null
         }
+        def ratio(value: Option[Double]): ujson.Value = value.map(ujson.Num(_)).getOrElse(ujson.Null)
+        def counts(c: TextCounts): ujson.Obj = ujson.Obj(
+            "wordF1" -> ratio(c.wordF1), "wordRecall" -> ratio(c.wordRecall), "wordPrecision" -> ratio(c.wordPrecision),
+            "numberRecall" -> ratio(c.numberRecall), "numberPrecision" -> ratio(c.numberPrecision),
+            "orderSimilarity" -> ratio(c.orderSimilarity),
+            "refWords" -> c.refWords, "outWords" -> c.outWords, "matchedWords" -> c.matchedWords,
+            "refNumbers" -> c.refNumbers, "outNumbers" -> c.outNumbers, "matchedNumbers" -> c.matchedNumbers,
+            "wordEdits" -> c.wordEdits)
+        def text(score: TextScore): ujson.Obj =
+        {
+            val json = counts(score.total)
+            json("pages") = ujson.Arr.from(score.pages.map { p =>
+                val page = counts(p.counts)
+                page("page") = p.page
+                page("missingNumbers") = ujson.Arr.from(p.missingNumbers.map(ujson.Str(_)))
+                page("extraNumbers") = ujson.Arr.from(p.extraNumbers.map(ujson.Str(_)))
+                page
+            })
+            json
+        }
+        def facts(report: FactReport): ujson.Obj = ujson.Obj(
+            "total" -> report.results.size, "strictPass" -> report.strictPasses, "lenientPass" -> report.lenientPasses,
+            "outcomes" -> ujson.Obj.from(report.outcomeCounts.map { case (l, c) => l -> ujson.Num(c) }),
+            "byType" -> ujson.Obj.from(report.byType.map { case (k, (s, l, t)) =>
+                k -> ujson.Obj("strictPass" -> s, "lenientPass" -> l, "total" -> t) }),
+            "results" -> ujson.Arr.from(report.results.map { r =>
+                ujson.Obj("id" -> r.fact.id, "page" -> r.fact.page, "type" -> r.fact.kind, "outcome" -> r.outcome.label,
+                    "detail" -> r.detail, "observed" -> r.observed.map(ujson.Str(_)).getOrElse(ujson.Null))
+            }))
         val rows = results.map { r =>
             val status = if (r.status.nonEmpty) r.status
                 else if (r.timedOut) "timeout"
@@ -594,9 +555,12 @@ object VLMCompareTest
                 "chars" -> number(r.totalChars), "words" -> number(r.totalWords),
                 "wordCountRatio" -> number(r.wordCountRatio), "tokenOverlap" -> number(r.tokenOverlap),
                 "headings" -> number(r.headingCount), "tableRows" -> number(r.tableRowCount),
-                "nonEmptyRatio" -> number(r.nonEmptyRatio))
+                "nonEmptyRatio" -> number(r.nonEmptyRatio),
+                "text" -> r.textScore.map(text).getOrElse(ujson.Null),
+                "facts" -> r.factReport.map(facts).getOrElse(ujson.Null))
         }
         val json = ujson.Obj("mode" -> (if (options.sweep) "sweep" else "fixed"),
+            "providers" -> ujson.Arr.from(options.providerLabels), "pdfs" -> ujson.Arr.from(options.pdfNames),
             "format" -> "PNG", "dpis" -> ujson.Arr.from(options.dpis),
             "maxDimensions" -> ujson.Arr.from(options.maxDimensions), "results" -> ujson.Arr.from(rows))
         Files.writeString(directory.resolve("results.json"), ujson.write(json, indent = 2))
@@ -615,6 +579,7 @@ object VLMCompareTest
             "PDF", "Provider", "DPI", "MaxDim",
             "Chars", "Words", "TotalS", "AvgPageS",
             "WordRatio", "TokenOvl", "Headings", "TableRows", "NonEmpty%",
+            "WordF1", "NumR", "NumP", "Order", "FactsStrict", "FactsLenient",
             "Notes"
         )
         println(header.mkString(" | "))
@@ -652,10 +617,71 @@ object VLMCompareTest
                 (if (r.reusedFrom.nonEmpty) "reused" else fmtTime(r.totalTimeMs)),
                 (if (r.reusedFrom.nonEmpty) "reused" else fmtTime(r.avgTimePerPageMs)),
                 fmtNum(r.wordCountRatio), fmtNum(r.tokenOverlap), fmtNum(r.headingCount), fmtNum(r.tableRowCount), fmtPct(r.nonEmptyRatio),
+                r.textScore.map(t => TextCounts.fmt(t.total.wordF1)).getOrElse("N/A"),
+                r.textScore.map(t => TextCounts.fmt(t.total.numberRecall)).getOrElse("N/A"),
+                r.textScore.map(t => TextCounts.fmt(t.total.numberPrecision)).getOrElse("N/A"),
+                r.textScore.map(t => TextCounts.fmt(t.total.orderSimilarity)).getOrElse("N/A"),
+                r.factReport.map(f => s"${f.strictPasses}/${f.results.size}").getOrElse("N/A"),
+                r.factReport.map(f => s"${f.lenientPasses}/${f.results.size}").getOrElse("N/A"),
                 r.notes
             )
             println(row.mkString(" | "))
         }
+
+        // Totals per provider and configuration, weighted by reference size across PDFs
+        println("\nTotals per provider (all PDFs; text metrics weighted by reference size):")
+        println(List("Provider", "DPI", "MaxDim", "PDFs", "Pages", "FailedPages", "TotalS",
+            "WordF1", "WordR", "WordP", "NumR", "NumP", "Order").mkString(" | "))
+        println("-" * 120)
+        for (((label, dpi, maxDim), group) <- results.groupBy(r => (r.providerLabel, r.dpi, r.maxImageDimension))
+                 .toList.sortBy { case ((l, d, m), _) => (results.indexWhere(_.providerLabel == l), d, m) })
+        {
+            val scored = group.flatMap(_.textScore)
+            val total  = scored.map(_.total).foldLeft(TextCounts.Zero)(_ + _)
+            val timeMs = group.filter(_.reusedFrom.isEmpty).map(_.totalTimeMs).collect { case ms: Long => ms }.sum
+            println(List(label, dpi.toString, maxDim.toString, s"${scored.size}/${group.size}",
+                scored.map(_.pages.size).sum.toString, group.map(_.failedPages).sum.toString,
+                f"${timeMs / 1000.0}%.1f",
+                TextCounts.fmt(total.wordF1), TextCounts.fmt(total.wordRecall), TextCounts.fmt(total.wordPrecision),
+                TextCounts.fmt(total.numberRecall), TextCounts.fmt(total.numberPrecision),
+                TextCounts.fmt(total.orderSimilarity)).mkString(" | "))
+        }
+
+        val factRuns = results.filter(_.factReport.nonEmpty)
+        if (factRuns.nonEmpty)
+        {
+            println("\nFact checks per provider (strict/lenient/total):")
+            for (r <- factRuns; report <- r.factReport)
+            {
+                val types = report.byType.map { case (k, (s, l, t)) => s"$k $s/$l/$t" }.mkString(", ")
+                println(s"${r.pdfStem} | ${r.providerLabel} | ${r.dpi} | ${r.maxImageDimension} | " +
+                    s"all ${report.strictPasses}/${report.lenientPasses}/${report.results.size} | $types | " +
+                    report.outcomeCounts.map { case (l, c) => s"$l $c" }.mkString(", "))
+            }
+            println("\nFacts with different outcomes across providers:")
+            println(factDisagreements(factRuns).mkString("\n"))
+        }
+    }
+
+    /**
+     *  Lists facts whose outcome differs between results for the same PDF, with each result's outcome and observation.
+     *
+     *  @param results  Results that carry a [[FactReport]].
+     *  @return         Report lines, or a single line saying all outcomes agree.
+     */
+    def factDisagreements(results: List[SweepResult]): List[String] =
+    {
+        val lines = results.groupBy(_.pdfStem).toList.sortBy(_._1).flatMap { case (stem, group) =>
+            val reports = group.flatMap(r => r.factReport.map(rep => s"${r.providerLabel}@${r.dpi}/${r.maxImageDimension}" -> rep))
+            reports.headOption.toList.flatMap(_._2.results.map(_.fact)).flatMap { fact =>
+                val byRun = reports.map { case (run, rep) => run -> rep.results.find(_.fact.id == fact.id) }
+                if (byRun.flatMap(_._2.map(_.outcome)).distinct.size <= 1) Nil
+                else s"  $stem ${fact.id} (p${fact.page}, ${fact.kind})" :: byRun.map { case (run, res) =>
+                    s"    $run: " + res.map(r => r.outcome.label + r.observed.map(o => s" — ${o.take(120)}").getOrElse("")).getOrElse("n/a")
+                }
+            }
+        }
+        if (lines.isEmpty) List("  (all outcomes agree)") else lines
     }
 }
 
@@ -683,6 +709,8 @@ object VLMCompareTest
  *  @param markdownPath      Saved transcription, or the original artifact for reused results.
  *  @param reusedFrom        Original measured configuration's maximum dimension.
  *  @param failedPages       Number of transcription failure placeholders.
+ *  @param textScore         Per-page text fidelity against the PDF text layer, when transcribed.
+ *  @param factReport        Expected-fact results, when the PDF has a facts file.
  */
 case class SweepResult(
     pdfStem:           String,
@@ -705,7 +733,9 @@ case class SweepResult(
     pageDimensions:    List[(Int, Int)] = Nil,
     markdownPath:      Option[String] = None,
     reusedFrom:        Option[Int] = None,
-    failedPages:       Int = 0
+    failedPages:       Int = 0,
+    textScore:         Option[TextScore] = None,
+    factReport:        Option[FactReport] = None
 )
 
 /**
