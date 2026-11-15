@@ -7,7 +7,7 @@
       "llmModel": "mistralai/ministral-3-14b-reasoning",
       "llmAPIKey": "lm-studio",
       "vlmBaseURL": "http://localhost:1234",
-      "vlmModel": "qwen2.5-vl-7b-instruct",
+      "vlmModel": "lfm3-vl-2b",
       "vlmAPIKey": "lm-studio",
       "judgeBaseURL": "http://localhost:1234",
       "judgeModel": "claude-3-5-sonnet",

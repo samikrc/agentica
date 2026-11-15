@@ -365,6 +365,23 @@ object EvalConfig
                 sys.env.getOrElse(m.group(1), m.matched)))
 
     /**
+     *  Resolves the judge API key: a `VALAR_API_KEY` environment variable wins
+     *  whenever the judge endpoint is Valar, so the config may carry a harmless
+     *  placeholder instead of a secret or a `${VAR}` expression.
+     *
+     *  @param baseURL      Judge endpoint URL from the config.
+     *  @param configured   `judgeAPIKey` value from the config, if any.
+     *  @return             The API key to send with judge requests.
+     */
+    private def judgeKeyFor(baseURL: Option[String], configured: Option[String]): Option[String] =
+        baseURL match
+        {
+            case Some(u) if u.toLowerCase(java.util.Locale.ROOT).contains("valar") =>
+                sys.env.get("VALAR_API_KEY").filter(_.nonEmpty).orElse(configured)
+            case _ => configured
+        }
+
+    /**
      *  Parses the provider array from the config JSON.
      *  String fields support `${VAR}` environment interpolation (see [[interp]]).
      *
@@ -377,6 +394,7 @@ object EvalConfig
             val sessionTypes = c.obj.get("sessionTypes")
                 .map(_.arr.toList.map(v => EvalSessionType.fromString(v.str)))
                 .getOrElse(List(EvalSessionType.AllQuestionsPerSession))
+            val judgeBaseURL = c.obj.get("judgeBaseURL").map(v => interp(v.str))
             EvalProviderConfig(
                 label                = interp(c.obj("label").str),
                 llmBaseURL           = interp(c.obj("llmBaseURL").str),
@@ -385,9 +403,10 @@ object EvalConfig
                 vlmBaseURL           = c.obj.get("vlmBaseURL").map(v => interp(v.str)),
                 vlmModel             = c.obj.get("vlmModel").map(v => interp(v.str)),
                 vlmAPIKey            = c.obj.get("vlmAPIKey").map(v => interp(v.str)),
-                judgeBaseURL         = c.obj.get("judgeBaseURL").map(v => interp(v.str)),
+                judgeBaseURL         = judgeBaseURL,
                 judgeModel           = c.obj.get("judgeModel").map(v => interp(v.str)),
-                judgeAPIKey          = c.obj.get("judgeAPIKey").map(v => interp(v.str)),
+                judgeAPIKey          = judgeKeyFor(judgeBaseURL,
+                                       c.obj.get("judgeAPIKey").map(v => interp(v.str))),
                 pauseBetweenPhasesMs = c.obj.get("pauseBetweenPhasesMs").map(_.num.toLong),
                 sessionTypes         = sessionTypes,
                 reuseMarkdownCache   = c.obj.get("reuseMarkdownCache").forall(_.bool),
@@ -988,7 +1007,7 @@ object EvalHarness
                            |
                            |Question: $question
                            |
-                           |Be concise and base your answer only on the document.
+                           |Base your answer only on the document.
                            |""".stripMargin,
             timestamp = Instant.now().toString
         )
@@ -2194,7 +2213,8 @@ object EvalHarness
                         baseURL   = url,
                         modelName = model,
                         apiKey    = config.vlmAPIKey.getOrElse("lm-studio"),
-                        temperature = config.temperature
+                        temperature = config.temperature,
+                        reasoningEffort = Some("none")
                     )
                 }
             }
