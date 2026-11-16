@@ -398,6 +398,28 @@ Goal: improve isolation, extensibility, collaboration, and advanced product capa
 
 ---
 
+## Future Enhancements
+
+Ordered by enables-most → cost-per-point → trigger-driven. Items 1–3 land as middleware components after the first ticket; re-run doc-eval after to measure loop/token deltas before continuing.
+
+**Tier 1 — cheap, unblocking, measurable:**
+
+- [ ] Tool-call middleware chain in `AgentLoop` (enabling refactor) — ticket: "Extract a tool-call middleware chain in AgentLoop". Ordered before/after interceptors around tool dispatch; `PermissionCoordinator` becomes first `before` slot. Enables loop guard, compression, OTLP, keychain as drop-in components (pattern: NeMo Relay middleware).
+- [ ] Failure-loop guard + micro-skills (experience-driven cost control) — ticket: "Experience-driven cost control: failure-loop guard + micro-skills". Loop guard lands first (mechanical version of the 3-attempt cap, as a `before` middleware); micro-skills defers within the ticket to Tier 3 (needs accumulated session traces; benefits from middleware existing) (pattern: https://arxiv.org/abs/2610.22732, https://github.com/microsoft/TokenEconomizer). Tool pruning evaluated and rejected.
+- [ ] Tool-result compression with recovery (Caveman pattern) — ticket: "Compress oversized tool results with fail-closed per-type compressors". `Compressor` registry in `Presentation`/`after` middleware: table/JSON/log-dedupe transforms, fail-closed (ambiguous → pass original), original always recoverable via scratchpad handle (pattern: https://github.com/JuliusBrussee/caveman).
+
+**Tier 2 — structural, bigger payoff:**
+
+- [ ] Hybrid retrieval over scratchpad + indexed documents (FTS5 BM25 + vector + RRF) — ticket: "Hybrid retrieval over scratchpad + indexed documents". Phase A: FTS5 index over scratchpad results, BM25-ranked search with cursor paging (pattern: https://github.com/mksglu/context-mode). Phase B: workspace indexing + embeddings fused via RRF (implements the Phase 6 indexing items; candidate embedders: nomic-embed-text vs EmbeddingGemma 2 — benchmark on doc-eval before choosing).
+- [ ] Dev-time OTLP trace export (Phoenix/Langfuse) — ticket: "Dev-time OTLP trace export for agent-run debugging". Optional `AGENTICA_OTLP`-gated spans over `AgentLoop`/provider/tool calls using `gen_ai.*` semantic conventions; `docker-compose.dev.yml` with Phoenix. Schedule before hybrid Phase B / micro-skills work, where trace-UI debugging pays most. Dev tooling only — production stays local-only, no export.
+
+**Tier 3 — when the trigger arrives:**
+
+- [ ] OS keychain for provider/API secrets (javakeyring) — ticket: "Store provider/API secrets in the OS keychain (javakeyring)". `ApiKeyStore` over macOS Keychain / Windows Credential Manager / Secret Service, env var → keychain → config fallback order (https://github.com/javakeyring/java-keyring). Pair with the Phase 1 security sprint (dev-token, symlink, SSE tokens) — same code neighborhood. Server vaults (Keyorix et al.) evaluated and rejected for local use.
+- [ ] Background task inbox: async agent work + approval queues (Pizza Bot pattern) — ticket: "Background task inbox: async agent work with approval queues". Threads as resumable units of work; pending permissions surface as Action-queue items via `PermissionCoordinator`; scheduled/webhook triggers in Phase 2 (pattern: https://www.infoq.com/news/2026/10/pizza-bot-ai-agents/). Feature-size — schedule as a release milestone, not an incremental.
+
+---
+
 ## Near-Term Recommended Next Steps
 
 - [ ] Phase 1 security hardening (highest risk-per-effort): fail-closed or per-launch random token instead of `dev-token` fallback; constrain `POST /sessions` `rootPath` to permitted roots; fix `PathSandbox` symlink escape via `toRealPath()`; short-lived token for SSE `/log/stream` and similar endpoints.

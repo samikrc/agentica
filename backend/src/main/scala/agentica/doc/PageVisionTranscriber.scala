@@ -27,10 +27,13 @@ object PageVisionTranscriber
      *  document page image to clean Markdown while preserving structure.
      */
     val defaultPrompt: String =
-        """Transcribe the text visible in this document page image into Markdown. This is one page from a multi-page document — it may start mid-sentence, mid-list, or mid-section with no heading at the top. That is normal.
+        """Transcribe ALL content visible in this document page image into Markdown — text, tables, AND charts/figures. This is one page from a multi-page document — it may start mid-sentence, mid-list, or mid-section with no heading at the top. That is normal.
           |
           |Rules:
           |- Output ONLY what is visible on this page. Do not infer, invent, or add headings, titles, or structure that is not present.
+          |- Charts are REQUIRED output, never optional. For every bar, line, area, or pie chart on the page:
+          |  - If data values are printed on or near it (bar labels, callouts, percentages, axis values): transcribe ALL of them as a Markdown table with one row per data point (e.g. | year | value |). This takes priority over brevity.
+          |  - Only if no values are readable at all: describe the chart type, title, axis labels, and trend in one sentence. Do not estimate or invent values.
           |- Transcribe content column-by-column in natural reading order. Finish one column's tables and text completely before starting the next column.
           |- Transcribe lists as Markdown lists (- for bullets, 1. for numbered). Continue the list exactly as it appears.
           |- Transcribe headings that are visually present (bold, larger text, underlined titles) using # ## ### as appropriate. Transcribe captions and exhibit labels (e.g. "Exhibit 8:") verbatim as headings.
@@ -39,11 +42,8 @@ object PageVisionTranscriber
           |  - Transcribe blank cells and dashes exactly as they appear — do not fill in values by guessing or by continuing a pattern.
           |  - If a header or label spans multiple columns, repeat it in each affected row or flatten it into the column headers — do not drop it.
           |  - If the table continues from a previous page, transcribe the visible rows as-is; do not invent a header row.
-          |- Charts and figures:
-          |  - If data values are printed on or near the chart (bar labels, callouts, percentages), transcribe them as a Markdown table.
-          |  - If no values are printed, describe the chart type, title, axis labels, and trend in one sentence. Do not estimate or invent values.
-          |  - Flow diagrams and process graphics: transcribe the stage/step labels and their associated text as a Markdown list; ignore the visual styling.
-          |  - Decorative images (photos, logos, icons, illustrations with no informational content): output `[Figure: decorative]` and nothing else for them.
+          |- Flow diagrams and process graphics: transcribe the stage/step labels and their associated text as a Markdown list; ignore the visual styling.
+          |- Decorative images (photos, logos, icons, illustrations with no informational content): output `[Figure: decorative]` and nothing else for them.
           |- Preserve bold and italic formatting where visually present. If uncertain, use plain text — do not guess.
           |- Preserve code blocks and inline code where present.
           |- Do NOT add explanatory text, commentary, reasoning, or "Page X of Y" markers.
