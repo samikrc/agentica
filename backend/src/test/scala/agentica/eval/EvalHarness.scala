@@ -216,11 +216,44 @@ object EvalSessionType
 }
 
 /**
- *  Loader for evaluation sweep configurations stored as JSON.
+ *  Run-level document selection and provider configurations.
  *
- *  The expected format is a JSON array of provider objects, each with the same
- *  fields as [[EvalProviderConfig]] plus an optional `"sessionTypes"` array.
+ *  @param documents Filenames under the evaluation /files resource directory.
+ *  @param providers Provider sweeps shared by all selected documents.
  */
+case class EvalRunConfig(documents: List[String], providers: List[EvalProviderConfig])
+{
+    /**
+     * Validates all selected document/question pairs before evaluation starts.
+     *
+     * @param resourceDir Directory containing evaluation documents and question sets.
+     * @return Validated document paths and parsed questions in configured order.
+     * @throws IllegalArgumentException if selection is empty, unsafe, missing, or unsupported.
+     */
+    def documentInputs(resourceDir: Path): List[(Path, List[EvalQuestion])] =
+    {
+        require(documents.nonEmpty, "Configure a non-empty documents array for DocEvalTest; legacy provider arrays are only supported for provider-only consumers.")
+        require(providers.nonEmpty, "Configure at least one evaluation provider.")
+        require(documents.distinct.size == documents.size, "Duplicate evaluation documents are not allowed.")
+        val root = resourceDir.toRealPath()
+        documents.map { name =>
+            require(name.nonEmpty && !name.contains('/') && !name.contains('\\') && !name.contains(':') && name != "." && name != "..",
+                "Evaluation documents must be filenames relative to /files.")
+            require(List(".pdf", ".docx", ".pptx").exists(name.toLowerCase(java.util.Locale.ROOT).endsWith),
+                s"Unsupported evaluation document: $name")
+            val document = root.resolve(name)
+            val questionFile = root.resolve(name.substring(0, name.lastIndexOf('.')) + ".eval.json")
+            List(document, questionFile).foreach { path =>
+                require(Files.isRegularFile(path) && Files.isReadable(path), s"Missing or unreadable evaluation input: $path")
+                require(path.toRealPath().startsWith(root), s"Evaluation input is outside /files: $path")
+            }
+            val questions = EvalHarness.loadQuestions(questionFile)
+            require(questions.nonEmpty, s"Empty evaluation question set: $questionFile")
+            (document, questions)
+        }
+    }
+}
+
 object EvalConfig
 {
     /** Default classpath resource name used by [[resolve]]. */
@@ -235,7 +268,30 @@ object EvalConfig
     def load(path: Path): List[EvalProviderConfig] =
     {
         val json = ujson.read(Files.readString(path))
-        parseProviderConfigs(json)
+        parseRunConfig(json).providers
+    }
+
+    /**
+     * Loads document selection and providers from either config format.
+     *
+     * @param path Path to the JSON configuration.
+     * @return Run configuration; legacy arrays have no document selection.
+     */
+    def loadRun(path: Path): EvalRunConfig = parseRunConfig(ujson.read(Files.readString(path)))
+
+    /**
+     * Parses run objects while retaining provider-only legacy array support.
+     *
+     * @param json Run object or legacy provider array.
+     * @return Parsed run configuration.
+     */
+    private def parseRunConfig(json: ujson.Value): EvalRunConfig = json match
+    {
+        case _: ujson.Arr => EvalRunConfig(Nil, parseProviderConfigs(json))
+        case _: ujson.Obj => EvalRunConfig(
+            json.obj.get("documents").map(_.arr.toList.map(_.str)).getOrElse(Nil),
+            parseProviderConfigs(json.obj("providers")))
+        case _ => throw new IllegalArgumentException("Evaluation config must be an object with documents/providers or a legacy provider array.")
     }
 
     /**
@@ -245,6 +301,15 @@ object EvalConfig
      *  @return              Some(configs) if the resource exists, None otherwise.
      */
     def loadFromResource(resourceName: String = DefaultResourceName): Option[List[EvalProviderConfig]] =
+        loadRunFromResource(resourceName).map(_.providers)
+
+    /**
+     * Loads run configuration from a classpath resource.
+     *
+     * @param resourceName Resource path containing the configuration.
+     * @return Configuration if the resource exists, otherwise None.
+     */
+    def loadRunFromResource(resourceName: String = DefaultResourceName): Option[EvalRunConfig] =
     {
         val stream = getClass.getResourceAsStream(resourceName)
         if stream == null then None
@@ -252,7 +317,7 @@ object EvalConfig
             try
             {
                 val json = ujson.read(stream)
-                Some(parseProviderConfigs(json))
+                Some(parseRunConfig(json))
             }
             finally
             {
@@ -270,13 +335,20 @@ object EvalConfig
      *
      *  @return  Some(configs) if a config source is found, None otherwise.
      */
-    def resolve(): Option[List[EvalProviderConfig]] =
+    def resolve(): Option[List[EvalProviderConfig]] = resolveRun().map(_.providers)
+
+    /**
+     * Resolves run configuration using the same property/environment/resource priority as [[resolve]].
+     *
+     * @return Run configuration if a source exists, otherwise None.
+     */
+    def resolveRun(): Option[EvalRunConfig] =
     {
         val pathProp = sys.props.get("DOC_EVAL_CONFIG").orElse(sys.env.get("DOC_EVAL_CONFIG"))
         pathProp match
         {
-            case Some(pathStr) => Some(load(Paths.get(pathStr)))
-            case None          => loadFromResource()
+            case Some(pathStr) => Some(loadRun(Paths.get(pathStr)))
+            case None          => loadRunFromResource()
         }
     }
 
@@ -293,6 +365,23 @@ object EvalConfig
                 sys.env.getOrElse(m.group(1), m.matched)))
 
     /**
+     *  Resolves the judge API key: a `VALAR_API_KEY` environment variable wins
+     *  whenever the judge endpoint is Valar, so the config may carry a harmless
+     *  placeholder instead of a secret or a `${VAR}` expression.
+     *
+     *  @param baseURL      Judge endpoint URL from the config.
+     *  @param configured   `judgeAPIKey` value from the config, if any.
+     *  @return             The API key to send with judge requests.
+     */
+    private def judgeKeyFor(baseURL: Option[String], configured: Option[String]): Option[String] =
+        baseURL match
+        {
+            case Some(u) if u.toLowerCase(java.util.Locale.ROOT).contains("valar") =>
+                sys.env.get("VALAR_API_KEY").filter(_.nonEmpty).orElse(configured)
+            case _ => configured
+        }
+
+    /**
      *  Parses the provider array from the config JSON.
      *  String fields support `${VAR}` environment interpolation (see [[interp]]).
      *
@@ -305,6 +394,7 @@ object EvalConfig
             val sessionTypes = c.obj.get("sessionTypes")
                 .map(_.arr.toList.map(v => EvalSessionType.fromString(v.str)))
                 .getOrElse(List(EvalSessionType.AllQuestionsPerSession))
+            val judgeBaseURL = c.obj.get("judgeBaseURL").map(v => interp(v.str))
             EvalProviderConfig(
                 label                = interp(c.obj("label").str),
                 llmBaseURL           = interp(c.obj("llmBaseURL").str),
@@ -313,9 +403,10 @@ object EvalConfig
                 vlmBaseURL           = c.obj.get("vlmBaseURL").map(v => interp(v.str)),
                 vlmModel             = c.obj.get("vlmModel").map(v => interp(v.str)),
                 vlmAPIKey            = c.obj.get("vlmAPIKey").map(v => interp(v.str)),
-                judgeBaseURL         = c.obj.get("judgeBaseURL").map(v => interp(v.str)),
+                judgeBaseURL         = judgeBaseURL,
                 judgeModel           = c.obj.get("judgeModel").map(v => interp(v.str)),
-                judgeAPIKey          = c.obj.get("judgeAPIKey").map(v => interp(v.str)),
+                judgeAPIKey          = judgeKeyFor(judgeBaseURL,
+                                       c.obj.get("judgeAPIKey").map(v => interp(v.str))),
                 pauseBetweenPhasesMs = c.obj.get("pauseBetweenPhasesMs").map(_.num.toLong),
                 sessionTypes         = sessionTypes,
                 reuseMarkdownCache   = c.obj.get("reuseMarkdownCache").forall(_.bool),
@@ -341,26 +432,31 @@ case class EvalQuestion(
 /**
  *  Outcome of one QA agent turn.
  */
-enum AnswerStatus:
+enum AnswerStatus
+{
     /** Turn completed and produced a final answer. */
     case Answered
     /** Turn or an underlying HTTP request exceeded its timeout. */
     case Timeout
     /** Turn failed with a non-timeout error. */
     case Error
+}
 
-object AnswerStatus:
+object AnswerStatus
+{
     extension (s: AnswerStatus) def label: String = s match
     {
         case AnswerStatus.Answered => "answered"
         case AnswerStatus.Timeout  => "timeout"
         case AnswerStatus.Error    => "error"
     }
+}
 
 /**
  *  Outcome of judging one answer.
  */
-enum JudgeStatus:
+enum JudgeStatus
+{
     /** Judge produced a score. */
     case Judged
     /** Judge call timed out. */
@@ -369,8 +465,10 @@ enum JudgeStatus:
     case JudgeError
     /** Judge was not invoked because the answer did not complete normally. */
     case Skipped
+}
 
-object JudgeStatus:
+object JudgeStatus
+{
     extension (s: JudgeStatus) def label: String = s match
     {
         case JudgeStatus.Judged       => "judged"
@@ -378,19 +476,23 @@ object JudgeStatus:
         case JudgeStatus.JudgeError   => "judge-error"
         case JudgeStatus.Skipped      => "skipped"
     }
+}
 
 /**
  *  Categorical verdict produced by the judge for one answer.
  */
-enum JudgeVerdict:
+enum JudgeVerdict
+{
     /** Fully correct and complete. */
     case Correct
     /** Partially correct or missing important details. */
     case PartiallyCorrect
     /** Incorrect, unsupported, or hallucinated. */
     case Wrong
+}
 
-object JudgeVerdict:
+object JudgeVerdict
+{
     extension (v: JudgeVerdict) def label: String = v match
     {
         case JudgeVerdict.Correct          => "correct"
@@ -421,6 +523,7 @@ object JudgeVerdict:
         else if n.contains("correct") then Some(Correct)
         else None
     }
+}
 
 /**
  *  Parsed judge response, including optional item-level counts for list-style questions.
@@ -436,21 +539,25 @@ case class JudgeResult(
 /**
  *  Outcome of a whole provider/session-type sweep.
  */
-enum SweepStatus:
+enum SweepStatus
+{
     /** Sweep produced answers for all questions. */
     case Ok
     /** Sweep failed because a phase exceeded its timeout (e.g. document conversion). */
     case FailedTimeout
     /** Sweep failed with a non-timeout error. */
     case FailedError
+}
 
-object SweepStatus:
+object SweepStatus
+{
     extension (s: SweepStatus) def label: String = s match
     {
         case SweepStatus.Ok            => "ok"
         case SweepStatus.FailedTimeout => "failed-timeout"
         case SweepStatus.FailedError   => "failed-error"
     }
+}
 
 /**
  *  A single tool invocation with its agent-loop iteration number.
@@ -900,7 +1007,7 @@ object EvalHarness
                            |
                            |Question: $question
                            |
-                           |Be concise and base your answer only on the document.
+                           |Base your answer only on the document.
                            |""".stripMargin,
             timestamp = Instant.now().toString
         )
@@ -1134,17 +1241,24 @@ object EvalHarness
     {
         val prompt =
             s"""You are an expert evaluator. Compare the predicted answer to the reference answer for the given question.
-               |Judge how factually correct and complete the predicted answer is, based only on the reference.
+               |Judge factual correctness and completeness by meaning, not exact wording.
+               |Require the essential facts needed to answer the question, not incidental reference context.
+               |The reference is not exhaustive: absence alone does not prove an additional claim false.
+               |Do not credit unverified additions. A substantive unsupported assertion makes an otherwise
+               |correct answer partial; a contradicted central conclusion makes it wrong.
+               |Distinguish unsupported claims from proven contradictions and explain the specific issue.
+               |Credit only facts expressed in the predicted answer, not facts you infer on its behalf.
                |
                |For list-style or multi-item answers, extract the factual items from both the reference and predicted answers,
                |then count:
                |- correct_items: reference items that are present (semantically, not verbatim) in the predicted answer
                |- reference_items: total distinct items in the reference answer
-               |- hallucinated_items: predicted items that are not present in the reference answer
+               |- hallucinated_items: substantive unsupported or contradicted factual items in the prediction;
+               |  exclude harmless elaboration and clearly equivalent statements
                |
                |If the question asks for an exact value, phrase, name, or title, treat the predicted answer as correct when
                |the exact reference answer appears verbatim somewhere within it. Surrounding context (e.g., added company
-               |name or location) must not lower the verdict below correct, unless it introduces a factual contradiction.
+               |name or location) must not lower the verdict unless it adds a substantive unsupported or contradictory claim.
                |
                |If the predicted answer uses a widely accepted synonym or equivalent term for the reference answer
                |and no factual contradiction is introduced, treat it as correct. Only penalize when the predicted
@@ -1158,9 +1272,10 @@ object EvalHarness
                |{"verdict": "partial", "rationale": "Brief explanation", "correct_items": 0, "reference_items": 0, "hallucinated_items": 0}
                |
                |The "verdict" field must be exactly one of:
-               |- "correct": fully correct and complete
-               |- "partial": partially correct or missing important details
-               |- "wrong": incorrect, unsupported, or hallucinated
+               |- "correct": all essential facts satisfied, with no substantive unsupported or contradictory claims
+               |- "partial": central answer correct, but an essential fact is missing or an additional substantive claim is unsupported or contradicted
+               |- "wrong": central conclusion incorrect, contradicted, or the question is not answered
+               |In the rationale, identify specific missing required facts and contradictions; do not invent omissions or evidence.
                |
                |For non-list answers, set correct_items, reference_items, and hallucinated_items to 0.
                |""".stripMargin
@@ -1273,12 +1388,13 @@ object EvalHarness
     {
         try
         {
-            // Find the first '{' ... '}' substring to tolerate surrounding text.
-            val jsonMatch = raw"\{.*\}".r.findFirstIn(text.replaceAll("\\s+", " "))
+            // Parse the whole response first, then individual lines to tolerate surrounding text.
+            val jsonMatch = (Iterator.single(text) ++ text.linesIterator)
+                .flatMap(candidate => scala.util.Try(ujson.read(candidate)).toOption)
+                .find(value => value.objOpt.exists(obj => obj.contains("verdict") || obj.contains("score")))
             jsonMatch match
             {
-                case Some(jsonStr) =>
-                    val json = ujson.read(jsonStr)
+                case Some(json) =>
                     val verdict = json.obj.get("verdict")
                         .flatMap(v => JudgeVerdict.parse(v.str))
                         .orElse(json.obj.get("score").map(s => JudgeVerdict.fromScore(s.num)))
@@ -2097,7 +2213,8 @@ object EvalHarness
                         baseURL   = url,
                         modelName = model,
                         apiKey    = config.vlmAPIKey.getOrElse("lm-studio"),
-                        temperature = config.temperature
+                        temperature = config.temperature,
+                        reasoningEffort = Some("none")
                     )
                 }
             }

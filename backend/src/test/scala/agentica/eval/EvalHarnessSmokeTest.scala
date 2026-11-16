@@ -70,6 +70,74 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         path
     }
 
+    test("Run config loads documents and preserves legacy provider-only loading") {
+        val file = Files.createTempFile("eval-run-config-", ".json")
+        val provider = ujson.Obj("label" -> "local", "llmBaseURL" -> "http://localhost:1234", "llmModel" -> "test")
+        val providers = ujson.Arr(provider)
+        Files.writeString(file, ujson.Obj("documents" -> ujson.Arr("first.pdf", "second.docx"), "providers" -> providers).render())
+        val config = EvalConfig.loadRun(file)
+        assert(config.documents == List("first.pdf", "second.docx"))
+        assert(EvalConfig.load(file) == config.providers)
+        Files.writeString(file, providers.render())
+        val legacy = EvalConfig.loadRun(file)
+        assert(legacy.documents.isEmpty)
+        assert(legacy.providers == config.providers)
+        assertThrows[IllegalArgumentException](legacy.documentInputs(file.getParent))
+    }
+
+    test("Run config validates every document and question set before evaluation") {
+        val dir = Files.createTempDirectory("eval-inputs-")
+        val provider = EvalProviderConfig("local", "http://localhost:1234", "test", "unused")
+        val config = EvalRunConfig(List("first.pdf", "second.docx"), List(provider))
+        Files.writeString(dir.resolve("first.pdf"), "placeholder")
+        Files.writeString(dir.resolve("first.eval.json"), """{"qset":[{"question":"What?","answer":"42"}]}""")
+        assertThrows[IllegalArgumentException](config.documentInputs(dir))
+        Files.writeString(dir.resolve("second.docx"), "placeholder")
+        assertThrows[IllegalArgumentException](config.documentInputs(dir))
+        Files.writeString(dir.resolve("second.eval.json"), """{"qset":[]}""")
+        assertThrows[IllegalArgumentException](config.documentInputs(dir))
+        Files.writeString(dir.resolve("second.eval.json"), """{"qset":[{"question":"Why?","answer":"Because"}]}""")
+        val inputs = config.documentInputs(dir)
+        assert(inputs.map(_._1.getFileName.toString) == config.documents)
+        assert(inputs.map(_._2.head.referenceAnswer) == List("42", "Because"))
+        assertThrows[IllegalArgumentException](config.copy(documents = Nil).documentInputs(dir))
+        assertThrows[IllegalArgumentException](config.copy(providers = Nil).documentInputs(dir))
+        assertThrows[IllegalArgumentException](config.copy(documents = List("first.pdf", "first.pdf")).documentInputs(dir))
+        List("../first.pdf", "/first.pdf", "C:\\first.pdf", "nested/first.pdf", "first.txt").foreach { name =>
+            assertThrows[IllegalArgumentException](config.copy(documents = List(name)).documentInputs(dir))
+        }
+    }
+
+    test("Judge parses complete and line-delimited JSON without altering rationale text") {
+        val rationale = "Preserve {braces},  spacing, and \"quotes\"."
+        val json = ujson.Obj("verdict" -> "correct", "rationale" -> rationale)
+        val responses = List(
+            json.render(),
+            json.render(indent = 2),
+            s"Explanation with {non-JSON braces}\n${json.render()}\nFinished.",
+            s"```json\n${json.render()}\n```",
+            s"{}\n${json.render()}"
+        )
+        responses.foreach { response =>
+            val provider = new ScriptedLLMProvider(List(response))
+            val (verdict, actualRationale, status, attempts) =
+                EvalHarness.judgeAnswer("What number?", "42", "42", provider)
+            assert(verdict.contains(JudgeVerdict.Correct))
+            assert(actualRationale == rationale)
+            assert(status == JudgeStatus.Judged)
+            assert(attempts == 1)
+        }
+    }
+
+    test("Judge rejects malformed JSON after bounded attempts") {
+        val provider = new ScriptedLLMProvider(List("{not JSON}", "{still not JSON}"))
+        val (verdict, _, status, attempts) =
+            EvalHarness.judgeAnswer("What number?", "42", "42", provider)
+        assert(verdict.isEmpty)
+        assert(status == JudgeStatus.JudgeError)
+        assert(attempts == 2)
+    }
+
     test("EvalHarness runs all session types end-to-end with stub providers") {
         val questions = List(
             EvalQuestion("What is the answer?", "42", "direct"),

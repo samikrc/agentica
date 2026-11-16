@@ -88,6 +88,8 @@ class FilesReadScratchpadTest extends AnyFunSuite
                 "scratchpad must contain the stored content for the ref to resolve"
             )
             assert(stored.get.content == bigContent, "stored content must match original file content")
+            assert(result.metadata.get("hint").exists(_.contains("files_search")),
+                "large-file result must carry an actionable search/range hint in metadata")
         }
         finally
         {
@@ -148,6 +150,118 @@ class FilesReadScratchpadTest extends AnyFunSuite
                 "range read must not store partial content in scratchpad")
             assert(!result.metadata.contains("stored"),
                 "range read must not include a stored: ref")
+        }
+        finally
+        {
+            deleteTmpDir(tmpDir)
+        }
+    }
+
+    test("FilesSearch expands a caption match to the enclosing table") {
+        val tmpDir = Files.createTempDirectory("agentica-search-table-expand")
+        try
+        {
+            val md = """|Intro prose.
+                        |
+                        |Exhibit 15: Options turnover
+                        |
+                        || Q | Value |
+                        ||---|---|
+                        || Q1 | 8,286 |
+                        || Q2 | 8,448 |
+                        || Q3 | 6,796 |
+                        || Q4 | 12,257 |
+                        |
+                        |Tail prose.""".stripMargin
+            Files.writeString(tmpDir.resolve("doc.md"), md)
+
+            val scratchpad = SessionScratchpad()
+            val ctx        = mkCtx(tmpDir.toString, scratchpad)
+
+            val input = FilesSearchInput(
+                rawPath = "doc.md", query = "Exhibit 15", recursive = true,
+                ignoreCase = true, linesContext = 2, maxMatches = 50,
+                include = None, useRegex = false
+            )
+            val output = FilesSearch.execute(input, ctx)
+
+            assert(output.blocks.exists(_.contains("6,796")),
+                "a match next to a table must surface the table's data rows")
+            assert(output.blocks.exists(_.contains("Q | Value")),
+                "expansion must include the table header")
+        }
+        finally
+        {
+            deleteTmpDir(tmpDir)
+        }
+    }
+
+    test("FilesSearch emits a table once when several matches land inside it") {
+        val tmpDir = Files.createTempDirectory("agentica-search-table-dedup")
+        try
+        {
+            val md = """|| Q | Value |
+                        ||---|---|
+                        || Q1 | alpha |
+                        || Q2 | beta |
+                        || Q3 | alpha |""".stripMargin
+            Files.writeString(tmpDir.resolve("doc.md"), md)
+
+            val scratchpad = SessionScratchpad()
+            val ctx        = mkCtx(tmpDir.toString, scratchpad)
+
+            val input = FilesSearchInput(
+                rawPath = "doc.md", query = "alpha", recursive = true,
+                ignoreCase = true, linesContext = 1, maxMatches = 50,
+                include = None, useRegex = false
+            )
+            val output = FilesSearch.execute(input, ctx)
+
+            assert(output.matches == 2, "both matching lines still count as matches")
+            assert(output.blocks.count(_ == "---") == 1,
+                "matches inside one table must produce a single expanded block")
+        }
+        finally
+        {
+            deleteTmpDir(tmpDir)
+        }
+    }
+
+    test("FilesSearch merges nearby matches into one continuous excerpt") {
+        val tmpDir = Files.createTempDirectory("agentica-search-merge")
+        try
+        {
+            val text = """|alpha line one
+                          |context a
+                          |context b
+                          |beta line four
+                          |context c
+                          |context d
+                          |far away
+                          |far away
+                          |far away
+                          |far away
+                          |beta again eleven""".stripMargin
+            Files.writeString(tmpDir.resolve("doc.txt"), text)
+
+            val scratchpad = SessionScratchpad()
+            val ctx        = mkCtx(tmpDir.toString, scratchpad)
+
+            val input = FilesSearchInput(
+                rawPath = "doc.txt", query = "alpha,beta", recursive = true,
+                ignoreCase = true, linesContext = 1, maxMatches = 50,
+                include = None, useRegex = false
+            )
+            val output = FilesSearch.execute(input, ctx)
+
+            assert(output.matches == 3)
+            // Matches at lines 1 and 4 merge into one block; the line-11 match stays separate.
+            assert(output.blocks.count(_ == "---") == 2,
+                "adjacent match windows must merge; a distant match must stay separate")
+            assert(output.blocks.count(_.startsWith("doc.txt:1:")) == 1,
+                "merged region must not duplicate lines")
+            assert(output.blocks.count(_.contains(">")) == 3,
+                "every match line is marked within its merged region")
         }
         finally
         {

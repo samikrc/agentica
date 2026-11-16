@@ -94,6 +94,8 @@ Goal: replace the Phase 1 single-call loop with a safe plan→act→observe agen
 - [x] `files.write`: permission scope check (see Step 3); confirm bytes written.
 - [x] `files.list`: ls-style; args: `path`, `recursive` (default false), `all` (dotfiles, default false), `depth` (default 3), `pattern` glob; indented tree output with size and date.
 - [x] `files.search`: grep-style; args: `query`, `path`, `recursive` (default true), `ignore_case` (default false), `lines_context` (default 2), `max_matches` (default 50), `include` glob, `regex` flag; skip binary files; `>` prefix on matching line.
+- [x] `files.search` table-aware context expansion: a match window touching a `|` row grows to the enclosing contiguous Markdown table (cap 60 extra lines); overlapping/adjacent match windows merge into single non-duplicated regions.
+- [x] `files.read` large-file guidance: results for bodies over the inline budget carry an actionable hint directing the model to `files.search` + `lines=` ranges; tool schema text documents the search-then-range workflow.
 - [x] `files.stat`: file size, modified time, type.
 - [x] Ensure all `files.*` tools run `PathSandbox` check before any execution.
 - [x] Ensure tools use typed validation and structured presentation envelopes; no arbitrary shell execution.
@@ -159,6 +161,7 @@ Goal: replace the Phase 1 single-call loop with a safe plan→act→observe agen
 - [x] Emit `ToolCallStart` and `ToolCallResult` SSE events with command, args, rendered output, and duration.
 - [x] Log each tool call via `TraceLogger` (command, args, status, durationMs, traceId, iteration).
 - [x] Persist each tool call to `RunStore` immediately after execution (per-call, not end-of-run).
+- [x] Native OpenAI function/tool calling with JSON arguments as the production path (textual `run(command=...)` protocol is retained only for non-production/scripted scenarios).
 
 ### Step 7 — System Prompt
 
@@ -167,6 +170,7 @@ Goal: replace the Phase 1 single-call loop with a safe plan→act→observe agen
 - [x] Create `backend/src/main/resources/system_prompt.txt` with `{{TOOL_INDEX}}`, `{{ROOT_PATH}}`, `{{TODAY}}` substitution slots (full template in `agent_loop_runtime.md` §8.1).
 - [x] Load template once at `BackendServer` startup; substitute `{{TOOL_INDEX}}` from `CommandRegistry.helpIndex()`.
 - [x] Apply `{{ROOT_PATH}}` and `{{TODAY}}` per-session in `ContextManager.assemble()`.
+- [x] Grounding rules in system prompt: answer from context when available, retrieve with `files.search`/`files.read` when it is not (never answer document-fact questions from memory), abstain explicitly when information is genuinely absent; hard cap of 3 retrieval attempts per fact before declaring absence.
 
 ### Step 8 — Debugging and Tests
 
@@ -237,6 +241,10 @@ Goal: expand capabilities beyond chat/files with document processing, browser au
 - [x] Rename `files.read_docx` → `files.read_docx_to_markdown`; same persist + staleness + permission logic; LibreOffice availability check with structured error.
 - [x] Rename `files.read_pptx` → `files.read_pptx_to_markdown`; same persist + staleness + permission logic.
 - [x] Use separately configured VLM provider (Settings → VLM tab) for vision calls; fall back to primary LLM if VLM not configured (`ExecutionContext.vlmProvider`, built in `BackendServer.buildVLMProvider`).
+- [x] Production VLM default: reasoning disabled on the dedicated VLM path (`reasoning_effort: "none"` + `chat_template_kwargs.enable_thinking=false` sent on every chat/vision request when the VLM provider is configured; not applied to the primary-LLM fallback). Default model `lfm3-vl-2b`. ~6× faster transcription vs reasoning-on with equal fact accuracy per `VLMCompareTest` benchmark; known trade-off: weaker value extraction from chart-heavy pages.
+- [x] `PageVisionTranscriber.transcribePages`: reusable per-page transcription entry point shared by document tools and the evaluation harness.
+- [x] Evaluation infrastructure (`EvalHarness` + `DocEvalTest`, opt-in via `eval-config.json`): per-provider answer generation across session types (`all-questions-per-session`, `all-questions-per-session-shuffled`, `one-question-per-session`), separate judge model (no tool schemas on judge calls), `VALAR_API_KEY` env auto-resolution when judge URL is Valar, per-question `toolCalls`/verdicts persisted to `questions.json`, `result_summary.txt` rollups with direct-vs-derived splits, tool-call metrics, content-addressed Markdown cache reuse, and `run-eval-loop.sh` multi-provider runner.
+- [x] `MarkdownScorer` expected-facts checker (`src/test/scala/agentica/misctests/`): per-page transcription quality — word ratio, token overlap, heading/table counts, expected-fact outcomes (pass-cell/line/terms, partial, wrong, misplaced, missing); `VLMCompareTest` runs model/prompt comparisons with persistent artifacts and offline rescoring.
 - [x] Tests: `PDFPageRendererTest` (mock `completeVision`, PDFBox rendering, one section per page, `stubMarkdown`); `FilesReadToMarkdownTest` (`.md` generation, cache hit, staleness re-generation, small-cache rejection, `enrich_images=false`, permission denied/granted, VLM-over-LLM preference, vision-unsupported error, render) with PDF/DOCX/PPTX fixtures in `src/test/resources/files/`; `DocEvalTest` + `EvalHarness` for opt-in LLM-backed Q&A evals.
 
 #### Stage C — Free-Form Document Generation
@@ -390,9 +398,34 @@ Goal: improve isolation, extensibility, collaboration, and advanced product capa
 
 ---
 
+## Future Enhancements
+
+Ordered by enables-most → cost-per-point → trigger-driven. Items 1–3 land as middleware components after the first ticket; re-run doc-eval after to measure loop/token deltas before continuing.
+
+**Tier 1 — cheap, unblocking, measurable:**
+
+- [ ] Tool-call middleware chain in `AgentLoop` (enabling refactor) — ticket: "Extract a tool-call middleware chain in AgentLoop". Ordered before/after interceptors around tool dispatch; `PermissionCoordinator` becomes first `before` slot. Enables loop guard, compression, OTLP, keychain as drop-in components (pattern: NeMo Relay middleware).
+- [ ] Failure-loop guard + micro-skills (experience-driven cost control) — ticket: "Experience-driven cost control: failure-loop guard + micro-skills". Loop guard lands first (mechanical version of the 3-attempt cap, as a `before` middleware); micro-skills defers within the ticket to Tier 3 (needs accumulated session traces; benefits from middleware existing) (pattern: https://arxiv.org/abs/2610.22732, https://github.com/microsoft/TokenEconomizer). Tool pruning evaluated and rejected.
+- [ ] Tool-result compression with recovery (Caveman pattern) — ticket: "Compress oversized tool results with fail-closed per-type compressors". `Compressor` registry in `Presentation`/`after` middleware: table/JSON/log-dedupe transforms, fail-closed (ambiguous → pass original), original always recoverable via scratchpad handle (pattern: https://github.com/JuliusBrussee/caveman).
+
+**Tier 2 — structural, bigger payoff:**
+
+- [ ] Hybrid retrieval over scratchpad + indexed documents (FTS5 BM25 + vector + RRF) — ticket: "Hybrid retrieval over scratchpad + indexed documents". Phase A: FTS5 index over scratchpad results, BM25-ranked search with cursor paging (pattern: https://github.com/mksglu/context-mode). Phase B: workspace indexing + embeddings fused via RRF (implements the Phase 6 indexing items; candidate embedders: nomic-embed-text vs EmbeddingGemma 2 — benchmark on doc-eval before choosing).
+- [ ] Dev-time OTLP trace export (Phoenix/Langfuse) — ticket: "Dev-time OTLP trace export for agent-run debugging". Optional `AGENTICA_OTLP`-gated spans over `AgentLoop`/provider/tool calls using `gen_ai.*` semantic conventions; `docker-compose.dev.yml` with Phoenix. Schedule before hybrid Phase B / micro-skills work, where trace-UI debugging pays most. Dev tooling only — production stays local-only, no export.
+
+**Tier 3 — when the trigger arrives:**
+
+- [ ] OS keychain for provider/API secrets (javakeyring) — ticket: "Store provider/API secrets in the OS keychain (javakeyring)". `ApiKeyStore` over macOS Keychain / Windows Credential Manager / Secret Service, env var → keychain → config fallback order (https://github.com/javakeyring/java-keyring). Pair with the Phase 1 security sprint (dev-token, symlink, SSE tokens) — same code neighborhood. Server vaults (Keyorix et al.) evaluated and rejected for local use.
+- [ ] Background task inbox: async agent work + approval queues (Pizza Bot pattern) — ticket: "Background task inbox: async agent work with approval queues". Threads as resumable units of work; pending permissions surface as Action-queue items via `PermissionCoordinator`; scheduled/webhook triggers in Phase 2 (pattern: https://www.infoq.com/news/2026/10/pizza-bot-ai-agents/). Feature-size — schedule as a release milestone, not an incremental.
+
+---
+
 ## Near-Term Recommended Next Steps
 
+- [ ] Phase 1 security hardening (highest risk-per-effort): fail-closed or per-launch random token instead of `dev-token` fallback; constrain `POST /sessions` `rootPath` to permitted roots; fix `PathSandbox` symlink escape via `toRealPath()`; short-lived token for SSE `/log/stream` and similar endpoints.
 - [ ] Implement `llm.summarize`, `llm.extract`, `llm.classify` tool bodies (Phase 2 Step 5 — currently stubs).
 - [ ] Add configurable `AGENTICA_HOST` bind address (Phase 1 cleanup).
+- [ ] Begin Phase 3 Stage C: `files.write_markdown`, `files.markdown_to_docx`, `files.markdown_to_pdf` via LibreOffice headless.
+- [ ] Phase 4 vision tools (`vision.describe`, `vision.extract_text`) — low cost now that the VLM provider path is proven.
 - [ ] Add UI smoke tests for streamed agent events.
-- [ ] Begin Phase 3: document generation (Stage C), browser tools (`browser.open`), cloud LLM providers.
+- [ ] *(Deferred)* Chart-data extraction gap: reasoning-off VLM transcription drops bar values from chart-heavy pages (~8/16 chart facts vs 10–13/16 reasoning-on). Candidate fix: second-pass chart-aware transcription on flagged pages (heuristic or VLM classifier → chart-specific prompt), preserving the fast first pass.

@@ -107,6 +107,9 @@ object BackendServer extends cask.Main
      *  Constructs an optional Vision [[LLMProvider]] from the given settings.
      *  Returns `Some` only when both `vlmServerURL` and `vlmModel` are non-empty.
      *  Falls back to the `VLM_API_KEY` environment variable when no API key is configured.
+     *  Reasoning is always disabled for VLM calls (`reasoning_effort=none` plus
+     *  `chat_template_kwargs.enable_thinking=false`) — transcription doesn't benefit
+     *  from thinking and it multiplies latency several-fold.
      *  @param settings  Application settings to read VLM server URL, model name, and API key from.
      *  @return          `Some` [[OpenAIProvider]] configured for vision calls, or `None` if VLM is not configured.
      */
@@ -119,7 +122,8 @@ object BackendServer extends cask.Main
             Some(OpenAIProvider(
                 baseURL = settings.vlmServerURL,
                 modelName = settings.vlmModel,
-                apiKey = vlmAPIKey
+                apiKey = vlmAPIKey,
+                reasoningEffort = Some("none")
             ))
         else
             if hasUrl || hasModel then

@@ -76,6 +76,26 @@ class PDFPageRendererTest extends AnyFunSuite
             s"expected $total sections (one per page), got ${sections.length}")
     }
 
+    test("PageVisionTranscriber: transcribePages returns pages that transcribe joins unchanged") {
+        val total = PDFPageRenderer.pageCount(pdfPath)
+        val pages = PageVisionTranscriber.transcribePages(
+            totalPages  = total,
+            renderBatch = (from, to) => PDFPageRenderer.renderBatch(pdfPath, from, to),
+            llmProvider = StubVisionProvider(),
+            traceId     = "test"
+        )
+        val joined = PageVisionTranscriber.transcribe(
+            totalPages  = total,
+            renderBatch = (from, to) => PDFPageRenderer.renderBatch(pdfPath, from, to),
+            llmProvider = StubVisionProvider(),
+            traceId     = "test"
+        )
+        assert(pages.size == total)
+        assert(pages.mkString(PageVisionTranscriber.PageSeparator) == joined)
+        assert(PageVisionTranscriber.transcribePages(0, (_, _) => Nil, StubVisionProvider(), "test").isEmpty)
+        assert(PageVisionTranscriber.transcribe(0, (_, _) => Nil, StubVisionProvider(), "test") == "[No pages found in document]")
+    }
+
     test("PageVisionTranscriber: stubMarkdown returns one placeholder per page") {
         val images = PDFPageRenderer.renderToImages(pdfPath)
         val stub   = PageVisionTranscriber.stubMarkdown(images.size)

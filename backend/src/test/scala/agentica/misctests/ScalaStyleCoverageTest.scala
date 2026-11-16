@@ -6,10 +6,11 @@ import java.nio.file.{Files, Path, Paths}
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters.*
 
-/** Verifies contract-style Scaladoc for published Scala members in production and test sources. */
-class ScaladocCoverageTest extends AnyFunSuite
+/** Verifies contract-style Scaladoc and brace-style enums in production and test sources. */
+class ScalaStyleCoverageTest extends AnyFunSuite
 {
     private val MethodDeclaration = """^\s*(?:override\s+)?(?:(?:private|protected)(?:\[[^]]+\])?\s+)?def\s+[A-Za-z_$][A-Za-z0-9_$]*.*""".r
+    private val EnumDeclaration   = """^\s*(?:(?:private|protected|sealed|open|transparent|final|abstract)\s+)*enum\s+[A-Za-z_$][A-Za-z0-9_$]*.*""".r
     private val Parameter         = """\b([A-Za-z_$][A-Za-z0-9_$]*)\s*:""".r
     private val ParamTag          = """(?m)^\s*\*\s*@param\s+([A-Za-z_$][A-Za-z0-9_$]*)\b""".r
     private val TypeParamTag      = """(?m)^\s*\*\s*@tparam\s+([A-Za-z_$][A-Za-z0-9_$]*)\b""".r
@@ -294,6 +295,39 @@ class ScaladocCoverageTest extends AnyFunSuite
     private def hasDescription(doc: String): Boolean =
         doc.linesIterator.map(_.trim.stripPrefix("*").trim)
             .exists(line => line.nonEmpty && line != "/**" && line != "/" && !line.startsWith("@"))
+
+    /**
+     *  Reports enum declarations that do not use brace syntax in one source file.
+     *  An enum must carry `{` on its declaration line or on the next non-blank,
+     *  non-comment line; colon-significant style (`enum X:`) is rejected.
+     *  @param path  Scala source file to inspect.
+     *  @return      Violations including file and line number.
+     */
+    private def enumStyleViolations(path: Path): List[String] =
+    {
+        val lines = Files.readAllLines(path).asScala.toVector
+        lines.indices.flatMap { index =>
+            val line = lines(index)
+            if !EnumDeclaration.matches(line) || line.contains("/*") then Nil
+            else
+            {
+                val nextCode = lines.indexWhere(l =>
+                    l.trim.nonEmpty && !l.trim.startsWith("//") && !l.trim.startsWith("/*") &&
+                    !l.trim.startsWith("*") && !l.trim.startsWith("@"), index + 1)
+                val bracesHere   = line.contains("{")
+                val bracesNext   = nextCode >= 0 && lines(nextCode).trim.startsWith("{")
+                if !bracesHere && !bracesNext then
+                    List(s"${path.toString}:${index + 1}: enum must use brace syntax: ${line.trim}")
+                else Nil
+            }
+        }.toList
+    }
+
+    test("every enum uses brace syntax") {
+        val roots = List(Paths.get("src/main/scala"), Paths.get("src/test/scala"))
+        val violations = roots.flatMap(scalaFiles).flatMap(enumStyleViolations).sorted
+        assert(violations.isEmpty, s"${violations.size} enums without braces:\n${violations.mkString("\n")}")
+    }
 
     test("every published Scala method has Scaladoc") {
         val roots = List(Paths.get("src/main/scala"), Paths.get("src/test/scala"))

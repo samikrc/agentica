@@ -55,10 +55,10 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
      */
     val schema: CommandSchema = CommandSchema(
         fullName = "files_read",
-        summary  = "Read a workspace file; large files are stored in the scratchpad",
+        summary  = "Read a workspace file; large files are stored in the scratchpad — use files_search to locate a section, then lines= to read it",
         args     = List(
             ArgSpec("path",  "Relative path to the file within the workspace", required = true),
-            ArgSpec("lines", "Optional line range to read, e.g. 1-50",         required = false)
+            ArgSpec("lines", "Optional line range, e.g. 270-285 — use after files_search to read the located section of a large file", required = false)
         ),
         example  = """files_read path=src/main.scala lines=1-50"""
     )
@@ -273,7 +273,8 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
                     val fullMeta = body match
                         case ToolBody.Inline(_) =>
                             meta + ("hint" -> "complete file returned — answer from content above before searching")
-                        case _ => meta
+                        case _ =>
+                            meta + ("hint" -> "large file stored — use files_search to locate a section, then files_read lines=a-b to read it")
                     ToolResult(
                         status   = ToolStatus.Ok,
                         metadata = fullMeta,

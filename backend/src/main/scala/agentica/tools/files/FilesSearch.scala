@@ -61,6 +61,9 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
      */
     val name: String = "files_search"
 
+    /** Cap on extra context lines added when expanding a match to its enclosing table. */
+    private val MaxTableExpansionLines = 60
+
     /**
      *  Argument schema for help generation and system-prompt tool index.
      */
@@ -199,6 +202,8 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                                 if (matchLines.nonEmpty)
                                 {
                                     fileCount += 1
+                                    val matchSet = scala.collection.mutable.Set.empty[Int]
+                                    val ranges   = scala.collection.mutable.ListBuffer.empty[(Int, Int)]
                                     matchLines.foreach { matchIdx =>
                                         if (!truncated)
                                         {
@@ -209,16 +214,37 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                                             }
                                             else
                                             {
-                                                val start = Math.max(0, matchIdx - input.linesContext)
-                                                val end   = Math.min(lines.length - 1, matchIdx + input.linesContext)
-                                                val chunk = (start to end).map { i =>
-                                                    val prefix = if (i == matchIdx) ">" else " "
-                                                    s"$relPath:${i + 1}:$prefix ${lines(i)}"
+                                                matchSet += matchIdx
+                                                var start = Math.max(0, matchIdx - input.linesContext)
+                                                var end   = Math.min(lines.length - 1, matchIdx + input.linesContext)
+                                                // If the context window touches a Markdown table row, expand it to the
+                                                // whole contiguous table so a caption/header hit surfaces the data rows.
+                                                if ((start to end).exists(i => lines(i).trim.startsWith("|")))
+                                                {
+                                                    var extra = 0
+                                                    while (start > 0 && extra < MaxTableExpansionLines &&
+                                                           lines(start - 1).trim.startsWith("|")) { start -= 1; extra += 1 }
+                                                    while (end < lines.length - 1 && extra < MaxTableExpansionLines &&
+                                                           lines(end + 1).trim.startsWith("|")) { end += 1; extra += 1 }
                                                 }
-                                                blocks ++= chunk
-                                                blocks += "---"
+                                                ranges += start -> end
                                             }
                                         }
+                                    }
+                                    // Merge overlapping or adjacent windows so nearby matches form one
+                                    // continuous excerpt instead of several fragments with duplicate lines.
+                                    val merged = scala.collection.mutable.ListBuffer.empty[(Int, Int)]
+                                    ranges.sorted.foreach { case (s, e) =>
+                                        if (merged.nonEmpty && s <= merged.last._2 + 1)
+                                            merged.update(merged.length - 1, (merged.last._1, Math.max(merged.last._2, e)))
+                                        else merged += ((s, e))
+                                    }
+                                    merged.foreach { case (s, e) =>
+                                        (s to e).foreach { i =>
+                                            val prefix = if (matchSet.contains(i)) ">" else " "
+                                            blocks += s"$relPath:${i + 1}:$prefix ${lines(i)}"
+                                        }
+                                        blocks += "---"
                                     }
                                 }
                             }
