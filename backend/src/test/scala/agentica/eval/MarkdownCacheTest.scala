@@ -200,6 +200,26 @@ class MarkdownCacheTest extends AnyFunSuite
         }
     }
 
+    test("Different transcription prompts produce different cache keys") {
+        val workDir  = Files.createTempDirectory("md-cache-prompt-")
+        val cacheDir = Files.createTempDirectory("md-cache-store-")
+        val pdfPath  = createPDF(workDir, "prompt document")
+
+        withCacheDir(cacheDir) {
+            val (pathA, keyA, hashA) = EvalHarness.markdownCacheEntry(pdfPath, "vlm-a")
+            val (pathB, keyB, hashB) = EvalHarness.markdownCacheEntry(
+                pdfPath, "vlm-a", prompt = "Transcribe everything differently.")
+
+            assert(hashA == hashB, "PDF hash must be identical for the same document")
+            assert(keyA != keyB, "different transcription prompts must produce different cache keys")
+            assert(pathA != pathB)
+
+            val (pathC, keyC, _) = EvalHarness.markdownCacheEntry(pdfPath, "vlm-a")
+            assert(keyA == keyC && pathA == pathC,
+                "the production prompt must produce the default cache key")
+        }
+    }
+
     test("Different PDF contents produce different cache keys") {
         val workDir  = Files.createTempDirectory("md-cache-pdf-")
         val cacheDir = Files.createTempDirectory("md-cache-store-")
