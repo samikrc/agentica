@@ -104,7 +104,7 @@ case class ProviderManifest(
  *
  *  @param enabled   Whether cache reuse was permitted by configuration.
  *  @param hit       Whether an existing valid entry was reused instead of converting.
- *  @param key       Content-addressed cache key (SHA-256 of version, document hash, identity).
+ *  @param key       Content-addressed cache key (SHA-256 of version, document hash, identity, prompt hash).
  *  @param docSha256 SHA-256 digest of the source document bytes.
  *  @param source    Absolute path of the cache entry that was read or written.
  */
@@ -1616,18 +1616,26 @@ object EvalHarness
     /**
      *  Computes the content-addressed cache entry for one document and conversion
      *  identity (VLM model).  The key covers the conversion pipeline version,
-     *  image-enrichment behavior, and the document bytes, so different documents
-     *  or converter settings never collide.
+     *  image-enrichment behavior, the document bytes, and the transcription
+     *  prompt text, so different documents, converter settings, or prompt edits
+     *  never collide with stale entries.
      *
      *  @param docPath   Source document whose bytes are hashed.
      *  @param identity  Converter identity string (e.g. the VLM model name).
+     *  @param prompt    Vision transcription prompt whose SHA-256 joins the key;
+     *                   defaults to the production [[PageVisionTranscriber]] prompt.
      *  @return          Tuple of (cache file path, cache key, document SHA-256).
      */
-    private[eval] def markdownCacheEntry(docPath: Path, identity: String): (Path, String, String) =
+    private[eval] def markdownCacheEntry(
+        docPath:  Path,
+        identity: String,
+        prompt:   String = PageVisionTranscriber.defaultPrompt
+    ): (Path, String, String) =
     {
-        val docHash = sha256(Files.readAllBytes(docPath))
+        val docHash    = sha256(Files.readAllBytes(docPath))
+        val promptHash = sha256(prompt.getBytes(java.nio.charset.StandardCharsets.UTF_8))
         val key = sha256(
-            s"$MarkdownCacheVersion|enrichImages=$ConversionEnrichImages|$docHash|$identity"
+            s"$MarkdownCacheVersion|enrichImages=$ConversionEnrichImages|$docHash|$identity|$promptHash"
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8)
         )
         (Files.createDirectories(markdownCacheDir).resolve(s"$key.md"), key, docHash)
