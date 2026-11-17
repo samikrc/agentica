@@ -52,13 +52,17 @@ object PathSandbox
      *                symlink loop is detected.
      */
     private def realPath(path: Path, depth: Int = 0): Option[Path] =
-        if (depth > MaxSymlinkDepth) None
-        else if (Files.exists(path)) Some(path.toRealPath())
-        else if (Files.isSymbolicLink(path))
-            realPath(path.getParent.resolve(Files.readSymbolicLink(path)).normalize(), depth + 1)
-        else if (path.getParent != null)
-            realPath(path.getParent, depth).map(_.resolve(path.getFileName))
-        else None
+        try
+        {
+            if (depth > MaxSymlinkDepth) None
+            else if (Files.exists(path)) Some(path.toRealPath())
+            else if (Files.isSymbolicLink(path))
+                realPath(path.getParent.resolve(Files.readSymbolicLink(path)).normalize(), depth + 1)
+            else if (path.getParent != null)
+                realPath(path.getParent, depth).map(_.resolve(path.getFileName))
+            else None
+        }
+        catch { case _: java.io.IOException => None }
 
     private val MaxSymlinkDepth = 40
 

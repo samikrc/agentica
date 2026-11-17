@@ -14,6 +14,7 @@ const LogViewer = (() => {
 
   let ws = null;
   let wsReconnectTimer = null;
+  let connectGen = 0;
   let isPaused = false;
   let shouldAutoScroll = true;
   let lineCount = 0;
@@ -23,9 +24,12 @@ const LogViewer = (() => {
   // server); it is exchanged for a short-lived WebSocket ticket per connect.
   const hashParams = new URLSearchParams(window.location.hash.slice(1));
   const params     = new URLSearchParams(window.location.search);
-  const token      = hashParams.get('token') || params.get('token') || '';
-  if (hashParams.get('token') || params.get('token')) {
+  let token        = hashParams.get('token') || params.get('token');
+  if (token) {
+    sessionStorage.setItem('agentica_token', token);
     history.replaceState(null, '', window.location.pathname);
+  } else {
+    token = sessionStorage.getItem('agentica_token') || '';
   }
 
   /**
@@ -50,10 +54,12 @@ const LogViewer = (() => {
   }
 
   /**
-   * Connect to the WebSocket stream with exponential backoff on failure.
+   * Connect to the WebSocket stream, retrying only transient failures.
+   * Authentication failures cannot recover on their own and stop retrying.
    * @param {number} delay  Milliseconds to wait before connecting (0 = immediate).
    */
-  async function connect(delay = 0) {
+  function connect(delay = 0) {
+    const gen = ++connectGen;
     if (wsReconnectTimer) {
       clearTimeout(wsReconnectTimer);
       wsReconnectTimer = null;
@@ -67,15 +73,24 @@ const LogViewer = (() => {
 
     wsReconnectTimer = setTimeout(async () => {
       wsReconnectTimer = null;
+      if (!token) {
+        connectionStatus.textContent = 'Authentication failed — missing token';
+        connectionStatus.className = 'disconnected';
+        return;
+      }
       let ticket;
       try {
         ticket = await fetchTicket();
       } catch (e) {
-        connectionStatus.textContent = 'Auth failed — retrying';
+        const isAuthError = /ticket request failed: (401|403)/.test(e.message || '');
+        connectionStatus.textContent = isAuthError ? 'Authentication failed' : 'Connection failed — retrying';
         connectionStatus.className = 'disconnected';
-        connect(3000);
+        if (!isAuthError) connect(3000);
         return;
       }
+      // A disconnect()/connect() while fetchTicket() was in flight must not
+      // leave an orphaned socket open.
+      if (gen !== connectGen) return;
       const proto   = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const url     = `${proto}//${window.location.host}/log/stream?ticket=${encodeURIComponent(ticket)}`;
 
@@ -273,6 +288,7 @@ const LogViewer = (() => {
   return {
     connect,
     disconnect: () => {
+      connectGen++;
       if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
       if (ws) { ws.onclose = null; ws.close(); ws = null; }
     }
