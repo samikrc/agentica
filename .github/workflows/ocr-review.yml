@@ -5,7 +5,7 @@
 # review comments on the PR.
 #
 # Required secrets/vars (Settings -> Secrets and variables -> Actions):
-#   secret    OCR_LLM_URL            LLM API endpoint
+#   variable  OCR_LLM_URL            LLM API endpoint
 #   secret    OCR_LLM_AUTH_TOKEN     LLM auth token (Gemini API key)
 #   variable  OCR_LLM_MODEL          model name
 #   variable  OCR_LLM_USE_ANTHROPIC  'false' for OpenAI-compatible providers
@@ -93,7 +93,7 @@ jobs:
       - name: Run OpenCodeReview
         uses: alibaba/open-code-review@main
         with:
-          llm_url: ${{ secrets.OCR_LLM_URL }}
+          llm_url: ${{ vars.OCR_LLM_URL }}
           llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           llm_model: ${{ vars.OCR_LLM_MODEL }}
           llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC }}
