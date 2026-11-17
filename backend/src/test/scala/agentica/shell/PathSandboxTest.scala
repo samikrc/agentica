@@ -83,6 +83,23 @@ class PathSandboxTest extends AnyFunSuite
         assert(PathSandbox.resolve(ws.toString, "link/newfile.txt") == Left("path_escaped"))
     }
 
+    test("resolve: dangling symlink pointing outside is rejected") {
+        val dir     = java.nio.file.Files.createTempDirectory("sandbox-symlink-dangling-")
+        val ws      = java.nio.file.Files.createDirectory(dir.resolve("workspace"))
+        // 'link' dangles: its target does not exist, so Files.exists() misses it.
+        java.nio.file.Files.createSymbolicLink(ws.resolve("link"), dir.resolve("missing-outside"))
+
+        assert(PathSandbox.resolve(ws.toString, "link/pwned.txt") == Left("path_escaped"))
+    }
+
+    test("resolve: dangling symlink pointing inside root is allowed") {
+        val dir = java.nio.file.Files.createTempDirectory("sandbox-symlink-dangling-in-")
+        val ws  = java.nio.file.Files.createDirectory(dir.resolve("workspace"))
+        java.nio.file.Files.createSymbolicLink(ws.resolve("link"), ws.resolve("missing-inside"))
+
+        assert(PathSandbox.resolve(ws.toString, "link/new.txt").isRight)
+    }
+
     test("resolve: symlink pointing inside root is allowed") {
         val dir    = java.nio.file.Files.createTempDirectory("sandbox-symlink-in-")
         val ws     = java.nio.file.Files.createDirectory(dir.resolve("workspace"))

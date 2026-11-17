@@ -32,18 +32,35 @@ object PathSandbox
             catch { case _: java.io.IOException => rootAbs }  // non-existent root: normalized path is the best available anchor
 
         val candidate = rootReal.resolve(argPath).normalize()
-        val real = if (Files.exists(candidate)) candidate.toRealPath()
-            else
-            {
-                var ancestor = candidate.getParent
-                while (ancestor != null && !Files.exists(ancestor)) ancestor = ancestor.getParent
-                if (ancestor == null) return Left("path_escaped")
-                ancestor.toRealPath().resolve(ancestor.relativize(candidate))
-            }
-
-        if (real.startsWith(rootReal)) Right(real)
-        else Left("path_escaped")
+        realPath(candidate) match
+        {
+            case Some(real) if real.startsWith(rootReal) => Right(real)
+            case _ => Left("path_escaped")
+        }
     }
+
+    /**
+     *  Resolves `path` to its canonical real path even when it does not exist.
+     *  Existing paths resolve via [[Path.toRealPath]]; a symlink — including a
+     *  dangling one — resolves through its link target; remaining non-existent
+     *  suffixes resolve through their nearest resolvable ancestor.  Resolution
+     *  gives up after [[MaxSymlinkDepth]] hops so symlink loops cannot spin.
+     *
+     *  @param path   Normalized absolute path to resolve.
+     *  @param depth  Current symlink-resolution depth.
+     *  @return       The real path, or `None` when no ancestor resolves or a
+     *                symlink loop is detected.
+     */
+    private def realPath(path: Path, depth: Int = 0): Option[Path] =
+        if (depth > MaxSymlinkDepth) None
+        else if (Files.exists(path)) Some(path.toRealPath())
+        else if (Files.isSymbolicLink(path))
+            realPath(path.getParent.resolve(Files.readSymbolicLink(path)).normalize(), depth + 1)
+        else if (path.getParent != null)
+            realPath(path.getParent, depth).map(_.resolve(path.getFileName))
+        else None
+
+    private val MaxSymlinkDepth = 40
 
     /**
      *  Returns `true` if `argPath` resolves to a location inside `rootPath`.

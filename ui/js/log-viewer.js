@@ -22,9 +22,9 @@ const LogViewer = (() => {
   // The bearer token arrives via the #token= URL fragment (never sent to the
   // server); it is exchanged for a short-lived WebSocket ticket per connect.
   const hashParams = new URLSearchParams(window.location.hash.slice(1));
-  const token      = hashParams.get('token') ||
-                     new URLSearchParams(window.location.search).get('token') || '';
-  if (hashParams.get('token')) {
+  const params     = new URLSearchParams(window.location.search);
+  const token      = hashParams.get('token') || params.get('token') || '';
+  if (hashParams.get('token') || params.get('token')) {
     history.replaceState(null, '', window.location.pathname);
   }
 

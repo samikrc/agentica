@@ -12,6 +12,8 @@ import java.security.SecureRandom
  */
 object Auth
 {
+    private val secureRandom = new SecureRandom()
+
     private val token: String =
         sys.env.get("AGENTICA_TOKEN")
             .orElse(sys.env.get("AGENTICA_DEV_TOKEN"))
@@ -26,7 +28,7 @@ object Auth
     private def randomToken(): String =
     {
         val bytes = new Array[Byte](16)
-        new SecureRandom().nextBytes(bytes)
+        secureRandom.nextBytes(bytes)
         val t = bytes.map("%02x".format(_)).mkString
         System.err.println(s"[Auth] No AGENTICA_TOKEN/AGENTICA_DEV_TOKEN set; generated per-launch token: $t")
         t
@@ -65,7 +67,7 @@ object Auth
     def issueTicket(): String =
     {
         val bytes = new Array[Byte](16)
-        new SecureRandom().nextBytes(bytes)
+        secureRandom.nextBytes(bytes)
         val t = bytes.map("%02x".format(_)).mkString
         tickets.put(t, System.currentTimeMillis() + TicketTtlMs)
         if tickets.size() > 1024 then
