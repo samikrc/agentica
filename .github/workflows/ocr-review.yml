@@ -97,5 +97,9 @@ jobs:
           llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           llm_model: ${{ vars.OCR_LLM_MODEL }}
           llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC }}
+          # The action's default injects {"thinking": {"type": "disabled"}}
+          # into every request body; the Gemini OpenAI-compatible endpoint
+          # rejects the unknown field with HTTP 400, so send a clean payload.
+          llm_extra_body: '{}'
           base_ref: ${{ steps.pr-context.outputs.base_ref }}
           head_sha: ${{ steps.pr-context.outputs.head_sha }}
