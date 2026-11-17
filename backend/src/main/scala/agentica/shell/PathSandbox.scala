@@ -28,8 +28,10 @@ object PathSandbox
     def resolve(rootPath: String, argPath: String): Either[String, Path] =
     {
         val rootAbs  = Paths.get(rootPath).toAbsolutePath.normalize()
-        val rootReal = try rootAbs.toRealPath()
-            catch { case _: java.io.IOException => rootAbs }  // non-existent root: normalized path is the best available anchor
+        // Resolve the root through realPath too, so a non-existent root still
+        // gets canonicalized ancestors — otherwise containment compares a
+        // syntactic root against canonical candidates (e.g. /tmp -> /private/tmp).
+        val rootReal = realPath(rootAbs).getOrElse(rootAbs)
 
         val candidate = rootReal.resolve(argPath).normalize()
         realPath(candidate) match
@@ -57,7 +59,12 @@ object PathSandbox
             if (depth > MaxSymlinkDepth) None
             else if (Files.exists(path)) Some(path.toRealPath())
             else if (Files.isSymbolicLink(path))
-                realPath(path.getParent.resolve(Files.readSymbolicLink(path)).normalize(), depth + 1)
+                // Relative link targets are relative to the link's physical
+                // directory, so canonicalize the parent before resolving —
+                // `parent/link/../x` must not collapse `..` syntactically.
+                realPath(path.getParent, depth + 1).flatMap { realParent =>
+                    realPath(realParent.resolve(Files.readSymbolicLink(path)).normalize(), depth + 1)
+                }
             else if (path.getParent != null)
                 realPath(path.getParent, depth).map(_.resolve(path.getFileName))
             else None

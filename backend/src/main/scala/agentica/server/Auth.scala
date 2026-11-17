@@ -15,8 +15,8 @@ object Auth
     private val secureRandom = new SecureRandom()
 
     private val token: String =
-        sys.env.get("AGENTICA_TOKEN")
-            .orElse(sys.env.get("AGENTICA_DEV_TOKEN"))
+        sys.env.get("AGENTICA_TOKEN").filter(_.nonEmpty)
+            .orElse(sys.env.get("AGENTICA_DEV_TOKEN").filter(_.nonEmpty))
             .getOrElse(randomToken())
 
     /**
@@ -57,7 +57,9 @@ object Auth
      *  under normal bearer auth; consumed on first use or on expiry.
      */
     private val TicketTtlMs = 30_000L
-    private val tickets     = new java.util.concurrent.ConcurrentHashMap[String, Long]()
+    // java.lang.Long value type: a Scala Long here would be unboxed on
+    // ConcurrentHashMap.remove() and NPE on absent (null) entries.
+    private val tickets     = new java.util.concurrent.ConcurrentHashMap[String, java.lang.Long]()
 
     /**
      *  Issues a ticket valid for [[TicketTtlMs]] milliseconds and one use.
