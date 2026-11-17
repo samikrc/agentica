@@ -14,6 +14,9 @@ const Api = (() => {
     _token   = token;
   }
 
+  /** Returns the bearer token this module was initialized with. */
+  function getToken() { return _token; }
+
   function headers(extra = {}) {
     return { 'Authorization': `Bearer ${_token}`, 'Content-Type': 'application/json', ...extra };
   }
@@ -42,9 +45,6 @@ const Api = (() => {
    * @param {{ onToken, onIteration, onToolStart, onToolResult, onFinal, onCancelled, onError, onDone, onPermissionRequired }} handlers
    */
   function stream(path, handlers) {
-    const url  = new URL(_baseUrl + path);
-    url.searchParams.set('_t', _token); // token via query param for EventSource (no custom headers)
-
     // Use fetch + ReadableStream so we can set the Authorization header properly
     let closed = false;
     const ctrl = new AbortController();
@@ -96,5 +96,5 @@ const Api = (() => {
     }
   }
 
-  return { init, get, post, del, stream };
+  return { init, getToken, get, post, del, stream };
 })();

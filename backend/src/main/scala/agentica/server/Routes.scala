@@ -614,18 +614,36 @@ class Routes(
     // --- Log streaming ---
 
     /**
+     *  Issues a short-lived, single-use ticket for the log-stream WebSocket.
+     *  Browsers cannot set `Authorization` headers on `WebSocket` connections,
+     *  so the log viewer exchanges its bearer token for a `?ticket=` value here
+     *  instead of sending the long-lived token in a URL.
+     *
+     *  @param request  Incoming HTTP request; must carry bearer auth.
+     *  @return         JSON `{"ticket": "<value>"}` on success.
+     */
+    @cask.route("/log/ticket", methods = Seq("post", "options"))
+    def logTicket(request: Request): Response[Response.Data] =
+        withAuth(request) {
+            val ticket = Auth.issueTicket()
+            Response(s"""{"ticket":"$ticket"}""",
+                     headers = Seq("Content-Type" -> "application/json"))
+        }
+
+    /**
      *  WebSocket endpoint for streaming log lines.
      *  On connect: replays last 200 lines of agentica.log, then tails the file
      *  at 100ms intervals until the client disconnects.
-     *  Authentication is provided via the `token` query parameter.
-     *  @param token   Auth token passed as a query parameter.
+     *  Authentication is provided via a single-use `ticket` query parameter
+     *  issued by [[logTicket]]; the long-lived bearer token is not accepted here.
+     *  @param ticket  One-time ticket passed as a query parameter.
      *  @param request Incoming HTTP upgrade request.
      *  @return        A [[cask.WsHandler]] that drives the WebSocket lifecycle.
      */
     @cask.websocket("/log/stream")
-    def logStream(token: String = "", request: Request): cask.WsHandler =
+    def logStream(ticket: String = "", request: Request): cask.WsHandler =
     {
-        Auth.validateOrQueryToken(request, token) match
+        Auth.consumeTicket(ticket) match
         {
             case Left(_) =>
                 cask.WsHandler { channel =>

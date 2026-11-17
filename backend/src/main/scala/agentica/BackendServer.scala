@@ -47,7 +47,7 @@ object BackendServer extends cask.Main
     // --- Port selection + binding ---
     //override val port = sys.env.get("AGENTICA_PORT").flatMap(_.toIntOption).getOrElse(findFreePort())
     override val port = sys.env.getOrElse("AGENTICA_PORT", "11211").toInt
-    override val host = "0.0.0.0"
+    override val host = sys.env.getOrElse("AGENTICA_HOST", "127.0.0.1")
 
     // --- Database setup ---
     val hikariConfig = HikariConfig()

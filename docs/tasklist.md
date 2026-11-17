@@ -423,7 +423,7 @@ Ordered by enables-most → cost-per-point → trigger-driven. Items 1–3 land 
 
 ## Near-Term Recommended Next Steps
 
-- [ ] Phase 1 security hardening (AG-40, highest risk-per-effort): per-launch random token instead of `dev-token` fallback; fix `PathSandbox` symlink escape via `toRealPath()`; move tokens out of URLs — header auth for `fetch` streams (easy), one-time-ticket endpoint for the `log-viewer` WebSocket. Done: `POST /sessions` `rootPath` already constrained by `AllowedRoots`.
+- [x] Phase 1 security hardening (AG-40, branch `sr-AG-40-phase1-security-hardening`): random per-launch token when env unset (`AGENTICA_DEV_TOKEN` still honored if set); `#token=` fragment bootstrap stripped via `history.replaceState`; `PathSandbox` `toRealPath()` containment + symlink tests; `POST /log/ticket` one-time tickets for the `log/stream` WebSocket (`?token=` removed); `AGENTICA_HOST` bind (default `127.0.0.1`); `_t=` URL leak removed. Done earlier: `rootPath` constrained by `AllowedRoots`.
 - [ ] Implement `llm.summarize`, `llm.extract`, `llm.classify` tool bodies (Phase 2 Step 5 — currently stubs).
 - [ ] Add configurable `AGENTICA_HOST` bind address (Phase 1 cleanup).
 - [ ] Begin Phase 3 Stage C: `files.write_markdown`, `files.markdown_to_docx`, `files.markdown_to_pdf` via LibreOffice headless.

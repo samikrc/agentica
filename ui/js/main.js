@@ -2,13 +2,21 @@
  * main.js — App entry point.
  * The UI is served directly by the backend, so the base URL is always
  * window.location.origin (same host + port).
- * The bearer token is read from the ?token= URL query param, which the
- * launch scripts append automatically.
+ * The bearer token is read from the #token= URL fragment, which the
+ * launch scripts append automatically. Fragments are never sent to the
+ * server; the token is stripped from the URL bar/history after reading.
+ * The legacy ?token= query param is accepted as a fallback.
  */
 
 (async () => {
-  const params = new URLSearchParams(window.location.search);
-  const token  = params.get('token') || 'dev-token';
+  const hashParams = new URLSearchParams(window.location.hash.slice(1));
+  const params     = new URLSearchParams(window.location.search);
+  const token      = hashParams.get('token') || params.get('token') || '';
+
+  // Remove the token from the URL bar and history entry.
+  if (hashParams.get('token') || params.get('token')) {
+    history.replaceState(null, '', window.location.pathname);
+  }
 
   Api.init(window.location.origin, token);
 

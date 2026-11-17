@@ -247,9 +247,8 @@ const Settings = (() => {
 
   menuDebugLog?.addEventListener('click', () => {
     closeDropdown();
-    const params = new URLSearchParams(window.location.search);
-    const token  = params.get('token') || '';
-    window.open(`/log-viewer.html?token=${encodeURIComponent(token)}`, '_blank');
+    const token = Api.getToken();
+    window.open(`/log-viewer.html#token=${encodeURIComponent(token)}`, '_blank');
   });
 
   btnCancel.addEventListener('click', closeModal);

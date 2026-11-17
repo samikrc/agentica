@@ -19,6 +19,15 @@ const LogViewer = (() => {
   let lineCount = 0;
   let isReplay = true;
 
+  // The bearer token arrives via the #token= URL fragment (never sent to the
+  // server); it is exchanged for a short-lived WebSocket ticket per connect.
+  const hashParams = new URLSearchParams(window.location.hash.slice(1));
+  const token      = hashParams.get('token') ||
+                     new URLSearchParams(window.location.search).get('token') || '';
+  if (hashParams.get('token')) {
+    history.replaceState(null, '', window.location.pathname);
+  }
+
   /**
    * Initialize the log viewer.
    */
@@ -29,10 +38,22 @@ const LogViewer = (() => {
   }
 
   /**
+   * Exchange the bearer token for a single-use WebSocket ticket.
+   */
+  async function fetchTicket() {
+    const r = await fetch('/log/ticket', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!r.ok) throw new Error(`ticket request failed: ${r.status}`);
+    return (await r.json()).ticket;
+  }
+
+  /**
    * Connect to the WebSocket stream with exponential backoff on failure.
    * @param {number} delay  Milliseconds to wait before connecting (0 = immediate).
    */
-  function connect(delay = 0) {
+  async function connect(delay = 0) {
     if (wsReconnectTimer) {
       clearTimeout(wsReconnectTimer);
       wsReconnectTimer = null;
@@ -44,11 +65,19 @@ const LogViewer = (() => {
       ws = null;
     }
 
-    wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = setTimeout(async () => {
       wsReconnectTimer = null;
-      const token   = new URLSearchParams(window.location.search).get('token') || '';
+      let ticket;
+      try {
+        ticket = await fetchTicket();
+      } catch (e) {
+        connectionStatus.textContent = 'Auth failed — retrying';
+        connectionStatus.className = 'disconnected';
+        connect(3000);
+        return;
+      }
       const proto   = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url     = `${proto}//${window.location.host}/log/stream?token=${encodeURIComponent(token)}`;
+      const url     = `${proto}//${window.location.host}/log/stream?ticket=${encodeURIComponent(ticket)}`;
 
       ws = new WebSocket(url);
 

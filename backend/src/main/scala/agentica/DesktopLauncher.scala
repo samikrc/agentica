@@ -32,7 +32,13 @@ class DesktopLauncher extends Application
     {
         val url = sys.props.get("agentica.desktop.url")
             .orElse(sys.env.get("AGENTICA_DESKTOP_URL"))
-            .getOrElse("http://127.0.0.1:8080/?token=dev-token")
+            .getOrElse {
+                val port  = sys.env.getOrElse("AGENTICA_PORT", "8080")
+                val token = sys.env.get("AGENTICA_TOKEN")
+                    .orElse(sys.env.get("AGENTICA_DEV_TOKEN"))
+                    .getOrElse("")
+                s"http://127.0.0.1:$port/#token=$token"
+            }
 
         val webView = WebView()
         val root    = BorderPane(webView)

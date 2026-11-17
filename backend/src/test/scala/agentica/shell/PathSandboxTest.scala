@@ -60,6 +60,39 @@ class PathSandboxTest extends AnyFunSuite
         assert(result == Left("path_escaped"))
     }
 
+    // ── resolve: symlink escapes (real filesystem) ────────────────────────────
+
+    test("resolve: symlink inside root pointing outside is rejected") {
+        val dir     = java.nio.file.Files.createTempDirectory("sandbox-symlink-")
+        val ws      = java.nio.file.Files.createDirectory(dir.resolve("workspace"))
+        val outside = java.nio.file.Files.createDirectory(dir.resolve("outside"))
+        java.nio.file.Files.writeString(outside.resolve("secret.txt"), "s3cr3t")
+        java.nio.file.Files.createSymbolicLink(ws.resolve("link"), outside)
+
+        assert(PathSandbox.resolve(ws.toString, "link/secret.txt") == Left("path_escaped"))
+        assert(!PathSandbox.isWithin(ws.toString, "link/secret.txt"))
+    }
+
+    test("resolve: new file under a symlinked directory is rejected") {
+        val dir     = java.nio.file.Files.createTempDirectory("sandbox-symlink-new-")
+        val ws      = java.nio.file.Files.createDirectory(dir.resolve("workspace"))
+        val outside = java.nio.file.Files.createDirectory(dir.resolve("outside"))
+        java.nio.file.Files.createSymbolicLink(ws.resolve("link"), outside)
+
+        // 'link/newfile.txt' does not exist yet — the symlinked parent must still be caught.
+        assert(PathSandbox.resolve(ws.toString, "link/newfile.txt") == Left("path_escaped"))
+    }
+
+    test("resolve: symlink pointing inside root is allowed") {
+        val dir    = java.nio.file.Files.createTempDirectory("sandbox-symlink-in-")
+        val ws     = java.nio.file.Files.createDirectory(dir.resolve("workspace"))
+        val inside = java.nio.file.Files.createDirectory(ws.resolve("real"))
+        java.nio.file.Files.writeString(inside.resolve("ok.txt"), "fine")
+        java.nio.file.Files.createSymbolicLink(ws.resolve("alias"), inside)
+
+        assert(PathSandbox.resolve(ws.toString, "alias/ok.txt").isRight)
+    }
+
     // ── isWithin convenience wrapper ──────────────────────────────────────────
 
     test("isWithin: returns true for in-sandbox path") {
