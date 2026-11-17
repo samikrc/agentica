@@ -82,14 +82,15 @@ const LogViewer = (() => {
       try {
         ticket = await fetchTicket();
       } catch (e) {
+        // A disconnect()/connect() while fetchTicket() was in flight must not
+        // reschedule or clobber the newer attempt's status.
+        if (gen !== connectGen) return;
         const isAuthError = /ticket request failed: (401|403)/.test(e.message || '');
         connectionStatus.textContent = isAuthError ? 'Authentication failed' : 'Connection failed — retrying';
         connectionStatus.className = 'disconnected';
         if (!isAuthError) connect(3000);
         return;
       }
-      // A disconnect()/connect() while fetchTicket() was in flight must not
-      // leave an orphaned socket open.
       if (gen !== connectGen) return;
       const proto   = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const url     = `${proto}//${window.location.host}/log/stream?ticket=${encodeURIComponent(ticket)}`;

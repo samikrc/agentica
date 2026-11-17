@@ -33,10 +33,15 @@ class DesktopLauncher extends Application
         val url = sys.props.get("agentica.desktop.url")
             .orElse(sys.env.get("AGENTICA_DESKTOP_URL"))
             .getOrElse {
-                val port = sys.env.getOrElse("AGENTICA_PORT", "8080")
-                // currentToken reflects the same precedence as the server —
-                // explicit env vars, else the generated per-launch token.
-                s"http://127.0.0.1:$port/#token=${server.Auth.currentToken}"
+                val port  = sys.env.getOrElse("AGENTICA_PORT", "8080")
+                // This JVM is separate from the backend's — it can only
+                // advertise an explicitly configured token. When the backend
+                // generated a per-launch token, the desktop URL stays tokenless
+                // (stderr carries the token URL for browser use instead).
+                val token = sys.env.get("AGENTICA_TOKEN").filter(_.nonEmpty)
+                    .orElse(sys.env.get("AGENTICA_DEV_TOKEN").filter(_.nonEmpty))
+                    .getOrElse("")
+                s"http://127.0.0.1:$port/#token=$token"
             }
 
         val webView = WebView()
