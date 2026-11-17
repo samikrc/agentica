@@ -412,6 +412,7 @@ Ordered by enables-most → cost-per-point → trigger-driven. Items 1–3 land 
 
 - [ ] Hybrid retrieval over scratchpad + indexed documents (FTS5 BM25 + vector + RRF) — ticket: "Hybrid retrieval over scratchpad + indexed documents". Phase A: FTS5 index over scratchpad results, BM25-ranked search with cursor paging (pattern: https://github.com/mksglu/context-mode). Phase B: workspace indexing + embeddings fused via RRF (implements the Phase 6 indexing items; candidate embedders: nomic-embed-text vs EmbeddingGemma 2 — benchmark on doc-eval before choosing).
 - [ ] Dev-time OTLP trace export (Phoenix/Langfuse) — ticket: "Dev-time OTLP trace export for agent-run debugging". Optional `AGENTICA_OTLP`-gated spans over `AgentLoop`/provider/tool calls using `gen_ai.*` semantic conventions; `docker-compose.dev.yml` with Phoenix. Schedule before hybrid Phase B / micro-skills work, where trace-UI debugging pays most. Dev tooling only — production stays local-only, no export.
+- [ ] Cross-session transcript search (AG-39) — index `messages`/`agent_turns` from past sessions into the AG-31 hybrid-retrieval corpus so the agent can recall prior conversations ("what did we discuss last week"). Corpus addition, not a standalone index; pairs with AG-19 session summarization for compact retrieval units. Lands after AG-31 Phase A exists.
 
 **Tier 3 — when the trigger arrives:**
 
@@ -422,7 +423,7 @@ Ordered by enables-most → cost-per-point → trigger-driven. Items 1–3 land 
 
 ## Near-Term Recommended Next Steps
 
-- [ ] Phase 1 security hardening (highest risk-per-effort): fail-closed or per-launch random token instead of `dev-token` fallback; constrain `POST /sessions` `rootPath` to permitted roots; fix `PathSandbox` symlink escape via `toRealPath()`; short-lived token for SSE `/log/stream` and similar endpoints.
+- [ ] Phase 1 security hardening (AG-40, highest risk-per-effort): per-launch random token instead of `dev-token` fallback; fix `PathSandbox` symlink escape via `toRealPath()`; move tokens out of URLs — header auth for `fetch` streams (easy), one-time-ticket endpoint for the `log-viewer` WebSocket. Done: `POST /sessions` `rootPath` already constrained by `AllowedRoots`.
 - [ ] Implement `llm.summarize`, `llm.extract`, `llm.classify` tool bodies (Phase 2 Step 5 — currently stubs).
 - [ ] Add configurable `AGENTICA_HOST` bind address (Phase 1 cleanup).
 - [ ] Begin Phase 3 Stage C: `files.write_markdown`, `files.markdown_to_docx`, `files.markdown_to_pdf` via LibreOffice headless.
