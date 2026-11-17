@@ -8,6 +8,21 @@ class PathSandboxTest extends AnyFunSuite
 
     private val root = "/home/user/workspace"
 
+    // Windows requires Developer Mode or an elevated process for
+    // Files.createSymbolicLink; the symlink tests below cancel via `assume`
+    // when the host lacks the privilege.
+    private lazy val symlinksSupported: Boolean =
+        scala.util.Try {
+            val dir  = java.nio.file.Files.createTempDirectory("sandbox-symlink-probe-")
+            val link = dir.resolve("probe")
+            try { java.nio.file.Files.createSymbolicLink(link, dir); true }
+            finally
+            {
+                java.nio.file.Files.deleteIfExists(link)
+                java.nio.file.Files.deleteIfExists(dir)
+            }
+        }.getOrElse(false)
+
     // ── resolve: paths inside sandbox ────────────────────────────────────────
 
     test("resolve: simple relative path inside root") {
@@ -63,6 +78,7 @@ class PathSandboxTest extends AnyFunSuite
     // ── resolve: symlink escapes (real filesystem) ────────────────────────────
 
     test("resolve: symlink inside root pointing outside is rejected") {
+        assume(symlinksSupported, "symlink creation not permitted on this host")
         val dir     = java.nio.file.Files.createTempDirectory("sandbox-symlink-")
         val ws      = java.nio.file.Files.createDirectory(dir.resolve("workspace"))
         val outside = java.nio.file.Files.createDirectory(dir.resolve("outside"))
@@ -74,6 +90,7 @@ class PathSandboxTest extends AnyFunSuite
     }
 
     test("resolve: new file under a symlinked directory is rejected") {
+        assume(symlinksSupported, "symlink creation not permitted on this host")
         val dir     = java.nio.file.Files.createTempDirectory("sandbox-symlink-new-")
         val ws      = java.nio.file.Files.createDirectory(dir.resolve("workspace"))
         val outside = java.nio.file.Files.createDirectory(dir.resolve("outside"))
@@ -84,6 +101,7 @@ class PathSandboxTest extends AnyFunSuite
     }
 
     test("resolve: dangling symlink pointing outside is rejected") {
+        assume(symlinksSupported, "symlink creation not permitted on this host")
         val dir     = java.nio.file.Files.createTempDirectory("sandbox-symlink-dangling-")
         val ws      = java.nio.file.Files.createDirectory(dir.resolve("workspace"))
         // 'link' dangles: its target does not exist, so Files.exists() misses it.
@@ -93,6 +111,7 @@ class PathSandboxTest extends AnyFunSuite
     }
 
     test("resolve: dangling symlink pointing inside root is allowed") {
+        assume(symlinksSupported, "symlink creation not permitted on this host")
         val dir = java.nio.file.Files.createTempDirectory("sandbox-symlink-dangling-in-")
         val ws  = java.nio.file.Files.createDirectory(dir.resolve("workspace"))
         java.nio.file.Files.createSymbolicLink(ws.resolve("link"), ws.resolve("missing-inside"))
@@ -101,6 +120,7 @@ class PathSandboxTest extends AnyFunSuite
     }
 
     test("resolve: symlink pointing inside root is allowed") {
+        assume(symlinksSupported, "symlink creation not permitted on this host")
         val dir    = java.nio.file.Files.createTempDirectory("sandbox-symlink-in-")
         val ws     = java.nio.file.Files.createDirectory(dir.resolve("workspace"))
         val inside = java.nio.file.Files.createDirectory(ws.resolve("real"))

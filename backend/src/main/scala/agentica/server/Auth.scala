@@ -34,9 +34,6 @@ object Auth
         t
     }
 
-    /** The active bearer token, exposed so launchers/UI bootstrap can use it. */
-    def currentToken: String = token
-
     /**
      *  Constant-time token comparison — avoids leaking match progress via
      *  timing differences on a plain `String.equals`.
