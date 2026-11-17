@@ -31,6 +31,10 @@ const LogViewer = (() => {
   } else {
     token = sessionStorage.getItem('agentica_token') || '';
   }
+  if (!token) {
+    token = window.prompt('Enter the Agentica access token (shown in the launch output)') || '';
+    if (token) sessionStorage.setItem('agentica_token', token);
+  }
 
   /**
    * Initialize the log viewer.

@@ -37,6 +37,19 @@ object Auth
     /** The active bearer token, exposed so launchers/UI bootstrap can use it. */
     def currentToken: String = token
 
+    /**
+     *  Constant-time token comparison — avoids leaking match progress via
+     *  timing differences on a plain `String.equals`.
+     *
+     *  @param presented  Token supplied by the caller.
+     *  @param expected   The configured bearer token.
+     *  @return           `true` when the tokens are identical.
+     */
+    private def constantTimeEquals(presented: String, expected: String): Boolean =
+        java.security.MessageDigest.isEqual(
+            presented.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+            expected.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+
     /** Validates the request's `Authorization: Bearer ...` header.
      *  @param request  Incoming HTTP request.
      *  @return         [[Right]] when authorized, otherwise [[Left]] with an error message.
@@ -45,7 +58,7 @@ object Auth
     {
         request.headers.get("authorization").flatMap(_.headOption) match
         {
-            case Some(h) if h.startsWith("Bearer ") && h.drop(7).trim == token => Right(())
+            case Some(h) if h.startsWith("Bearer ") && constantTimeEquals(h.drop(7).trim, token) => Right(())
             case Some(_) => Left("Invalid bearer token")
             case None    => Left("Missing Authorization header")
         }

@@ -23,6 +23,13 @@
     token = sessionStorage.getItem('agentica_token') || '';
   }
 
+  // Last resort: ask for the token (printed to stderr by the backend when
+  // generated per-launch) rather than failing every request silently.
+  if (!token) {
+    token = window.prompt('Enter the Agentica access token (shown in the launch output)') || '';
+    if (token) sessionStorage.setItem('agentica_token', token);
+  }
+
   Api.init(window.location.origin, token);
 
   Sessions.onSelect(session => Chat.setSession(session));
