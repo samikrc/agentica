@@ -3,7 +3,7 @@ package agentica.tools.files
 import agentica.agent.AgentEvent
 import agentica.permissions.GrantDecision
 import agentica.shell.PathSandbox
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, PermissionSensitive, PermissionTarget, ToolResult, ToolStatus}
 import agentica.tools.Tool
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, NoSuchFileException, StandardOpenOption}
@@ -35,7 +35,7 @@ case class FilesWriteOutput(
  *  Uses `ctx.permissionCoordinator` to emit [[AgentEvent.PermissionRequired]] and wait
  *  for up to 60 seconds when no valid grant exists.
  */
-object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
+object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput] with PermissionSensitive[FilesWriteInput]
 {
 
     /**
@@ -92,6 +92,24 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
                 val rootPath   = java.nio.file.Paths.get(rootStr).toAbsolutePath.normalize()
                 val sourcePath = rootPath.relativize(resolved).toString
                 checkPermissionAndWrite(input, ctx, resolved, sourcePath)
+        }
+    }
+
+    /**
+     *  Declares the write target for the permission middleware.
+     *  Returns `None` when the path escapes the sandbox — `execute` reports
+     *  `path_escaped` itself, so no prompt should precede that failure.
+     *  @param input  Validated write input.
+     *  @param ctx    Runtime execution context.
+     *  @return       Grant target on the resolved file, or `None` on escape.
+     */
+    def permissionTarget(input: FilesWriteInput, ctx: ExecutionContext): Option[PermissionTarget] =
+    {
+        val rootStr = ctx.session.rootPath.getOrElse("")
+        PathSandbox.resolve(rootStr, input.rawPath).toOption.map { resolved =>
+            val rootPath   = java.nio.file.Paths.get(rootStr).toAbsolutePath.normalize()
+            val sourcePath = rootPath.relativize(resolved).toString
+            PermissionTarget(grantKey = resolved.toString, displayPath = Some(sourcePath))
         }
     }
 

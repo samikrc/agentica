@@ -52,8 +52,8 @@ MODELS=(
     "local-gemma4-qat|google/gemma-4-12b-qat|http://192.168.2.126:1234|lm-studio"
     # "local-gemma4-e4b|google/gemma-4-e4b|http://192.168.2.126:1234|lm-studio"
     # "valar-glm-5.3|zai-org/GLM-5.3|https://api.valarhq.ai|\${VALAR_API_KEY}"
-    "valar-glm-5.3-flash|zai-org/GLM-5.3-Flash|https://api.valarhq.ai|\${VALAR_API_KEY}"
-    "valar-kimi-k3|moonshotai/Kimi-K3|https://api.valarhq.ai|\${VALAR_API_KEY}"
+    # "valar-glm-5.3-flash|zai-org/GLM-5.3-Flash|https://api.valarhq.ai|\${VALAR_API_KEY}"
+    # "valar-kimi-k3|moonshotai/Kimi-K3|https://api.valarhq.ai|\${VALAR_API_KEY}"
 )
 
 for entry in "${MODELS[@]}"; do

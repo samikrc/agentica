@@ -6,7 +6,7 @@ import agentica.llm.LLMProvider
 import agentica.observability.TraceLogger
 import agentica.permissions.{GrantDecision, GrantTTL}
 import agentica.shell.{PathSandbox, Presentation}
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, Tool, ToolBody, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, PermissionSensitive, PermissionTarget, Tool, ToolBody, ToolResult, ToolStatus}
 import java.nio.file.{Files, Paths, Path}
 import java.nio.file.attribute.BasicFileAttributes
 import scala.collection.immutable.ListMap
@@ -52,6 +52,7 @@ case class FilesReadPDFToMarkdownOutput(
  *  Supports `enrich_images=false` to skip vision and write stub Markdown.
  */
 object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesReadPDFToMarkdownOutput]
+    with PermissionSensitive[FilesReadPDFToMarkdownInput]
 {
     val name: String = "files_read_pdf_to_markdown"
 
@@ -113,6 +114,15 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
                 readPDF(input, ctx, resolved, sourcePath)
         }
     }
+
+    /**
+     *  Declares the parent-directory write target for the permission middleware.
+     *  @param input  Validated conversion input.
+     *  @param ctx    Runtime execution context.
+     *  @return       Grant target when the call will write the `.md` cache file.
+     */
+    def permissionTarget(input: FilesReadPDFToMarkdownInput, ctx: ExecutionContext): Option[PermissionTarget] =
+        PermissionTargets.docToMarkdownTarget(input.path.toString, input.enrichImages, ".pdf", ctx)
 
     /**
      *  Performs permission checks, cache validation, rendering, transcription, and cache persistence.

@@ -30,6 +30,14 @@ class CommandRegistry
     }
 
     /**
+     *  Returns the tool registered under `fullName`, if any.
+     *  Used by middleware components that need tool metadata before dispatch.
+     *  @param fullName  Canonical `family_verb` name.
+     *  @return          The registered tool, or `None` for `help`/unknown names.
+     */
+    def lookup(fullName: String): Option[Tool[?, ?]] = tools.get(fullName)
+
+    /**
      *  Dispatches a parsed command to its registered tool and returns a typed result.
      *  Returns a [[ToolResult]] with `ToolStatus.Err("not_found")` if no tool matches.
      *  @param cmd  Parsed command from [[Tokenizer]].
