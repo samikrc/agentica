@@ -59,12 +59,14 @@ object PathSandbox
             if (depth > MaxSymlinkDepth) None
             else if (Files.exists(path)) Some(path.toRealPath())
             else if (Files.isSymbolicLink(path))
+            {
                 // Relative link targets are relative to the link's physical
                 // directory, so canonicalize the parent before resolving —
                 // `parent/link/../x` must not collapse `..` syntactically.
                 realPath(path.getParent, depth + 1).flatMap { realParent =>
                     realPath(realParent.resolve(Files.readSymbolicLink(path)).normalize(), depth + 1)
                 }
+            }
             else if (path.getParent != null)
                 realPath(path.getParent, depth).map(_.resolve(path.getFileName))
             else None

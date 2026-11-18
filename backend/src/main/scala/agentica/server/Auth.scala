@@ -6,8 +6,7 @@ import java.security.SecureRandom
 
 /** Bearer-token middleware.
  *  Packaged launchers should provide AGENTICA_TOKEN.
- *  Browser/dev mode can use AGENTICA_DEV_TOKEN as a fallback.
- *  When neither is set, a random per-launch token is generated so the API
+ *  When unset, a random per-launch token is generated so the API
  *  is never reachable with a publicly-known key.
  */
 object Auth
@@ -16,7 +15,6 @@ object Auth
 
     private val token: String =
         sys.env.get("AGENTICA_TOKEN").filter(_.nonEmpty)
-            .orElse(sys.env.get("AGENTICA_DEV_TOKEN").filter(_.nonEmpty))
             .getOrElse(randomToken())
 
     /**
@@ -30,7 +28,7 @@ object Auth
         val bytes = new Array[Byte](16)
         secureRandom.nextBytes(bytes)
         val t = bytes.map("%02x".format(_)).mkString
-        System.err.println(s"[Auth] No AGENTICA_TOKEN/AGENTICA_DEV_TOKEN set; generated per-launch token: $t")
+        System.err.println(s"[Auth] No AGENTICA_TOKEN set; generated per-launch token: $t")
         t
     }
 
@@ -66,13 +64,13 @@ object Auth
      *  headers (e.g. the `WebSocket` log stream).  Issued via `POST /log/ticket`
      *  under normal bearer auth; consumed on first use or on expiry.
      */
-    private val TicketTtlMs = 30_000L
+    private val ticketTTLMs = 30_000L
     // java.lang.Long value type: a Scala Long here would be unboxed on
     // ConcurrentHashMap.remove() and NPE on absent (null) entries.
     private val tickets     = new java.util.concurrent.ConcurrentHashMap[String, java.lang.Long]()
 
     /**
-     *  Issues a ticket valid for [[TicketTtlMs]] milliseconds and one use.
+     *  Issues a ticket valid for [[ticketTTLMs]] milliseconds and one use.
      *
      *  @return  The ticket string, safe to pass as a `?ticket=` query parameter.
      */
@@ -81,7 +79,7 @@ object Auth
         val bytes = new Array[Byte](16)
         secureRandom.nextBytes(bytes)
         val t = bytes.map("%02x".format(_)).mkString
-        tickets.put(t, System.currentTimeMillis() + TicketTtlMs)
+        tickets.put(t, System.currentTimeMillis() + ticketTTLMs)
         if tickets.size() > 1024 then
         {
             val now = System.currentTimeMillis()

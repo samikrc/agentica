@@ -10,7 +10,7 @@ For dev:
 AGENTICA_PORT=8080 LLM_BASE_URL=http://172.23.64.1:1234 LLM_MODEL=mistralai/ministral-3-14b-reasoning mvn compile exec:exec
 ```
 
-When neither `AGENTICA_TOKEN` nor `AGENTICA_DEV_TOKEN` is set, the backend generates a random per-launch bearer token and prints it to stderr — open `http://localhost:8080/#token=<token>` (or just open the URL and paste the token at the prompt).
+When `AGENTICA_TOKEN` is unset, the backend generates a random per-launch bearer token and prints it to stderr — open `http://localhost:8080/#token=<token>` (or just open the URL and paste the token at the prompt).
 
 The backend's own default port is `11211`; the examples below explicitly set `AGENTICA_PORT=8080` for convenience.
 
@@ -66,8 +66,7 @@ Environment variables are read once at startup and used as fallbacks or override
 |---|---|---|
 | `AGENTICA_PORT` | `11211` (backend) / `8080` (launch scripts) | HTTP port the backend listens on |
 | `AGENTICA_HOST` | `127.0.0.1` | Address the backend binds to |
-| `AGENTICA_TOKEN` | — | Bearer token for the API; takes precedence over `AGENTICA_DEV_TOKEN` |
-| `AGENTICA_DEV_TOKEN` | — | Bearer token for browser/dev mode. When neither token is set, a random per-launch token is generated and printed to stderr |
+| `AGENTICA_TOKEN` | — | Bearer token for the API. When unset, a random per-launch token is generated and printed to stderr |
 | `AGENTICA_UI_ROOT` | `../ui` (relative to jar) | Path to the `ui/` folder |
 | `LLM_PROVIDER` | `openai` | Primary LLM provider type: `openai` or `ollama` |
 | `LLM_BASE_URL` | `http://localhost:1234` | LM Studio / Ollama base URL (launch script / initial default only) |
@@ -119,7 +118,7 @@ mvn compile exec:java
 
 #### Browser
 
-Open `http://localhost:8080/#token=<token>` using the per-launch token the backend prints to stderr (or set `AGENTICA_DEV_TOKEN` to pin one).
+Open `http://localhost:8080/#token=<token>` using the per-launch token the backend prints to stderr (or set `AGENTICA_TOKEN` to pin one).
 
 If the backend runs inside WSL and LM Studio runs on Windows, set `LLM_BASE_URL` to the Windows host IP reachable from WSL, for example `http://172.23.64.1:1234`.
 
