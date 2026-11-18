@@ -725,10 +725,10 @@ object EvalHarness
     private case class EvalAgent(loop: AgentLoop, runStore: CapturingRunStore, accounting: CapturingTokenAccounting)
 
     /** Per-call metrics for one primary-LLM invocation (judge calls excluded). */
-    private case class LlmCallMetrics(model: String, promptTokens: Int, completionTokens: Int, latencyMs: Long)
+    private case class LLMCallMetrics(model: String, promptTokens: Int, completionTokens: Int, latencyMs: Long)
 
     /** Aggregated LLM usage over a span of recorded calls. */
-    private case class LlmUsage(calls: Int, promptTokens: Int, completionTokens: Int, latencyMs: Long)
+    private case class LLMUsage(calls: Int, promptTokens: Int, completionTokens: Int, latencyMs: Long)
 
     /**
      *  [[TokenAccounting]] variant that retains every recorded [[LLMResponse]]
@@ -738,7 +738,7 @@ object EvalHarness
      */
     private class CapturingTokenAccounting extends TokenAccounting(null.asInstanceOf[RunStore])
     {
-        private val buf = scala.collection.mutable.ListBuffer.empty[LlmCallMetrics]
+        private val buf = scala.collection.mutable.ListBuffer.empty[LLMCallMetrics]
 
         /**
          *  Records one LLM call's metrics.
@@ -748,7 +748,7 @@ object EvalHarness
          */
         override def record(traceId: String, sessionId: String, llmResponse: LLMResponse): Unit =
             buf.synchronized {
-                buf += LlmCallMetrics(llmResponse.model, llmResponse.promptTokens,
+                buf += LLMCallMetrics(llmResponse.model, llmResponse.promptTokens,
                                       llmResponse.completionTokens, llmResponse.latencyMs)
             }
 
@@ -762,12 +762,12 @@ object EvalHarness
         /**
          *  Aggregates usage for calls recorded after a prior [[snapshot]].
          *  @param fromIndex  Value previously returned by [[snapshot]].
-         *  @return           Aggregated [[LlmUsage]] for the span.
+         *  @return           Aggregated [[LLMUsage]] for the span.
          */
-        def usageSince(fromIndex: Int): LlmUsage =
+        def usageSince(fromIndex: Int): LLMUsage =
         {
             val rs = buf.synchronized { buf.drop(fromIndex).toList }
-            LlmUsage(rs.size, rs.map(_.promptTokens).sum, rs.map(_.completionTokens).sum, rs.map(_.latencyMs).sum)
+            LLMUsage(rs.size, rs.map(_.promptTokens).sum, rs.map(_.completionTokens).sum, rs.map(_.latencyMs).sum)
         }
     }
 
@@ -1578,7 +1578,7 @@ object EvalHarness
         providerLabel: String,
         mdScore:       MarkdownScore,
         answers:       List[AnswerResult],
-        llmUsage:      LlmUsage
+        llmUsage:      LLMUsage
     ): Unit =
     {
         val judged   = answers.filter(_.judgeStatus == JudgeStatus.Judged)
