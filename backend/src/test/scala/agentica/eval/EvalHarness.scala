@@ -722,18 +722,52 @@ object EvalHarness
         }
     }
 
-    private case class EvalAgent(loop: AgentLoop, runStore: CapturingRunStore)
+    private case class EvalAgent(loop: AgentLoop, runStore: CapturingRunStore, accounting: CapturingTokenAccounting)
+
+    /** Per-call metrics for one primary-LLM invocation (judge calls excluded). */
+    private case class LlmCallMetrics(model: String, promptTokens: Int, completionTokens: Int, latencyMs: Long)
+
+    /** Aggregated LLM usage over a span of recorded calls. */
+    private case class LlmUsage(calls: Int, promptTokens: Int, completionTokens: Int, latencyMs: Long)
 
     /**
-     *  No-op TokenAccounting that simply counts records.
+     *  [[TokenAccounting]] variant that retains every recorded [[LLMResponse]]
+     *  so eval results can report real token usage. The production
+     *  implementation persists to `token_usage`; evals have no RunStore, so
+     *  records accumulate in memory instead.
      */
-    private class StubTokenAccounting extends TokenAccounting(null.asInstanceOf[RunStore])
+    private class CapturingTokenAccounting extends TokenAccounting(null.asInstanceOf[RunStore])
     {
-        var recordCount = 0
+        private val buf = scala.collection.mutable.ListBuffer.empty[LlmCallMetrics]
 
+        /**
+         *  Records one LLM call's metrics.
+         *  @param traceId      Trace identifier for the agent turn.
+         *  @param sessionId    Session identifier associated with the call.
+         *  @param llmResponse  Provider-reported usage and latency values.
+         */
         override def record(traceId: String, sessionId: String, llmResponse: LLMResponse): Unit =
+            buf.synchronized {
+                buf += LlmCallMetrics(llmResponse.model, llmResponse.promptTokens,
+                                      llmResponse.completionTokens, llmResponse.latencyMs)
+            }
+
+        /**
+         *  Returns the current record count; pair with [[usageSince]] to scope
+         *  usage to a span of work (e.g. one session-type sweep).
+         *  @return  Number of LLM calls recorded so far.
+         */
+        def snapshot: Int = buf.synchronized { buf.size }
+
+        /**
+         *  Aggregates usage for calls recorded after a prior [[snapshot]].
+         *  @param fromIndex  Value previously returned by [[snapshot]].
+         *  @return           Aggregated [[LlmUsage]] for the span.
+         */
+        def usageSince(fromIndex: Int): LlmUsage =
         {
-            recordCount += 1
+            val rs = buf.synchronized { buf.drop(fromIndex).toList }
+            LlmUsage(rs.size, rs.map(_.promptTokens).sum, rs.map(_.completionTokens).sum, rs.map(_.latencyMs).sum)
         }
     }
 
@@ -841,21 +875,22 @@ object EvalHarness
     ): EvalAgent =
     {
         ensureToolIndexApplied()
-        val runStore = new CapturingRunStore()
+        val runStore   = new CapturingRunStore()
+        val accounting = new CapturingTokenAccounting()
         val loop = new AgentLoop(
             initialLLMProvider = llm,
             initialVLMProvider = vlm,
             messageStore       = new CapturingMessageStore(),
             runStore           = runStore,
             agentTurnStore     = new StubAgentTurnStore(),
-            tokenAccounting    = new StubTokenAccounting(),
+            tokenAccounting    = accounting,
             virtualShell       = new VirtualShell(buildCommandRegistry()),
             settings           = settings,
             scopeStore         = new AutoGrantScopeStore(),
             memoryStore        = new StubMemoryStore(),
             sessionStore       = new StubSessionStore()
         )
-        EvalAgent(loop, runStore)
+        EvalAgent(loop, runStore, accounting)
     }
 
     /**
@@ -1535,13 +1570,15 @@ object EvalHarness
      *  @param providerLabel Provider config label.
      *  @param mdScore       Markdown quality score.
      *  @param answers       All judged question results for this sweep.
+     *  @param llmUsage      Primary-LLM call/token/latency totals for answer generation.
      */
     private def saveSummary(
         sweepDir:          Path,
         fileStem:      String,
         providerLabel: String,
         mdScore:       MarkdownScore,
-        answers:       List[AnswerResult]
+        answers:       List[AnswerResult],
+        llmUsage:      LlmUsage
     ): Unit =
     {
         val judged   = answers.filter(_.judgeStatus == JudgeStatus.Judged)
@@ -1578,6 +1615,12 @@ object EvalHarness
             "retryCount"        -> Num(answers.count(_.attempts > 1)),
             "judgeRetryCount"   -> Num(answers.count(_.judgeAttempts > 1)),
             "totalToolCounts"   -> Obj.from(totalToolCounts.map { case (k, v) => k -> Num(v) }),
+            "llmUsage"          -> Obj(
+                "calls"            -> Num(llmUsage.calls),
+                "promptTokens"     -> Num(llmUsage.promptTokens),
+                "completionTokens" -> Num(llmUsage.completionTokens),
+                "latencyMs"        -> Num(llmUsage.latencyMs.toDouble)
+            ),
             "questionsFile"     -> Str("questions.json")
         )
         Files.writeString(sweepDir.resolve("summary.json"), json.render(indent = 2))
@@ -1776,7 +1819,7 @@ object EvalHarness
                 log(s"Markdown score: ${mdScore.pretty}")
 
                 // Phase 1: generate answers for every session type.
-                // Each entry is (sessionType, sweepDir, mdSavePath, mdScore, qaPairs).
+                // Each entry is (sessionType, sweepDir, mdSavePath, mdScore, qaPairs, llmUsage).
                 val phaseOneResults = bundle.sessionTypes.map { sessionType =>
                     log(s"--- Generating answers: ${bundle.label} / ${sessionType.label} ---")
                     val sweepDir = Files.createDirectory(providerDir.resolve(sessionType.label))
@@ -1786,9 +1829,13 @@ object EvalHarness
                     Files.writeString(mdSavePath, markdown)
 
                     log(s"Generating answers (${sessionType.label} session) for ${questions.length} questions...")
+                    val callsBefore = agent.accounting.snapshot
                     val qaPairs = generateAnswers(questions, mdRelPath, agent, sweepDir, sessionType, questionTimeoutMs, retryDelayMs)
+                    val llmUsage = agent.accounting.usageSince(callsBefore)
+                    log(s"LLM usage: ${llmUsage.calls} calls, ${llmUsage.promptTokens} prompt tokens, " +
+                        s"${llmUsage.completionTokens} completion tokens, ${llmUsage.latencyMs}ms total")
 
-                    (sessionType, sweepDir, mdSavePath, mdScore, qaPairs)
+                    (sessionType, sweepDir, mdSavePath, mdScore, qaPairs, llmUsage)
                 }
 
                 // Phase 2: provider-specific pre-judge hook (e.g. LM-Studio model swap).
@@ -1799,7 +1846,7 @@ object EvalHarness
                 }
 
                 // Phase 3: judge all answers across all session types.
-                phaseOneResults.map { case (sessionType, sweepDir, mdSavePath, mdScore, qaPairs) =>
+                phaseOneResults.map { case (sessionType, sweepDir, mdSavePath, mdScore, qaPairs, llmUsage) =>
                     try
                     {
                         log(s"--- Judging: ${bundle.label} / ${sessionType.label} (${qaPairs.length} answers) ---")
@@ -1815,7 +1862,7 @@ object EvalHarness
                         }
 
                         saveQuestions(sweepDir, answerResults)
-                        saveSummary(sweepDir, fileStem, bundle.label, mdScore, answerResults)
+                        saveSummary(sweepDir, fileStem, bundle.label, mdScore, answerResults, llmUsage)
 
                         EvalResult(bundle.label, sessionType.label, mdSavePath, mdScore, answerResults)
                     }
