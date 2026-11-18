@@ -7,3 +7,4 @@
 - Judge calls in the evaluation harness must not receive agent tool schemas.
 - Work on a Jira ticket happens on a branch named `sr-AG-XX-multi-word-description` (e.g. `sr-AG-38-prompt-hash-cache-key`), created before starting the work.
 - Published Scala member methods in `backend/src/main/scala` and `backend/src/test/scala` require adjacent contract-style Scaladoc: behavioral description, every `@param`, `@return` for non-`Unit` results, `@throws` where relevant, and useful `[[Type]]` links. Local functions and overriding methods inherit or remain implementation details. `ScalaStyleCoverageTest` enforces presence by default; run `mvn -DstrictScaladoc=true test` to audit contract tags while existing tag debt is remediated. Enums must use brace syntax (`enum X { ... }`), not colon-significant style (`enum X:`).
+- Naming: abbreviations are all-caps unless they start the identifier — `LLMCallMetrics`, `ticketTTLMs`, but `llmUsage`.
