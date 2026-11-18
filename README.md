@@ -7,8 +7,10 @@ The UI is served directly by the backend — just a JVM fat-jar + any browser.
 ### Quick start (Linux / macOS)
 For dev:
 ```
-AGENTICA_DEV_TOKEN=dev-token AGENTICA_PORT=8080 LLM_BASE_URL=http://172.23.64.1:1234 LLM_MODEL=mistralai/ministral-3-14b-reasoning mvn compile exec:exec
+AGENTICA_PORT=8080 LLM_BASE_URL=http://172.23.64.1:1234 LLM_MODEL=mistralai/ministral-3-14b-reasoning mvn compile exec:exec
 ```
+
+When `AGENTICA_TOKEN` is unset, the backend generates a random per-launch bearer token and prints it to stderr — open `http://localhost:8080/#token=<token>` (or just open the URL and paste the token at the prompt).
 
 The backend's own default port is `11211`; the examples below explicitly set `AGENTICA_PORT=8080` for convenience.
 
@@ -17,7 +19,7 @@ cd backend && mvn package -DskipTests   # build the fat-jar (once)
 cd ..
 chmod +x launch.sh
 ./launch.sh
-# Open: http://localhost:8080/?token=dev-token
+# Open the http://localhost:8080/#token=... URL printed by the script
 ```
 
 ### Quick start (Windows)
@@ -27,7 +29,7 @@ cd backend
 mvn package -DskipTests
 cd ..
 launch.bat
-REM Open: http://localhost:8080/?token=dev-token
+REM Open the http://localhost:8080/#token=... URL printed by the script
 ```
 
 ### Configuration
@@ -63,7 +65,8 @@ Environment variables are read once at startup and used as fallbacks or override
 | Variable | Default | Purpose |
 |---|---|---|
 | `AGENTICA_PORT` | `11211` (backend) / `8080` (launch scripts) | HTTP port the backend listens on |
-| `AGENTICA_DEV_TOKEN` | `dev-token` | Bearer token for browser/dev mode |
+| `AGENTICA_HOST` | `127.0.0.1` | Address the backend binds to |
+| `AGENTICA_TOKEN` | — | Bearer token for the API. When unset, a random per-launch token is generated and printed to stderr |
 | `AGENTICA_UI_ROOT` | `../ui` (relative to jar) | Path to the `ui/` folder |
 | `LLM_PROVIDER` | `openai` | Primary LLM provider type: `openai` or `ollama` |
 | `LLM_BASE_URL` | `http://localhost:1234` | LM Studio / Ollama base URL (launch script / initial default only) |
@@ -72,7 +75,7 @@ Environment variables are read once at startup and used as fallbacks or override
 | `VLM_API_KEY` | `lm-studio` | Fallback API key when the settings VLM API key is empty |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL when `LLM_PROVIDER=ollama` |
 | `OLLAMA_MODEL` | `llama3.2` | Default Ollama model |
-| `AGENTICA_DESKTOP_URL` / `agentica.desktop.url` | `http://127.0.0.1:8080/?token=dev-token` | URL the JavaFX desktop shell loads |
+| `AGENTICA_DESKTOP_URL` / `agentica.desktop.url` | `http://127.0.0.1:<port>/#token=<token>` | URL the JavaFX desktop shell loads |
 
 Environment-supplied `LLM_BASE_URL` / `LLM_MODEL` are only used to seed the initial settings file; once settings have been saved, the persisted values take precedence. Use the Settings modal to change them permanently.
 
@@ -107,7 +110,6 @@ Environment-supplied `LLM_BASE_URL` / `LLM_MODEL` are only used to seed the init
 
 ```bash
 cd backend
-AGENTICA_DEV_TOKEN=dev-token \
 AGENTICA_PORT=8080 \
 LLM_BASE_URL=http://localhost:1234 \
 LLM_MODEL=mistralai/ministral-3-14b-reasoning \
@@ -116,7 +118,7 @@ mvn compile exec:java
 
 #### Browser
 
-Open `http://localhost:8080/?token=dev-token`
+Open `http://localhost:8080/#token=<token>` using the per-launch token the backend prints to stderr (or set `AGENTICA_TOKEN` to pin one).
 
 If the backend runs inside WSL and LM Studio runs on Windows, set `LLM_BASE_URL` to the Windows host IP reachable from WSL, for example `http://172.23.64.1:1234`.
 
@@ -151,9 +153,10 @@ The backend serves both the REST/SSE API **and** the static UI files:
 - `POST /permissions/:runId` → resolve a permission grant (denied / once / session / always)
 
 #### Log streaming
-- `GET /log/stream` → WebSocket endpoint; streams `agentica.log` in real time (authenticated via `?token=`)
+- `POST /log/ticket` → issues a short-lived, single-use ticket for the log WebSocket (bearer-authed)
+- `GET /log/stream` → WebSocket endpoint; streams `agentica.log` in real time (authenticated via a `?ticket=` one-time ticket)
 
-The bearer token is passed as an `Authorization: Bearer ...` header for most API calls; SSE/WebSocket endpoints fall back to a `?token=` URL query param, which `api.js` picks up automatically.
+The bearer token is passed as an `Authorization: Bearer ...` header for most API calls and reaches the UI via a `#token=` URL fragment that is stripped after page load. The log viewer exchanges it for a single-use `?ticket=` since `WebSocket` cannot send headers.
 
 Settings changes via `POST /settings` take effect immediately: `BackendServer` rebuilds the LLM/VLM providers and passes them to `AgentLoop.updateProviders`, so no server restart is required.
 

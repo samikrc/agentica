@@ -34,12 +34,13 @@ Goal: provide a working local app that runs as a JVM backend plus browser UI.
 ### Remaining / Cleanup
 
 - [x] Remove or update stale Tauri comments in source code.
-- [ ] Make backend bind host configurable via an environment variable such as `AGENTICA_HOST`.
-- [ ] Prefer `127.0.0.1` for packaged mode and allow `0.0.0.0` for WSL/browser development.
-- [ ] Security: remove the hardcoded `"dev-token"` fallback in `Auth` — either fail closed when `AGENTICA_TOKEN`/`AGENTICA_DEV_TOKEN` are unset, or generate a random per-launch token and print it to stdout. (High priority once the app leaves local-only use; combined with the `0.0.0.0` bind this currently exposes the agent API to the LAN with a publicly-known token.)
-- [ ] Security: constrain `POST /sessions` `rootPath` — a caller can currently point the sandbox at `/` or `$HOME`, letting `files.*` tools read/write anywhere. Options: allowlist of permitted roots, restrict to paths under a configured base dir, or require explicit user confirmation for roots outside the default workspace dir.
-- [ ] Security: fix `PathSandbox` symlink escape — `resolve()` uses `normalize()` but never `toRealPath()`, so a symlink inside the workspace pointing outside passes the containment check. Re-check the real path under `root.toRealPath()` before I/O.
-- [ ] Security: SSE `?token=` leaks the master token into URLs/logs — consider a short-lived per-run token for the log/stream endpoints instead.
+- [x] Make backend bind host configurable via an environment variable such as `AGENTICA_HOST`. (Done in AG-40.)
+- [x] Prefer `127.0.0.1` for packaged mode and allow `0.0.0.0` for WSL/browser development. (Done in AG-40 — `AGENTICA_HOST`, default `127.0.0.1`.)
+- [x] Security: remove the hardcoded `"dev-token"` fallback in `Auth` — either fail closed when `AGENTICA_TOKEN` is unset, or generate a random per-launch token and print it to stdout. (Done in AG-40 — random per-launch token printed to stderr.)
+- [x] Security: constrain `POST /sessions` `rootPath` — a caller can currently point the sandbox at `/` or `$HOME`, letting `files.*` tools read/write anywhere. Options: allowlist of permitted roots, restrict to paths under a configured base dir, or require explicit user confirmation for roots outside the default workspace dir. (Done — `rootPath` constrained by `AllowedRoots`.)
+- [x] Security: fix `PathSandbox` symlink escape — `resolve()` uses `normalize()` but never `toRealPath()`, so a symlink inside the workspace pointing outside passes the containment check. Re-check the real path under `root.toRealPath()` before I/O. (Done in AG-40.)
+- [x] Security: SSE `?token=` leaks the master token into URLs/logs — consider a short-lived per-run token for the log/stream endpoints instead. (Done in AG-40 — one-time `?ticket=` for `/log/stream`, `_t=` removed.)
+- [ ] Desktop packaging must set `AGENTICA_TOKEN` for the JavaFX shell — when the token is generated per-launch it only exists on stderr, so the WebView's token prompt fallback cannot reach it.
 - [ ] Generalize static asset serving beyond `/css/*` and `/js/*` if additional asset folders are added.
 - [ ] Decide whether launch scripts should auto-open the browser or only print the URL.
 - [ ] Add a basic smoke-test checklist for browser mode.
@@ -423,9 +424,9 @@ Ordered by enables-most → cost-per-point → trigger-driven. Items 1–3 land 
 
 ## Near-Term Recommended Next Steps
 
-- [ ] Phase 1 security hardening (AG-40, highest risk-per-effort): per-launch random token instead of `dev-token` fallback; fix `PathSandbox` symlink escape via `toRealPath()`; move tokens out of URLs — header auth for `fetch` streams (easy), one-time-ticket endpoint for the `log-viewer` WebSocket. Done: `POST /sessions` `rootPath` already constrained by `AllowedRoots`.
+- [x] Phase 1 security hardening (AG-40, branch `sr-AG-40-phase1-security-hardening`): random per-launch token when `AGENTICA_TOKEN` unset; `#token=` fragment bootstrap stripped via `history.replaceState`; `PathSandbox` `toRealPath()` containment + symlink tests; `POST /log/ticket` one-time tickets for the `log/stream` WebSocket (`?token=` removed); `AGENTICA_HOST` bind (default `127.0.0.1`); `_t=` URL leak removed. Done earlier: `rootPath` constrained by `AllowedRoots`.
 - [ ] Implement `llm.summarize`, `llm.extract`, `llm.classify` tool bodies (Phase 2 Step 5 — currently stubs).
-- [ ] Add configurable `AGENTICA_HOST` bind address (Phase 1 cleanup).
+- [x] Add configurable `AGENTICA_HOST` bind address (Phase 1 cleanup — done with AG-40, default `127.0.0.1`).
 - [ ] Begin Phase 3 Stage C: `files.write_markdown`, `files.markdown_to_docx`, `files.markdown_to_pdf` via LibreOffice headless.
 - [ ] Phase 4 vision tools (`vision.describe`, `vision.extract_text`) — low cost now that the VLM provider path is proven.
 - [ ] Add UI smoke tests for streamed agent events.

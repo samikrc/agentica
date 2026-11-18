@@ -14,10 +14,27 @@ const LogViewer = (() => {
 
   let ws = null;
   let wsReconnectTimer = null;
+  let connectGen = 0;
   let isPaused = false;
   let shouldAutoScroll = true;
   let lineCount = 0;
   let isReplay = true;
+
+  // The bearer token arrives via the #token= URL fragment (never sent to the
+  // server); it is exchanged for a short-lived WebSocket ticket per connect.
+  const hashParams = new URLSearchParams(window.location.hash.slice(1));
+  const params     = new URLSearchParams(window.location.search);
+  let token        = hashParams.get('token') || params.get('token');
+  if (token) {
+    sessionStorage.setItem('agentica_token', token);
+    history.replaceState(null, '', window.location.pathname);
+  } else {
+    token = sessionStorage.getItem('agentica_token') || '';
+  }
+  if (!token) {
+    token = window.prompt('Enter the Agentica access token (shown in the launch output)') || '';
+    if (token) sessionStorage.setItem('agentica_token', token);
+  }
 
   /**
    * Initialize the log viewer.
@@ -29,10 +46,24 @@ const LogViewer = (() => {
   }
 
   /**
-   * Connect to the WebSocket stream with exponential backoff on failure.
+   * Exchange the bearer token for a single-use WebSocket ticket.
+   */
+  async function fetchTicket() {
+    const r = await fetch('/log/ticket', {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!r.ok) throw new Error(`ticket request failed: ${r.status}`);
+    return (await r.json()).ticket;
+  }
+
+  /**
+   * Connect to the WebSocket stream, retrying only transient failures.
+   * Authentication failures cannot recover on their own and stop retrying.
    * @param {number} delay  Milliseconds to wait before connecting (0 = immediate).
    */
   function connect(delay = 0) {
+    const gen = ++connectGen;
     if (wsReconnectTimer) {
       clearTimeout(wsReconnectTimer);
       wsReconnectTimer = null;
@@ -44,11 +75,29 @@ const LogViewer = (() => {
       ws = null;
     }
 
-    wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = setTimeout(async () => {
       wsReconnectTimer = null;
-      const token   = new URLSearchParams(window.location.search).get('token') || '';
+      if (!token) {
+        connectionStatus.textContent = 'Authentication failed — missing token';
+        connectionStatus.className = 'disconnected';
+        return;
+      }
+      let ticket;
+      try {
+        ticket = await fetchTicket();
+      } catch (e) {
+        // A disconnect()/connect() while fetchTicket() was in flight must not
+        // reschedule or clobber the newer attempt's status.
+        if (gen !== connectGen) return;
+        const isAuthError = /ticket request failed: (401|403)/.test(e.message || '');
+        connectionStatus.textContent = isAuthError ? 'Authentication failed' : 'Connection failed — retrying';
+        connectionStatus.className = 'disconnected';
+        if (!isAuthError) connect(3000);
+        return;
+      }
+      if (gen !== connectGen) return;
       const proto   = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const url     = `${proto}//${window.location.host}/log/stream?token=${encodeURIComponent(token)}`;
+      const url     = `${proto}//${window.location.host}/log/stream?ticket=${encodeURIComponent(ticket)}`;
 
       ws = new WebSocket(url);
 
@@ -244,6 +293,7 @@ const LogViewer = (() => {
   return {
     connect,
     disconnect: () => {
+      connectGen++;
       if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
       if (ws) { ws.onclose = null; ws.close(); ws = null; }
     }

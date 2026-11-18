@@ -8,8 +8,10 @@ set LLM_BASE_URL=http://localhost:1234
 :: Model name as shown in LM Studio
 set LLM_MODEL=mistralai/ministral-3-14b-reasoning
 
-:: Bearer token — change this to something secret for non-dev use
-set AGENTICA_DEV_TOKEN=dev-token
+:: Random per-launch token unless the user explicitly set AGENTICA_TOKEN.
+if "%AGENTICA_TOKEN%"=="" (
+    for /f %%t in ('powershell -NoProfile -Command "([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')).Substring(0,32)"') do set "AGENTICA_TOKEN=%%t"
+)
 
 :: Fixed port (avoids hunting for the dynamic port each launch)
 set AGENTICA_PORT=8080
@@ -29,7 +31,7 @@ if not exist "%JAR%" (
 )
 
 echo Starting Agentica backend...
-echo Open your browser at: http://localhost:%AGENTICA_PORT%/?token=%AGENTICA_DEV_TOKEN%
+echo Open your browser at: http://localhost:%AGENTICA_PORT%/#token=%AGENTICA_TOKEN%
 echo Press Ctrl+C to stop.
 echo.
 

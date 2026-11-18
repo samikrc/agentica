@@ -2,13 +2,33 @@
  * main.js — App entry point.
  * The UI is served directly by the backend, so the base URL is always
  * window.location.origin (same host + port).
- * The bearer token is read from the ?token= URL query param, which the
- * launch scripts append automatically.
+ * The bearer token is read from the #token= URL fragment, which the
+ * launch scripts append automatically. Fragments are never sent to the
+ * server; the token is stripped from the URL bar/history after reading and
+ * kept in sessionStorage so reloads stay authenticated.
+ * The legacy ?token= query param is accepted as a fallback.
  */
 
 (async () => {
-  const params = new URLSearchParams(window.location.search);
-  const token  = params.get('token') || 'dev-token';
+  const hashParams = new URLSearchParams(window.location.hash.slice(1));
+  const params     = new URLSearchParams(window.location.search);
+  let token        = hashParams.get('token') || params.get('token');
+
+  // Persist before stripping so a page reload stays authenticated; the
+  // sessionStorage copy is per-tab and dies with it.
+  if (token) {
+    sessionStorage.setItem('agentica_token', token);
+    history.replaceState(null, '', window.location.pathname);
+  } else {
+    token = sessionStorage.getItem('agentica_token') || '';
+  }
+
+  // Last resort: ask for the token (printed to stderr by the backend when
+  // generated per-launch) rather than failing every request silently.
+  if (!token) {
+    token = window.prompt('Enter the Agentica access token (shown in the launch output)') || '';
+    if (token) sessionStorage.setItem('agentica_token', token);
+  }
 
   Api.init(window.location.origin, token);
 
