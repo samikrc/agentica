@@ -26,6 +26,8 @@ All models were served locally via LM Studio on `http://192.168.2.126:1234`:
 | `qwen3.5-9b-mtp` | `qwen3.5-9b-mtp` |
 | `qwen2.5-vl-7b-instruct` | `qwen2.5-vl-7b-instruct` |
 | `lfm2.5-vl-3b` | `lfm2.5-vl-3b` |
+| `lfm3-vl-2b` | `lfm3-vl-2b` (reasoning on) |
+| `lfm3-vl-2b-nothink` | `lfm3-vl-2b` with `reasoning_effort: "none"` |
 
 ## Test Harness
 
@@ -114,15 +116,58 @@ Based on the sweep results across all models and parameter combinations:
 |---|---|
 | **DPI** | 150 |
 | **maxImageDimension** | 1200 |
-| **Model** | `lfm2.5-vl-3b` (LFM 2.5 VL 3B) |
+| **Model** | `lfm3-vl-2b` with reasoning disabled (`reasoning_effort: "none"`) |
+
+`lfm3-vl-2b` replaced `lfm2.5-vl-3b` as the production VLM (`eval-config.json` sets `"vlmModel": "lfm3-vl-2b"`). Production transcription runs with reasoning off — see the LFM3 section below for why.
+
+### LFM3 results (150 DPI / 1200 px)
+
+Measured with the per-page text-fidelity and expected-facts metrics. `Facts` is strict/lenient/total against `nifty-50-whitepaper-2024.facts.json` (50 facts); `—` means the document has no facts file.
+
+| PDF | Variant | WordF1 | NumR | NumP | Order | Facts | Words | TotalS | AvgPageS |
+|---|---|---|---|---|---|---|---|---|---|
+| IT Support Analyst - India | reasoning on | 1.00 | 1.00 | 1.00 | 1.00 | — | 710 | 73.4 | 36.7 |
+| Even OPD Policy Document | reasoning on | 1.00 | 0.89 | 1.00 | 0.56 | — | 1534 | 190.1 | 23.8 |
+| ind_nifty50 | reasoning on | 0.94 | 0.96 | 0.82 | 0.37 | — | 753 | 76.5 | 38.2 |
+| nifty-50-whitepaper-2024 | reasoning on | — | — | — | — | — | — | 929.7 | — |
+| IT Support Analyst - India | reasoning off | 1.00 | 1.00 | 1.00 | 1.00 | — | 710 | 34.7 | 17.3 |
+| Even OPD Policy Document | reasoning off | 0.98 | 0.89 | 1.00 | 0.55 | — | 1497 | 48.3 | 6.0 |
+| ind_nifty50 | reasoning off | 0.87 | 0.95 | 0.78 | 0.20 | — | 613 | 30.4 | 15.2 |
+| nifty-50-whitepaper-2024 | reasoning off | 0.92 | 0.82 | 0.99 | 0.43 | 44/47/50 | 3684 | 191.7 | 12.0 |
+
+Findings:
+
+- **Reasoning off is 2–4× faster at similar quality.** Per-page time drops from 23.8–38.2 s to 6.0–17.3 s on the prose documents. The reasoning-on variant never finished the whitepaper — a page exceeded the 180 s per-page timeout after ~930 s total — while reasoning off completed all 16 pages in 192 s.
+- **Quality cost of disabling reasoning is small and document-dependent.** Word F1 is unchanged on IT Support and within 0.02–0.07 elsewhere; order similarity falls most on `ind_nifty50` (0.37 → 0.20) and word F1 0.94 → 0.87, i.e. the reasoning variant holds multi-column layout better. For retrieval-style use this is acceptable; for dense tabular pages it is a real regression.
+- **Whitepaper facts (reasoning off): 44 strict / 47 lenient of 50.** Three facts fail strictly but pass leniently (value on the right line, wrong cell), and three fail both — see `results.json` `facts.results` for the per-fact outcomes. This is the first facts-based measurement of any model, so there is no cross-model baseline yet.
+- **Number precision vs recall is the notable weakness.** `ind_nifty50` shows NumR 0.95 with NumP 0.78 — the model reproduces printed numbers but also emits numbers that are not in the text layer, consistent with chart value inference.
+
+### DPI sensitivity (lfm3-vl-2b, reasoning on)
+
+Grid run on the two prose documents before the reasoning-off measurements:
+
+| PDF | DPI | MaxDim | WordF1 | NumR | NumP | Order | AvgPageS |
+|---|---|---|---|---|---|---|---|
+| IT Support Analyst - India | 50 | 1024 | 0.78 | 0.67 | 1.00 | 0.63 | 97.7* |
+| IT Support Analyst - India | 100 | 1024 | 1.00 | 1.00 | 1.00 | 1.00 | 32.2 |
+| IT Support Analyst - India | 100 | 1200 | 1.00 | 1.00 | 1.00 | 1.00 | 19.8 |
+| IT Support Analyst - India | 150 | 1024–1650 | 1.00 | 1.00 | 1.00 | 1.00 | 23.0–27.6 |
+| Even OPD Policy Document | 50 | 1024 | 0.99 | 0.89 | 1.00 | 0.56 | 30.8 |
+| Even OPD Policy Document | 100 | 1024 | 1.00 | 0.89 | 1.00 | 0.55 | 25.7 |
+| Even OPD Policy Document | 100 | 1200 | 1.00 | 0.89 | 1.00 | 0.56 | 15.9 |
+| Even OPD Policy Document | 100 | 1400 | 1.00 | 0.89 | 1.00 | 0.55 | 21.4 |
+
+\* includes model load. Timings in this grid were collected around a laptop hibernation: any measurement spanning the suspend is inflated, and one page in the Even OPD grid was aborted by the suspend (recorded as a timeout, after which the harness skipped the remaining combinations for that model). Quality metrics are unaffected; treat the timing column as indicative only.
+
+Observations: **50 DPI loses numbers** (IT Support number recall 0.67) — 100 DPI is the floor for numeric documents. **Even OPD's order similarity stays at ~0.55 at every DPI**, which is a layout/reading-order property of that document, not a resolution problem.
 
 ### Rationale
 
-> **Caveat:** this decision predates the per-page text-fidelity and expected-facts metrics. It was made from document-level word/token coverage, which cannot distinguish a correct transcription from a well-formatted misreading of a table. Chart and table quality for the selected configuration should be re-validated against `files/nifty-50-whitepaper-2024.facts.json` (currently the only facts file) before treating 150/1200 as final.
+> **Caveat:** the original decision below predates the per-page text-fidelity and expected-facts metrics. It was made from document-level word/token coverage, which cannot distinguish a correct transcription from a well-formatted misreading of a table. The LFM3 section above is the first facts-based measurement; it covers one model and one facts file.
 
 - **150 DPI** provides the best text clarity for OCR-quality transcription. Lower DPI values (50, 100) resulted in degraded quality, particularly for small text and fine details.
 - **1200 maxImageDimension** strikes the optimal balance between image quality and vision-encoder processing time. It is large enough to preserve the detail from 150 DPI renders while keeping the token count manageable for the LFM model's vision encoder.
-- **`lfm2.5-vl-3b`** was selected as the VLM model based on its overall performance across the test PDFs — combining good transcription quality (word count ratio, token overlap, heading/table detection) with reasonable processing speed.
+- **`lfm2.5-vl-3b`** was the original selection based on overall performance across the test PDFs — combining good transcription quality (word count ratio, token overlap, heading/table detection) with reasonable processing speed. It has since been replaced by `lfm3-vl-2b` with reasoning disabled, which is faster and is the model the production config selects.
 
 ## Files
 
@@ -315,4 +360,4 @@ The table above records the original document-level metrics. Newer runs also pro
 
 ### 5. Update the Decision (If Applicable)
 
-If the new model outperforms the current selection (`lfm2.5-vl-3b` at 150 DPI / 1200 maxDim), update the **Results and Decision** section above with the new optimal configuration and rationale.
+If the new model outperforms the current selection (`lfm3-vl-2b` with reasoning disabled at 150 DPI / 1200 maxDim), update the **Results and Decision** section above with the new optimal configuration and rationale.
