@@ -87,6 +87,23 @@ For each (PDF, provider, DPI, maxDim) combination:
 
 All metrics are persisted to `results.json` in the work directory, rewritten after every completed combination so a crashed or aborted run keeps its partial results.
 
+## Selection criteria
+
+Document-level coverage (word ratio, token overlap) says whether *enough* text came out, not whether it is *correct*. A model can score 1.00 word ratio while misreading every number in a table. Choose a VLM using the metric families below, in this order:
+
+1. **Chart and table correctness — expected facts (`FactsStrict` / `FactsLenient`).** The primary criterion for document work. Facts check printed values in their row/column cell (strict) or on their row's line (lenient), detect known misreadings (`wrong`, e.g. `47.35%` where `47.36%` is printed), distinguish a dash from a zero, and report misplaced values (present on the page but attached to the wrong row). A model that transcribes prose well but cannot keep a year matrix aligned is unusable for chart-heavy documents regardless of its other scores.
+2. **Number fidelity (`NumR` / `NumP`).** Signed-number recall and precision against the PDF text layer. Recall catches dropped values; precision catches invented or duplicated ones. A large gap between word F1 and number recall means the model is paraphrasing or skipping dense numeric regions.
+3. **Text fidelity (`WordF1`, `WordRecall`, `WordPrecision`) and order (`Order`).** Word F1 measures dropped, invented, and duplicated text. Order similarity (1 − word error rate) distinguishes *reordered* content from *missing* content: high F1 with low order is usually a multi-column or table-layout problem rather than lost text. Treat very low order on prose pages as a warning even when F1 looks fine.
+4. **Structure detection (`Headings`, `TableRows`).** Presence of structure, not its correctness — a table transcribed with the wrong values still counts its rows. Useful mainly to spot models that emit unstructured blobs; once a model produces tables, judge it by facts and number fidelity instead.
+5. **Throughput and reliability (`AvgPageS`, `FailedPages`, timeout status).** Wall-clock time per page decides whether a model is viable at document scale; `FailedPages` counts pages that exhausted retries. A model that times out at one DPI/maxDim combination is skipped for the rest of the sweep, so timeouts also silently reduce coverage — check the status column before trusting an aggregate.
+
+Practical guidance:
+
+- For **retrieval/QA over prose**, word F1 and order dominate; facts matter less.
+- For **chart, table, or financial documents**, facts and number precision dominate — reject a model whose strict fact passes are materially below the best candidate even if its word F1 is higher.
+- Compare models only at the **same DPI / maxDim**, and prefer the smallest configuration that keeps facts and number recall within noise of the best — larger images cost time on every page.
+- Facts currently exist for one PDF (`nifty-50-whitepaper-2024.facts.json`); for the other documents use number fidelity plus manual spot-checks of tables and charts.
+
 ## Results and Decision
 
 Based on the sweep results across all models and parameter combinations:
@@ -285,10 +302,12 @@ The harness will:
 Copy the rows for the new model from the printed summary table and append them to the **Result Details** table above. Use the markdown table format:
 
 ```markdown
-| PDF | Provider | DPI | MaxDim | Chars | Words | TotalS | AvgPageS | WordRatio | TokenOvl | Headings | TableRows | NonEmpty% | Notes |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| <pdf-stem> | <label> | <dpi> | <maxdim> | <chars> | <words> | <totalS> | <avgPageS> | <wordRatio> | <tokenOvl> | <headings> | <tableRows> | <nonEmpty%> | <notes> |
+| PDF | Provider | DPI | MaxDim | Chars | Words | TotalS | AvgPageS | WordRatio | TokenOvl | Headings | TableRows | NonEmpty% | WordF1 | NumR | NumP | Order | FactsStrict | FactsLenient | FailedPages | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| <pdf-stem> | <label> | <dpi> | <maxdim> | <chars> | <words> | <totalS> | <avgPageS> | <wordRatio> | <tokenOvl> | <headings> | <tableRows> | <nonEmpty%> | <wordF1> | <numR> | <numP> | <order> | <strict>/<total> | <lenient>/<total> | <failedPages> | <notes> |
 ```
+
+Use `N/A` for metrics a run did not produce (no facts file, unsupported model, timeout).
 
 If the model timed out, record a single row with `N/A` for all metric fields and `timeout` in the Notes column.
 
