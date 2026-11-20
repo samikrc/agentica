@@ -29,7 +29,7 @@ All models were served locally via LM Studio on `http://192.168.2.126:1234`:
 
 ## Test Harness
 
-The experiment was conducted using `VLMCompareTest.scala` in sweep mode (`runSweepMode = true`).
+The experiment was conducted using `VLMCompareTest.scala` in sweep mode (`--sweep` command-line flag).
 
 ### Parameters Swept
 
@@ -55,7 +55,7 @@ Providers are the outermost loop so each local model loads once, processes all P
 - **Render caching**: Pages are rendered once per DPI and reused across all maxDim values for that DPI.
 - **Timeout skip**: If a model times out on any (DPI, maxDim) combination, all remaining combinations for that model are skipped.
 - **Pre-run cleanup**: Before the provider loop, all currently-loaded models on the LM Studio server are unloaded via `/v1/models` query + `/api/v1/models/unload` calls.
-- **In-memory scoring**: `MarkdownScorer` scores VLM output in memory — no `.md` files are written in sweep mode.
+- **Per-combo artifacts**: each combination writes `<stem>_<label>_dpi<D>_max<M>.md` and `.pages.json`, and `results.json` is rewritten after every combination so an aborted run keeps its partial results.
 
 ### Metrics Collected
 
@@ -71,6 +71,21 @@ For each (PDF, provider, DPI, maxDim) combination:
 - Table row count
 - Non-empty page ratio
 - Timeout/error status
+- Failed page count (pages ending as `[Page N: transcription failed …]` placeholders)
+
+**Per-page text fidelity** (`MarkdownScorer.scoreTextPages`), compared against each page's PDFBox text layer:
+
+- Word recall / precision / F1 (multiset, counting repeats — catches dropped, invented, and duplicated text)
+- Signed-number recall / precision, with the missing and extra numbers listed per page (so `-0.43%` vs `0.43%` is a mismatch)
+- Order similarity (1 − word error rate): low values with high F1 indicate reordering rather than missing text
+
+**Expected facts** (`MarkdownScorer.checkFacts`), when a `<stem>.facts.json` file sits next to the PDF:
+
+- One graded outcome per fact: `pass-cell` (value in the expected table cell), `pass-line` (same line as its row label), `pass-terms` (page-level terms), `partial`, `wrong` (matches a listed known misreading), `misplaced` (on the page but not with its row), `missing`
+- Strict = cell/terms passes; lenient also accepts line passes
+- Per-`type` rollup (table, chart, diagram, footnote) and a cross-provider disagreement report listing every fact whose outcome differs between providers
+
+All metrics are persisted to `results.json` in the work directory, rewritten after every completed combination so a crashed or aborted run keeps its partial results.
 
 ## Results and Decision
 
@@ -86,6 +101,8 @@ Based on the sweep results across all models and parameter combinations:
 
 ### Rationale
 
+> **Caveat:** this decision predates the per-page text-fidelity and expected-facts metrics. It was made from document-level word/token coverage, which cannot distinguish a correct transcription from a well-formatted misreading of a table. Chart and table quality for the selected configuration should be re-validated against `files/nifty-50-whitepaper-2024.facts.json` (currently the only facts file) before treating 150/1200 as final.
+
 - **150 DPI** provides the best text clarity for OCR-quality transcription. Lower DPI values (50, 100) resulted in degraded quality, particularly for small text and fine details.
 - **1200 maxImageDimension** strikes the optimal balance between image quality and vision-encoder processing time. It is large enough to preserve the detail from 150 DPI renders while keeping the token count manageable for the LFM model's vision encoder.
 - **`lfm2.5-vl-3b`** was selected as the VLM model based on its overall performance across the test PDFs — combining good transcription quality (word count ratio, token overlap, heading/table detection) with reasonable processing speed.
@@ -94,21 +111,26 @@ Based on the sweep results across all models and parameter combinations:
 
 | File | Description |
 |---|---|
-| `VLMCompareTest.scala` | Test harness with `runFixed` and `runSweep` modes |
-| `MarkdownScorer.scala` | Scoring utility for comparing VLM Markdown against PDFBox reference text |
+| `VLMCompareTest.scala` | Test harness: fixed configuration or `--sweep` grid, provider/PDF filters, structured `results.json` |
+| `VLMCompareOptionsTest.scala` | Unit tests for option parsing, image resizing, no-op reuse, and `results.json` shape |
+| `MarkdownScorer.scala` | Scoring: document-level metrics, per-page text fidelity, expected-fact grading; standalone re-scoring entry point |
 | `PDFPageRenderer.scala` | PDF rasterization with configurable DPI and `resizeToMaxDimension` |
-| `PageVisionTranscriber.scala` | Core transcription logic with per-page timeout support |
+| `PageVisionTranscriber.scala` | Core transcription logic with per-page timeout and retry support |
+| `files/<stem>.facts.json` | Hand-verified expected facts for tables, charts, diagrams, and footnotes of one PDF |
 
 ## How to Reproduce
 
-1. Ensure LM Studio is running with the target models loaded.
-2. Set `runSweepMode = true` in `VLMCompareTest.scala`.
-3. Configure `dpiValues`, `maxDimValues`, `providers`, and `pdfPaths` as needed.
-4. Run:
+1. Ensure LM Studio is running and the target models are downloaded (the harness unloads and loads models itself via the LM Studio API).
+2. Configure `providers`, `pdfPaths`, `dpiValues`, and `maxDimValues` in `VLMCompareTest.scala` as needed.
+3. From `backend/`, run the harness as a standalone main:
    ```
-   mvn test -pl backend -Dtest=VLMCompareTest -Dsurefire.failIfNoSpecifiedTests=false
+   mvn test-compile exec:exec -Dexec.classpathScope=test \
+     -Dexec.args="-Djava.awt.headless=true -Dorg.jboss.logging.provider=jdk -classpath %classpath agentica.misctests.VLMCompareTest --sweep"
    ```
-5. Review the summary table printed at the end of the run.
+   Fixed configuration instead of a grid: replace `--sweep` with `--dpi 150 --max-dimension 1200`.
+   Select a subset: `--providers lfm2.5-vl-3b,gemma-4-12b-qat --pdfs whitepaper,nifty50`.
+4. Review the summary table printed at the end of the run; `results.json`, per-page JSON, and Markdown outputs are in the printed work directory.
+5. Re-score an existing run directory without calling any model: run `agentica.misctests.MarkdownScorer <work-dir>`.
 
 ## Result Details
 
@@ -243,11 +265,14 @@ val providers: List[(String, String, String, String)] = List(
 
 ### 3. Run the Sweep
 
-Set `runSweepMode = true` (if not already) and run:
+From `backend/`:
 
 ```
-mvn test -pl backend -Dtest=VLMCompareTest -Dsurefire.failIfNoSpecifiedTests=false
+mvn test-compile exec:exec -Dexec.classpathScope=test \
+  -Dexec.args="-Djava.awt.headless=true -Dorg.jboss.logging.provider=jdk -classpath %classpath agentica.misctests.VLMCompareTest --sweep --providers new-model-label"
 ```
+
+The `--providers` filter keeps the run to the new model; drop it to sweep every configured provider.
 
 The harness will:
 - Unload any currently-loaded models on the server (pre-run cleanup)
@@ -266,6 +291,8 @@ Copy the rows for the new model from the printed summary table and append them t
 ```
 
 If the model timed out, record a single row with `N/A` for all metric fields and `timeout` in the Notes column.
+
+The table above records the original document-level metrics. Newer runs also produce per-page text fidelity (word F1, number recall/precision, order similarity) and, for PDFs with a `.facts.json`, strict/lenient fact passes — record those in a separate table or alongside the existing rows rather than reusing the old columns.
 
 ### 5. Update the Decision (If Applicable)
 
