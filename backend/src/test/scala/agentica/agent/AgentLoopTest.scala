@@ -106,7 +106,8 @@ class AgentLoopTest extends AnyFunSuite
         }
 
         override def executeNative(name: String, argumentsJson: String,
-                                   ctx: agentica.tools.ExecutionContext): (String, agentica.tools.AgentResponse) =
+                                   ctx: agentica.tools.ExecutionContext,
+                                   extra: List[agentica.shell.ToolMiddleware]): (String, agentica.tools.AgentResponse) =
         {
             try
             {
@@ -116,7 +117,7 @@ class AgentLoopTest extends AnyFunSuite
             }
             catch
             {
-                case _: Throwable => super.executeNative(name, argumentsJson, ctx)
+                case _: Throwable => super.executeNative(name, argumentsJson, ctx, extra)
             }
         }
     }

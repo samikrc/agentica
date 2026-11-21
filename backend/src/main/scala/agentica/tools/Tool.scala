@@ -111,13 +111,25 @@ case class ToolResult(
  */
 case class AgentResponse(text: String, durationMs: Long)
 
+// ─── Permission target ────────────────────────────────────────────────────────
+
+/**
+ *  The protected resource a tool call needs a permission grant for.
+ *  Declared by [[Tool.permissionTarget]] and enforced by
+ *  [[agentica.permissions.PermissionMiddleware]] before dispatch.
+ *  @param grantKey     Key checked and recorded in [[agentica.permissions.ScopeStore]]
+ *                      — e.g. an absolute file path or directory prefix the grant covers.
+ *  @param displayPath  Path shown to the user in the permission prompt.
+ */
+case class PermissionTarget(grantKey: String, displayPath: Option[String])
+
 // ─── Execution context ────────────────────────────────────────────────────────
 
 /**
  *  Runtime context threaded through every tool call within a single agent run.
  *  @param session          The active session (carries `rootPath`, `id`, etc.).
  *  @param traceId          Trace identifier for this agent run, used in all log lines.
- *  @param scopeStore       Permission grant store; checked by sensitive tools before execute.
+ *  @param scopeStore       Permission grant store; checked by [[agentica.permissions.PermissionMiddleware]] before dispatch.
  *  @param scratchpad       Session-scoped large-output cache.
  *  @param memoryStore      Session-scoped key-value memory store.
  *  @param llmProvider      Primary LLM provider for chat completions.
@@ -170,6 +182,22 @@ trait Tool[I, O]
      *  @param args  Raw key-value argument map from the tokenizer.
      */
     def validate(args: Map[String, String]): Either[ArgError, I]
+
+    /**
+     *  Declares the resource needing a permission grant for this call.
+     *
+     *  Consulted by [[agentica.permissions.PermissionMiddleware]] before dispatch;
+     *  sensitive tools override it. Must mirror `execute`'s preconditions: return
+     *  `None` when no permission applies — including when the call will fail or
+     *  short-circuit before reaching the protected operation, so the user is
+     *  never prompted for work that cannot proceed.
+     *
+     *  @param input  Validated input produced by `validate`.
+     *  @param ctx    Runtime execution context.
+     *  @return       The [[PermissionTarget]] needing a grant, or `None` when the
+     *                call does not reach a protected operation.
+     */
+    def permissionTarget(input: I, ctx: ExecutionContext): Option[PermissionTarget] = None
 
     /**
      *  Executes the tool using the validated input.

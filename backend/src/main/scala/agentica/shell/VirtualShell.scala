@@ -19,10 +19,22 @@ import agentica.tools.{AgentResponse, ExecutionContext, ToolResult, ToolStatus}
  *
  *  All three stages return structured errors; none throw.
  *
- *  @param registry  The command registry with all registered tools.
+ *  @param registry     The command registry with all registered tools.
+ *  @param middleware   Additional [[ToolMiddleware]] components appended after
+ *                      the always-installed [[agentica.permissions.PermissionMiddleware]].
  */
-class VirtualShell(registry: CommandRegistry)
+class VirtualShell(
+    registry:   CommandRegistry,
+    middleware: List[ToolMiddleware] = Nil
+)
 {
+    /**
+     *  The dispatch chain: permission gating first, then caller-supplied
+     *  components. Run-scoped components (loop guard, compression) are passed
+     *  per call via `executeCommand`'s `extra` parameter instead.
+     */
+    private val chain: List[ToolMiddleware] =
+        new agentica.permissions.PermissionMiddleware(registry) +: middleware
     /**
      *  Executes a raw command string and returns the formatted [[AgentResponse]].
      *
@@ -50,11 +62,17 @@ class VirtualShell(registry: CommandRegistry)
      *  Executes an already-parsed [[Command]] — the entry point for native
      *  function-calling dispatches (and internally for the text DSL).
      *
-     *  @param cmd  Parsed command.
-     *  @param ctx  Runtime execution context for this agent run.
-     *  @return     [[AgentResponse]] for the tool result.
+     *  The middleware chain wraps dispatch: `before` hooks in order may
+     *  short-circuit with a [[ToolResult]]; `after` hooks in reverse order may
+     *  transform the result. `extra` carries run-scoped components on top of
+     *  the shell's base chain.
+     *
+     *  @param cmd    Parsed command.
+     *  @param ctx    Runtime execution context for this agent run.
+     *  @param extra  Additional middleware applied after the base chain for this call.
+     *  @return       [[AgentResponse]] for the tool result.
      */
-    def executeCommand(cmd: Command, ctx: ExecutionContext): AgentResponse =
+    def executeCommand(cmd: Command, ctx: ExecutionContext, extra: List[ToolMiddleware] = Nil): AgentResponse =
     {
         val t0 = System.currentTimeMillis()
 
@@ -70,7 +88,20 @@ class VirtualShell(registry: CommandRegistry)
         }
         else
         {
-            val result  = registry.dispatch(resolvedCmd, ctx)
+            // Run the middleware chain: `before` hooks execute in order and the
+            // first Some(result) short-circuits dispatch entirely; on None the
+            // command dispatches and `after` hooks transform the result in
+            // reverse order (first-listed middleware is outermost).
+            val runChain = chain ++ extra
+            val call     = ToolCall(resolvedCmd, ctx)
+            val shorted  = runChain.iterator.map(_.before(call)).collectFirst { case Some(r) => r }
+            val result   = shorted match
+            {
+                case Some(r) => r
+                case None    =>
+                    val dispatched = registry.dispatch(resolvedCmd, ctx)
+                    runChain.reverseIterator.foldLeft(dispatched) { (r, m) => m.after(call, r) }
+            }
             val elapsed = System.currentTimeMillis() - t0
             Presentation.render(resolvedCmd, result, elapsed)
         }
@@ -94,10 +125,16 @@ class VirtualShell(registry: CommandRegistry)
      *  @param name          Wire function name, e.g. `files_search`.
      *  @param argumentsJson Raw JSON object string of call arguments.
      *  @param ctx           Runtime execution context.
+     *  @param extra         Run-scoped middleware applied after the base chain.
      *  @return  `(displayCommand, response)` — `displayCommand` is the canonical
      *           `family_verb arg=val` string used for events, logging and persistence.
      */
-    def executeNative(name: String, argumentsJson: String, ctx: ExecutionContext): (String, AgentResponse) =
+    def executeNative(
+        name:          String,
+        argumentsJson: String,
+        ctx:           ExecutionContext,
+        extra:         List[ToolMiddleware] = Nil
+    ): (String, AgentResponse) =
     {
         registry.commandFromNative(name, argumentsJson) match
         {
@@ -110,7 +147,7 @@ class VirtualShell(registry: CommandRegistry)
                     durationMs = 0L
                 ))
             case Right(cmd) =>
-                (displayCommand(cmd), executeCommand(cmd, ctx))
+                (displayCommand(cmd), executeCommand(cmd, ctx, extra))
         }
     }
 

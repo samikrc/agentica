@@ -5,7 +5,7 @@ import agentica.doc.{DocToolDetector, PDFPageRenderer}
 import agentica.llm.{LLMProvider, LLMResponse, ToolSpec}
 import agentica.permissions.{GrantDecision, GrantTTL, PermissionCoordinator, ScopeStore}
 import agentica.session.{MemoryStore, Session}
-import agentica.shell.SessionScratchpad
+import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
 import agentica.tools.{ArgError, ErrorCode, ExecutionContext, FilesError, ToolStatus}
 import org.scalatest.funsuite.AnyFunSuite
 import java.nio.file.{Files, Path, Paths}
@@ -61,14 +61,16 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         def deleteForSession(sessionId: String): Unit = ()
     }
 
-    /** ScopeStore stub granting nothing; records `addGrant` invocations. */
+    /** ScopeStore stub granting nothing; records grant-store invocations. */
     private class RecordingScopeStore extends ScopeStore
     {
-        var addGrantCalls = 0
+        var addGrantCalls    = 0
+        var consumeOnceCalls = 0
         def hasGrant(sessionId: String, toolName: String, resolvedPath: String): Boolean = false
         def addGrant(sessionId: String, toolName: String, decision: GrantDecision.Granted): Unit =
             addGrantCalls += 1
-        def consumeOnce(sessionId: String, toolName: String, resolvedPath: String): Unit = ()
+        def consumeOnce(sessionId: String, toolName: String, resolvedPath: String): Unit =
+            consumeOnceCalls += 1
         def deleteForSession(sessionId: String): Unit = ()
     }
 
@@ -261,26 +263,27 @@ class FilesReadToMarkdownTest extends AnyFunSuite
     test("files_read_pdf_to_markdown: permission denied returns error and no .md") {
         withWorkspace { ws =>
             copyFixture(pdfFixture, ws, "doc.pdf")
-            val provider = StubVisionProvider()
-            val scope    = RecordingScopeStore()
+            val provider    = StubVisionProvider()
+            val scope       = RecordingScopeStore()
             val coordinator = new PermissionCoordinator("pdf-denied")
             val events      = ListBuffer.empty[AgentEvent]
+            val registry    = CommandRegistry()
+            registry.register(FilesReadPDFToMarkdown)
+            val shell       = VirtualShell(registry)
 
-            val out = FilesReadPDFToMarkdown.execute(
-                FilesReadPDFToMarkdownInput(Paths.get("doc.pdf"), enrichImages = true),
+            val (_, resp) = shell.executeNative(
+                "files_read_pdf_to_markdown",
+                """{"path":"doc.pdf","enrich_images":"true"}""",
                 ctx(ws, scope, provider, coordinator = coordinator, events = events,
                     decision = Some(GrantDecision.Denied)))
 
-            out.error match
-            {
-                case Some(FilesError.IoError(msg)) => assert(msg.contains("Permission denied"))
-                case other                         => fail(s"expected IoError(Permission denied), got $other")
-            }
+            assert(resp.text.contains("permission_denied"),
+                s"expected permission_denied, got: ${resp.text}")
             val perms = events.collect { case e: AgentEvent.PermissionRequired => e }
             assert(perms.length == 1)
             assert(perms.head.requestId.nonEmpty)
             assert(perms.head.tool == "files_read_pdf_to_markdown")
-            assert(perms.head.path.contains(""))
+            assert(perms.head.path.contains("."))
             assert(!Files.exists(ws.resolve("doc.md")))
             assert(provider.callCount.get() == 0)
         }
@@ -289,18 +292,46 @@ class FilesReadToMarkdownTest extends AnyFunSuite
     test("files_read_pdf_to_markdown: permission granted stores grant and proceeds") {
         withWorkspace { ws =>
             copyFixture(pdfFixture, ws, "doc.pdf")
-            val provider = StubVisionProvider()
-            val scope    = RecordingScopeStore()
+            val provider    = StubVisionProvider()
+            val scope       = RecordingScopeStore()
             val coordinator = new PermissionCoordinator("pdf-granted")
+            val registry    = CommandRegistry()
+            registry.register(FilesReadPDFToMarkdown)
+            val shell       = VirtualShell(registry)
 
-            val out = FilesReadPDFToMarkdown.execute(
-                FilesReadPDFToMarkdownInput(Paths.get("doc.pdf"), enrichImages = true),
+            val (_, resp) = shell.executeNative(
+                "files_read_pdf_to_markdown",
+                """{"path":"doc.pdf","enrich_images":"true"}""",
                 ctx(ws, scope, provider, coordinator = coordinator,
                     decision = Some(GrantDecision.Granted(GrantTTL.ForSession, None))))
 
-            assert(out.error.isEmpty)
+            assert(!resp.text.contains("error:"), s"expected success, got: ${resp.text}")
             assert(Files.exists(ws.resolve("doc.md")))
             assert(scope.addGrantCalls == 1)
+        }
+    }
+
+    test("files_read_pdf_to_markdown: Once grant is consumed after the .md write") {
+        withWorkspace { ws =>
+            copyFixture(pdfFixture, ws, "doc.pdf")
+            val provider    = StubVisionProvider()
+            val scope       = RecordingScopeStore()
+            val coordinator = new PermissionCoordinator("pdf-once")
+            val registry    = CommandRegistry()
+            registry.register(FilesReadPDFToMarkdown)
+            val shell       = VirtualShell(registry)
+
+            val (_, resp) = shell.executeNative(
+                "files_read_pdf_to_markdown",
+                """{"path":"doc.pdf","enrich_images":"true"}""",
+                ctx(ws, scope, provider, coordinator = coordinator,
+                    decision = Some(GrantDecision.Granted(GrantTTL.Once, None))))
+
+            assert(!resp.text.contains("error:"), s"expected success, got: ${resp.text}")
+            assert(Files.exists(ws.resolve("doc.md")))
+            assert(scope.addGrantCalls == 1)
+            assert(scope.consumeOnceCalls == 1,
+                s"expected the Once grant to be consumed after the write, got ${scope.consumeOnceCalls}")
         }
     }
 
@@ -418,19 +449,20 @@ class FilesReadToMarkdownTest extends AnyFunSuite
     test("files_read_pptx_to_markdown: permission denied returns error and no .md") {
         withWorkspace { ws =>
             copyFixture(pptxFixture, ws, "sample.pptx")
-            val provider = StubVisionProvider()
+            val provider    = StubVisionProvider()
             val coordinator = new PermissionCoordinator("pptx-denied")
+            val registry    = CommandRegistry()
+            registry.register(FilesReadPPTXToMarkdown)
+            val shell       = VirtualShell(registry)
 
-            val out = FilesReadPPTXToMarkdown.execute(
-                FilesReadPPTXToMarkdownInput(Paths.get("sample.pptx"), enrichImages = true),
+            val (_, resp) = shell.executeNative(
+                "files_read_pptx_to_markdown",
+                """{"path":"sample.pptx","enrich_images":"true"}""",
                 ctx(ws, RecordingScopeStore(), provider, coordinator = coordinator,
                     decision = Some(GrantDecision.Denied)))
 
-            out.error match
-            {
-                case Some(FilesError.IoError(msg)) => assert(msg.contains("Permission denied"))
-                case other                         => fail(s"expected IoError(Permission denied), got $other")
-            }
+            assert(resp.text.contains("permission_denied"),
+                s"expected permission_denied, got: ${resp.text}")
             assert(!Files.exists(ws.resolve("sample.md")))
         }
     }
