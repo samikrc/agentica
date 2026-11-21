@@ -185,6 +185,31 @@ Observations: **50 DPI loses numbers** (IT Support number recall 0.67) — 100 D
 
 Note: Models/combinations not listed in the table were not tested due to timeout. Rows measured before the text-fidelity and expected-facts metrics carry `N/A` in those columns. `Facts` is strict/lenient/total against the whitepaper's 50 facts; documents without a `.facts.json` show `N/A` there.
 
+### Column reference
+
+| Column | Definition |
+|---|---|
+| `PDF` | Source document (filename stem). |
+| `Provider` | Label from `VLMCompareTest.providers`; the model id is in the [Models Evaluated](#models-evaluated) table. |
+| `DPI` | Rasterisation resolution used to render each page to PNG. |
+| `MaxDim` | Longest-side pixel cap applied after rendering; `MaxDim` ≥ the rendered longest side means no resize (identical image to a smaller cap). |
+| `Chars` / `Words` | Characters and words in the generated Markdown (words = whitespace tokens longer than one character). |
+| `TotalS` | Wall-clock transcription time for the whole document. `reused` = result copied from a no-op configuration; `N/A` = not measured (timeout/error). |
+| `AvgPageS` | `TotalS` ÷ pages. Includes model load on the first page of a run. |
+| `WordRatio` | Generated words ÷ reference words, capped at 1.00. Coverage only — says nothing about correctness. |
+| `TokenOvl` | Fraction of the reference vocabulary that appears in the output. |
+| `Headings` | Count of Markdown `#` heading lines. Presence check, not a correctness measure. |
+| `TableRows` | Count of lines with two or more `\|` (Markdown table rows). A table with wrong values still counts. |
+| `NonEmpty%` | Share of pages with ≥ 50 characters of output. |
+| `WordF1` | Harmonic mean of word recall and precision against the page's PDF text layer, counting repeats (multiset). Penalises dropped, invented, and duplicated text. |
+| `NumR` | Signed-number recall: share of reference numbers reproduced exactly (sign and `%` included). |
+| `NumP` | Signed-number precision: share of output numbers that exist in the reference. Low precision with high recall means invented values. |
+| `Order` | 1 − word error rate (Levenshtein over word sequences). Low values with high `WordF1` indicate reordering — usually multi-column layout — rather than missing text. |
+| `FactsStrict` | Expected facts passing strictly (value in the right row/column cell, or all page-level terms present) out of the document's total facts. |
+| `FactsLenient` | Also counts same-line matches (value on the row's line but not in an identifiable cell). |
+| `FailedPages` | Pages that exhausted retries and remain as `[Page N: transcription failed …]` placeholders. |
+| `Notes` | Status and qualifiers: `reasoning on`/`off`, `timeout`, `reused`, `partial-error`, or an error message. |
+
 | PDF | Provider | DPI | MaxDim | Chars | Words | TotalS | AvgPageS | WordRatio | TokenOvl | Headings | TableRows | NonEmpty% | WordF1 | NumR | NumP | Order | FactsStrict | FactsLenient | FailedPages | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | IT Support Analyst - India | gemma-4-12b | 50 | 1024 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | timeout |
