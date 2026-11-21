@@ -22,3 +22,5 @@ logs/
 *.pdf
 dev.conf
 eval-config.json
+# Machine-local test config (see local.conf.example)
+backend/src/test/resources/local.conf

@@ -354,15 +354,16 @@ object EvalConfig
 
     /**
      *  Resolves `${VAR}` placeholders in a config string from the process
-     *  environment. Unset variables are left as the literal placeholder so
-     *  providers that ignore credentials (e.g. local LM Studio) keep working.
-     *  Secrets such as API keys can therefore be written as `"${VALAR_API_KEY}"`
-     *  without storing the value on disk.
+     *  environment or `local.conf`. Unset variables are left as the literal
+     *  placeholder so providers that ignore credentials (e.g. local LM Studio)
+     *  keep working. Secrets such as API keys can therefore be written as
+     *  `"${VALAR_API_KEY}"` without storing the value on disk; machine-local
+     *  addresses such as `"${LM_STUDIO_URL}"` can live in `local.conf`.
      */
     private def interp(s: String): String =
         "\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}".r.replaceAllIn(s,
             m => java.util.regex.Matcher.quoteReplacement(
-                sys.env.getOrElse(m.group(1), m.matched)))
+                agentica.testutil.LocalConf.get(m.group(1)).getOrElse(m.matched)))
 
     /**
      *  Resolves the judge API key: a `VALAR_API_KEY` environment variable wins
