@@ -301,6 +301,21 @@ Note: Models/combinations not listed in the table were not tested due to timeout
 | Even OPD Policy Document | lfm2.5-vl-3b | 150 | 1400 | 9968 | 1470 | 22.3 | 2.8 | 0.97 | 0.97 | 8 | 40 | 100% |  |
 | Even OPD Policy Document | lfm2.5-vl-3b | 150 | 1650 | 10310 | 1528 | 22.9 | 2.9 | 1.00 | 0.99 | 8 | 40 | 100% |  |
 
+### LFM3 details (150 DPI / 1200 px)
+
+The current production model, measured with the text-fidelity and expected-facts metrics (see [Selection criteria](#selection-criteria) for how to read them). `Facts` is strict/lenient/total against the whitepaper's 50 facts; `—` means the document has no facts file.
+
+| PDF | Provider | DPI | MaxDim | Chars | Words | TotalS | AvgPageS | WordRatio | TokenOvl | Headings | TableRows | NonEmpty% | WordF1 | NumR | NumP | Order | FactsStrict | FactsLenient | FailedPages | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| IT Support Analyst - India | lfm3-vl-2b | 150 | 1200 | 5338 | 710 | 73.4 | 36.7 | 1.00 | 1.00 | 0 | 0 | 100% | 1.00 | 1.00 | 1.00 | 1.00 | N/A | N/A | 0 | reasoning on |
+| Even OPD Policy Document | lfm3-vl-2b | 150 | 1200 | 10528 | 1534 | 190.1 | 23.8 | 1.00 | 1.00 | 3 | 40 | 100% | 1.00 | 0.89 | 1.00 | 0.56 | N/A | N/A | 0 | reasoning on |
+| ind_nifty50 | lfm3-vl-2b | 150 | 1200 | 5622 | 753 | 76.5 | 38.2 | 1.00 | 0.95 | 1 | 60 | 100% | 0.94 | 0.96 | 0.82 | 0.37 | N/A | N/A | 0 | reasoning on |
+| nifty-50-whitepaper-2024 | lfm3-vl-2b | 150 | 1200 | N/A | N/A | 929.7 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | timeout (page > 180 s) |
+| IT Support Analyst - India | lfm3-vl-2b-nothink | 150 | 1200 | 5342 | 710 | 34.7 | 17.3 | 1.00 | 1.00 | 0 | 0 | 100% | 1.00 | 1.00 | 1.00 | 1.00 | N/A | N/A | 0 | reasoning off |
+| Even OPD Policy Document | lfm3-vl-2b-nothink | 150 | 1200 | 10212 | 1497 | 48.3 | 6.0 | 0.99 | 0.99 | 0 | 29 | 100% | 0.98 | 0.89 | 1.00 | 0.55 | N/A | N/A | 0 | reasoning off |
+| ind_nifty50 | lfm3-vl-2b-nothink | 150 | 1200 | 4777 | 613 | 30.4 | 15.2 | 0.86 | 0.84 | 0 | 78 | 100% | 0.87 | 0.95 | 0.78 | 0.20 | N/A | N/A | 0 | reasoning off |
+| nifty-50-whitepaper-2024 | lfm3-vl-2b-nothink | 150 | 1200 | 26935 | 3684 | 191.7 | 12.0 | 0.89 | 0.92 | 12 | 219 | 100% | 0.92 | 0.82 | 0.99 | 0.43 | 44/50 | 47/50 | 0 | reasoning off |
+
 ## Testing a New Model
 
 To evaluate a new VLM model and add its results to this document:
