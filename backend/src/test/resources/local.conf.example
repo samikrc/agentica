@@ -1,0 +1,13 @@
+# Machine-local test configuration — copy to local.conf (gitignored) and edit.
+#
+# Format: KEY=VALUE per line. '#' starts a full-line comment. Optional quotes
+# are stripped. The same file is read by the Scala test harnesses (through
+# agentica.testutil.LocalConf) and sourced by run-eval-loop.sh, so keep values
+# shell-safe (no spaces unless quoted).
+#
+# Resolution order for a key: system property -> local.conf -> environment.
+# Secrets (API keys) belong in environment variables, not here.
+
+# LM Studio (or any OpenAI-compatible local server) used by the VLM comparison
+# sweep and the local eval providers.
+LM_STUDIO_URL=http://192.168.2.126:1234

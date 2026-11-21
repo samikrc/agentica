@@ -3,7 +3,7 @@ package agentica.misctests
 import agentica.doc.{DocFontLoader, PDFPageRenderer, PageVisionTranscriber}
 import agentica.doc.PageVisionTranscriber.PageTimeoutException
 import agentica.llm.OpenAIProvider
-import agentica.testutil.LMStudioClient
+import agentica.testutil.{LMStudioClient, LocalConf}
 import java.nio.file.{Files, Path, StandardCopyOption}
 
 /**
@@ -26,8 +26,13 @@ import java.nio.file.{Files, Path, StandardCopyOption}
  */
 object VLMCompareTest
 {
-    /** Base URL of the local LM Studio server. Update this if the server's IP address changes. */
-    val lmStudioServerURL: String = "http://192.168.2.126:1234"
+    /**
+     *  Base URL of the local LM Studio server. Resolved from `LM_STUDIO_URL`
+     *  (system property, `local.conf`, or environment — see
+     *  [[agentica.testutil.LocalConf]]) so a machine-local address does not
+     *  need a source edit.
+     */
+    val lmStudioServerURL: String = LocalConf.getOrElse("LM_STUDIO_URL", "http://192.168.2.126:1234")
 
     /**
      *  Maximum longest-side pixel dimension for page images sent to any VLM.

@@ -31,6 +31,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BACKEND_DIR="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 cd "${BACKEND_DIR}"
 
+# Machine-local settings (see local.conf.example). Values are also readable by
+# the Scala harnesses through agentica.testutil.LocalConf.
+if [[ -f "${SCRIPT_DIR}/local.conf" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/local.conf"
+    set +a
+fi
+LM_STUDIO_URL="${LM_STUDIO_URL:-http://192.168.2.126:1234}"
+
 CONFIG_FILE="src/test/resources/eval-config.json"
 LOG_DIR="logs"
 mkdir -p "${LOG_DIR}"
@@ -46,11 +56,11 @@ trap restore_config EXIT
 # Provider entries: label|llmModel|llmBaseURL|llmAPIKey
 # llmAPIKey may be a ${VAR} placeholder resolved from the environment at runtime.
 MODELS=(
-    "local-qwen-3.5|qwen3.5-9b-mtp|http://192.168.2.126:1234|lm-studio"
-    # "local-ministral-3|mistralai/ministral-3-14b-reasoning|http://192.168.2.126:1234|lm-studio"
-    # "local-gemma4-it|google/gemma-4-12b|http://192.168.2.126:1234|lm-studio"
-    "local-gemma4-qat|google/gemma-4-12b-qat|http://192.168.2.126:1234|lm-studio"
-    # "local-gemma4-e4b|google/gemma-4-e4b|http://192.168.2.126:1234|lm-studio"
+    "local-qwen-3.5|qwen3.5-9b-mtp|${LM_STUDIO_URL}|lm-studio"
+    # "local-ministral-3|mistralai/ministral-3-14b-reasoning|${LM_STUDIO_URL}|lm-studio"
+    # "local-gemma4-it|google/gemma-4-12b|${LM_STUDIO_URL}|lm-studio"
+    "local-gemma4-qat|google/gemma-4-12b-qat|${LM_STUDIO_URL}|lm-studio"
+    # "local-gemma4-e4b|google/gemma-4-e4b|${LM_STUDIO_URL}|lm-studio"
     # "valar-glm-5.3|zai-org/GLM-5.3|https://api.valarhq.ai|\${VALAR_API_KEY}"
     # "valar-glm-5.3-flash|zai-org/GLM-5.3-Flash|https://api.valarhq.ai|\${VALAR_API_KEY}"
     # "valar-kimi-k3|moonshotai/Kimi-K3|https://api.valarhq.ai|\${VALAR_API_KEY}"
