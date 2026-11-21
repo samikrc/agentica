@@ -88,6 +88,10 @@ class VirtualShell(
         }
         else
         {
+            // Run the middleware chain: `before` hooks execute in order and the
+            // first Some(result) short-circuits dispatch entirely; on None the
+            // command dispatches and `after` hooks transform the result in
+            // reverse order (first-listed middleware is outermost).
             val runChain = chain ++ extra
             val call     = ToolCall(resolvedCmd, ctx)
             val shorted  = runChain.iterator.map(_.before(call)).collectFirst { case Some(r) => r }

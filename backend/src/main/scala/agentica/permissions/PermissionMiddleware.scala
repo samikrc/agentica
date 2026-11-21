@@ -1,16 +1,19 @@
 package agentica.permissions
 
+import agentica.observability.TraceLogger
 import agentica.shell.{CommandRegistry, ToolCall, ToolMiddleware}
-import agentica.tools.{ErrorCode, PermissionSensitive, PermissionTarget, Tool, ToolResult, ToolStatus}
+import agentica.tools.{ErrorCode, PermissionTarget, Tool, ToolResult, ToolStatus}
 
 /**
- *  First `before` slot in the tool-call middleware chain.
+ *  First `before` slot in the tool-call middleware chain and the single
+ *  permission-gating point for tool dispatch.
  *
- *  Gates tools implementing [[PermissionSensitive]] on a [[ScopeStore]] grant,
- *  prompting through the run's [[PermissionCoordinator]] when none exists.
- *  Denials short-circuit dispatch with a `permission_denied` [[ToolResult]] so
- *  the model observes and can recover. The in-tool grant check remains as the
- *  last-line defense for callers that bypass the middleware chain.
+ *  Consults the called tool's `permissionTarget` for the protected resource,
+ *  checks [[ScopeStore]] for a covering grant, and prompts through the run's
+ *  [[PermissionCoordinator]] when none exists. Denials short-circuit dispatch
+ *  with a `permission_denied` [[ToolResult]] so the model observes and can
+ *  recover. Tools declare targets via [[Tool.permissionTarget]]; tools that
+ *  return `None` (the default) pass through ungated.
  *
  *  @param registry  Command registry used to resolve the called tool.
  */
@@ -28,12 +31,12 @@ class PermissionMiddleware(registry: CommandRegistry) extends ToolMiddleware
     override def before(call: ToolCall): Option[ToolResult] =
         registry.lookup(call.cmd.fullName) match
         {
-            case Some(tool: PermissionSensitive[?]) =>
-                val typed = tool.asInstanceOf[Tool[Any, Any] with PermissionSensitive[Any]]
+            case Some(tool) =>
+                val typed = tool.asInstanceOf[Tool[Any, Any]]
                 typed.validate(call.cmd.args).toOption
                     .flatMap(input => typed.permissionTarget(input, call.ctx))
                     .flatMap(target => gate(typed.name, target, call))
-            case _ => None
+            case None => None
         }
 
     /**
@@ -52,12 +55,18 @@ class PermissionMiddleware(registry: CommandRegistry) extends ToolMiddleware
         }
         else
         {
+            TraceLogger.info(ctx.traceId, "permission_prompt",
+                Map("tool" -> toolName, "path" -> target.displayPath.getOrElse("(none)")))
             ctx.permissionCoordinator.request(toolName, target.displayPath, grantOptions, ctx.onEvent) match
             {
                 case granted: GrantDecision.Granted =>
+                    TraceLogger.info(ctx.traceId, "permission_decision",
+                        Map("tool" -> toolName, "decision" -> granted.toString))
                     ctx.scopeStore.addGrant(ctx.session.id, toolName, granted)
                     None
                 case GrantDecision.Denied =>
+                    TraceLogger.info(ctx.traceId, "permission_decision",
+                        Map("tool" -> toolName, "decision" -> "Denied"))
                     Some(ToolResult(status = ToolStatus.Err(
                         code    = ErrorCode.PermissionDenied,
                         message = s"Permission denied for ${target.displayPath.getOrElse(toolName)}"

@@ -1,9 +1,7 @@
 package agentica.tools.files
 
-import agentica.agent.AgentEvent
-import agentica.permissions.GrantDecision
 import agentica.shell.PathSandbox
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, PermissionSensitive, PermissionTarget, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, PermissionTarget, ToolResult, ToolStatus}
 import agentica.tools.Tool
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, NoSuchFileException, StandardOpenOption}
@@ -31,11 +29,11 @@ case class FilesWriteOutput(
 
 /**
  *  Implements the `files_write` command.
- *  Sensitive tool — requires user permission via the UI modal before executing.
- *  Uses `ctx.permissionCoordinator` to emit [[AgentEvent.PermissionRequired]] and wait
- *  for up to 60 seconds when no valid grant exists.
+ *  Sensitive tool — permission is enforced by
+ *  [[agentica.permissions.PermissionMiddleware]] before dispatch, via the
+ *  [[PermissionTarget]] declared by `permissionTarget`.
  */
-object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput] with PermissionSensitive[FilesWriteInput]
+object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
 {
 
     /**
@@ -74,9 +72,9 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput] with Permissio
     }
 
     /**
-     *  Checks permissions, then writes the file.
-     *  Emits [[AgentEvent.PermissionRequired]] and blocks for up to 60 seconds
-     *  if no valid grant exists; returns a `permission_denied` error on timeout or denial.
+     *  Writes the file.
+     *  Permission is enforced by the middleware chain before dispatch; callers
+     *  invoking `execute` directly are assumed to hold a grant already.
      *  @param input  Validated input.
      *  @param ctx    Runtime execution context.
      *  @return       Raw write output.
@@ -91,7 +89,7 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput] with Permissio
             case Right(resolved) =>
                 val rootPath   = java.nio.file.Paths.get(rootStr).toAbsolutePath.normalize()
                 val sourcePath = rootPath.relativize(resolved).toString
-                checkPermissionAndWrite(input, ctx, resolved, sourcePath)
+                writeFile(input, ctx, resolved, sourcePath)
         }
     }
 
@@ -103,56 +101,11 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput] with Permissio
      *  @param ctx    Runtime execution context.
      *  @return       Grant target on the resolved file, or `None` on escape.
      */
-    def permissionTarget(input: FilesWriteInput, ctx: ExecutionContext): Option[PermissionTarget] =
-    {
-        val rootStr = ctx.session.rootPath.getOrElse("")
-        PathSandbox.resolve(rootStr, input.rawPath).toOption.map { resolved =>
-            val rootPath   = java.nio.file.Paths.get(rootStr).toAbsolutePath.normalize()
-            val sourcePath = rootPath.relativize(resolved).toString
-            PermissionTarget(grantKey = resolved.toString, displayPath = Some(sourcePath))
-        }
-    }
+    override def permissionTarget(input: FilesWriteInput, ctx: ExecutionContext): Option[PermissionTarget] =
+        PermissionTargets.singleFileTarget(input.rawPath, ctx)
 
     /**
-     *  Checks for an existing grant and prompts the user if none exists,
-     *  then delegates to [[writeFile]] on approval.
-     *  @param input      Validated write input.
-     *  @param ctx        Runtime execution context.
-     *  @param resolved   Resolved absolute path within the sandbox.
-     *  @param sourcePath Path relative to the workspace root.
-     *  @return           Write output with byte count or a [[FilesWriteError]].
-     */
-    private def checkPermissionAndWrite(
-        input:      FilesWriteInput,
-        ctx:        ExecutionContext,
-        resolved:   java.nio.file.Path,
-        sourcePath: String
-    ): FilesWriteOutput =
-    {
-        if (ctx.scopeStore.hasGrant(ctx.session.id, name, resolved.toString))
-        {
-            writeFile(input, ctx, resolved, sourcePath)
-        }
-        else
-        {
-            ctx.permissionCoordinator.request(
-                tool    = name,
-                path    = Some(sourcePath),
-                options = List("Allow once", "Allow for session", "Allow always", "Deny"),
-                onEvent = ctx.onEvent
-            ) match
-            {
-                case GrantDecision.Denied =>
-                    FilesWriteOutput(sourcePath, 0, Some(FilesError.PermissionDenied))
-                case granted: GrantDecision.Granted =>
-                    ctx.scopeStore.addGrant(ctx.session.id, name, granted)
-                    writeFile(input, ctx, resolved, sourcePath)
-            }
-        }
-    }
-
-    /**
-     *  Performs the filesystem write; called only after permission is confirmed.
+     *  Performs the filesystem write.
      *  @param input      Validated write input.
      *  @param ctx        Runtime execution context.
      *  @param resolved   Resolved absolute path within the sandbox.

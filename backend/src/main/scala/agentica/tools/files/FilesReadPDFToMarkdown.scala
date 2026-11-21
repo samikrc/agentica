@@ -4,9 +4,8 @@ import agentica.agent.AgentEvent
 import agentica.doc.{PDFPageRenderer, PageVisionTranscriber, DocToolDetector}
 import agentica.llm.LLMProvider
 import agentica.observability.TraceLogger
-import agentica.permissions.{GrantDecision, GrantTTL}
 import agentica.shell.{PathSandbox, Presentation}
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, PermissionSensitive, PermissionTarget, Tool, ToolBody, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, FilesError, PermissionTarget, Tool, ToolBody, ToolResult, ToolStatus}
 import java.nio.file.{Files, Paths, Path}
 import java.nio.file.attribute.BasicFileAttributes
 import scala.collection.immutable.ListMap
@@ -43,16 +42,16 @@ case class FilesReadPDFToMarkdownOutput(
  *  1. Validate path (sandbox check)
  *  2. Check staleness: compare source file mtime vs `<document>.md` mtime
  *  3. If cached `.md` is fresh, return its path
- *  4. If stale/missing, check permission for parent directory
- *  5. Render PDF pages to PNG images via [[PDFPageRenderer]]
- *  6. Transcribe each page via [[PageVisionTranscriber]] using VLM (or primary LLM fallback)
- *  7. Assemble with `---` separators and write to `<document>.md`
- *  8. Return path to the Markdown file
+ *  4. Render PDF pages to PNG images via [[PDFPageRenderer]]
+ *  5. Transcribe each page via [[PageVisionTranscriber]] using VLM (or primary LLM fallback)
+ *  6. Assemble with `---` separators and write to `<document>.md`
+ *  7. Return path to the Markdown file
  *
  *  Supports `enrich_images=false` to skip vision and write stub Markdown.
+ *  Parent-directory permission is enforced by
+ *  [[agentica.permissions.PermissionMiddleware]] before dispatch.
  */
 object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesReadPDFToMarkdownOutput]
-    with PermissionSensitive[FilesReadPDFToMarkdownInput]
 {
     val name: String = "files_read_pdf_to_markdown"
 
@@ -121,11 +120,11 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
      *  @param ctx    Runtime execution context.
      *  @return       Grant target when the call will write the `.md` cache file.
      */
-    def permissionTarget(input: FilesReadPDFToMarkdownInput, ctx: ExecutionContext): Option[PermissionTarget] =
-        PermissionTargets.docToMarkdownTarget(input.path.toString, input.enrichImages, ".pdf", ctx)
+    override def permissionTarget(input: FilesReadPDFToMarkdownInput, ctx: ExecutionContext): Option[PermissionTarget] =
+        PermissionTargets.directoryTarget(input.path.toString, input.enrichImages, ".pdf", ctx)
 
     /**
-     *  Performs permission checks, cache validation, rendering, transcription, and cache persistence.
+     *  Performs cache validation, rendering, transcription, and cache persistence.
      *  @param input       Validated conversion options.
      *  @param ctx         Execution context providing permissions and model providers.
      *  @param resolved    Sandbox-validated absolute source path.
@@ -199,39 +198,6 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
                         "Vision LLM required for PDF ingestion. Configure a multimodal provider (e.g., GPT-4 Vision, Claude 3) in Settings → VLM tab, or ensure the primary LLM supports vision."
                     ))
                 )
-            }
-
-            // Check permission for parent directory (broader scope as requested)
-            val parentDir = resolved.getParent
-            val parentRelPath = Paths.get(ctx.session.rootPath.getOrElse("")).toAbsolutePath.normalize()
-                .relativize(parentDir).toString
-            val hasGrant = ctx.scopeStore.hasGrant(ctx.session.id, name, parentRelPath)
-            TraceLogger.info(ctx.traceId, "files_read_pdf_perm_check",
-                Map("tool" -> name, "sessionId" -> ctx.session.id, "path" -> parentRelPath, "hasGrant" -> hasGrant.toString))
-            if (!hasGrant)
-            {
-                // Emit permission required event and block awaiting decision
-                TraceLogger.info(ctx.traceId, "files_read_pdf_perm_waiting", Map("path" -> parentRelPath))
-                val decision = ctx.permissionCoordinator.request(
-                    tool    = name,
-                    path    = Some(parentRelPath),
-                    options = List("Allow once", "Allow for session", "Allow always", "Deny"),
-                    onEvent = ctx.onEvent
-                )
-                TraceLogger.info(ctx.traceId, "files_read_pdf_perm_decision",
-                    Map("decision" -> decision.toString))
-                decision match
-                {
-                    case GrantDecision.Denied =>
-                        return FilesReadPDFToMarkdownOutput(
-                            "", 0, sizeBytes, sourcePath, false,
-                            Some(FilesError.IoError("Permission denied to write Markdown file to workspace"))
-                        )
-                    case granted: GrantDecision.Granted =>
-                        TraceLogger.info(ctx.traceId, "files_read_pdf_perm_granted",
-                            Map("ttl" -> granted.ttl.toString, "prefix" -> granted.pathPrefix.getOrElse("(none)")))
-                        ctx.scopeStore.addGrant(ctx.session.id, name, granted)
-                }
             }
 
             TraceLogger.info(ctx.traceId, "files_read_pdf_to_markdown_render", Map("path" -> resolved.toString))
