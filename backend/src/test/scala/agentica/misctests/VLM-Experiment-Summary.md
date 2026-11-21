@@ -122,20 +122,7 @@ Based on the sweep results across all models and parameter combinations:
 
 ### LFM3 results (150 DPI / 1200 px)
 
-Measured with the per-page text-fidelity and expected-facts metrics. `Facts` is strict/lenient/total against `nifty-50-whitepaper-2024.facts.json` (50 facts); `—` means the document has no facts file.
-
-| PDF | Variant | WordF1 | NumR | NumP | Order | Facts | Words | TotalS | AvgPageS |
-|---|---|---|---|---|---|---|---|---|---|
-| IT Support Analyst - India | reasoning on | 1.00 | 1.00 | 1.00 | 1.00 | — | 710 | 73.4 | 36.7 |
-| Even OPD Policy Document | reasoning on | 1.00 | 0.89 | 1.00 | 0.56 | — | 1534 | 190.1 | 23.8 |
-| ind_nifty50 | reasoning on | 0.94 | 0.96 | 0.82 | 0.37 | — | 753 | 76.5 | 38.2 |
-| nifty-50-whitepaper-2024 | reasoning on | — | — | — | — | — | — | 929.7 | — |
-| IT Support Analyst - India | reasoning off | 1.00 | 1.00 | 1.00 | 1.00 | — | 710 | 34.7 | 17.3 |
-| Even OPD Policy Document | reasoning off | 0.98 | 0.89 | 1.00 | 0.55 | — | 1497 | 48.3 | 6.0 |
-| ind_nifty50 | reasoning off | 0.87 | 0.95 | 0.78 | 0.20 | — | 613 | 30.4 | 15.2 |
-| nifty-50-whitepaper-2024 | reasoning off | 0.92 | 0.82 | 0.99 | 0.43 | 44/47/50 | 3684 | 191.7 | 12.0 |
-
-Findings:
+Rows are in [Result Details](#result-details). Findings from that run:
 
 - **Reasoning off is 2–4× faster at similar quality.** Per-page time drops from 23.8–38.2 s to 6.0–17.3 s on the prose documents. The reasoning-on variant never finished the whitepaper — a page exceeded the 180 s per-page timeout after ~930 s total — while reasoning off completed all 16 pages in 192 s.
 - **Quality cost of disabling reasoning is small and document-dependent.** Word F1 is unchanged on IT Support and within 0.02–0.07 elsewhere; order similarity falls most on `ind_nifty50` (0.37 → 0.20) and word F1 0.94 → 0.87, i.e. the reasoning variant holds multi-column layout better. For retrieval-style use this is acceptable; for dense tabular pages it is a real regression.
@@ -196,114 +183,110 @@ Observations: **50 DPI loses numbers** (IT Support number recall 0.67) — 100 D
 
 ## Result Details
 
-Note: Models/combinations not listed in the table were not tested due to timeout.
+Note: Models/combinations not listed in the table were not tested due to timeout. Rows measured before the text-fidelity and expected-facts metrics carry `N/A` in those columns. `Facts` is strict/lenient/total against the whitepaper's 50 facts; documents without a `.facts.json` show `N/A` there.
 
-| PDF | Provider | DPI | MaxDim | Chars | Words | TotalS | AvgPageS | WordRatio | TokenOvl | Headings | TableRows | NonEmpty% | Notes |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| IT Support Analyst - India | gemma-4-12b | 50 | 1024 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | timeout |
-| IT Support Analyst - India | gemma-4-e4b | 50 | 1024 | 4140 | 526 | 40.4 | 20.2 | 0.74 | 0.60 | 1 | 0 | 100% |  |
-| IT Support Analyst - India | gemma-4-e4b | 50 | 1200 | 4140 | 526 | 40.4 | 20.2 | 0.74 | 0.60 | 1 | 0 | 100% |  |
-| IT Support Analyst - India | gemma-4-e4b | 50 | 1400 | 4140 | 526 | 40.4 | 20.2 | 0.74 | 0.60 | 1 | 0 | 100% |  |
-| IT Support Analyst - India | gemma-4-e4b | 50 | 1650 | 4140 | 526 | 40.4 | 20.2 | 0.74 | 0.60 | 1 | 0 | 100% |  |
-| IT Support Analyst - India | gemma-4-e4b | 100 | 1024 | 4743 | 627 | 31.6 | 15.8 | 0.88 | 0.88 | 2 | 0 | 100% |  |
-| IT Support Analyst - India | gemma-4-e4b | 100 | 1200 | 4743 | 627 | 31.6 | 15.8 | 0.88 | 0.88 | 2 | 0 | 100% |  |
-| IT Support Analyst - India | gemma-4-e4b | 100 | 1400 | 4743 | 627 | 31.6 | 15.8 | 0.88 | 0.88 | 2 | 0 | 100% |  |
-| IT Support Analyst - India | gemma-4-e4b | 100 | 1650 | 4743 | 627 | 31.6 | 15.8 | 0.88 | 0.88 | 2 | 0 | 100% |  |
-| IT Support Analyst - India | gemma-4-e4b | 150 | 1024 | 4255 | 566 | 32.8 | 16.4 | 0.80 | 0.82 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | gemma-4-e4b | 150 | 1200 | 4698 | 626 | 26.8 | 13.4 | 0.88 | 0.90 | 1 | 0 | 100% |  |
-| IT Support Analyst - India | gemma-4-e4b | 150 | 1400 | 4866 | 643 | 21.6 | 10.8 | 0.91 | 0.92 | 4 | 0 | 100% |  |
-| IT Support Analyst - India | gemma-4-e4b | 150 | 1650 | 4866 | 643 | 21.6 | 10.8 | 0.91 | 0.92 | 4 | 0 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 50 | 1024 | 10096 | 1472 | 117.9 | 14.7 | 0.97 | 0.95 | 3 | 27 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 50 | 1200 | 10096 | 1472 | 117.9 | 14.7 | 0.97 | 0.95 | 3 | 27 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 50 | 1400 | 10096 | 1472 | 117.9 | 14.7 | 0.97 | 0.95 | 3 | 27 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 50 | 1650 | 10096 | 1472 | 117.9 | 14.7 | 0.97 | 0.95 | 3 | 27 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 100 | 1024 | 9734 | 1444 | 109.1 | 13.6 | 0.95 | 0.95 | 4 | 33 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 100 | 1200 | 9701 | 1441 | 95.5 | 11.9 | 0.95 | 0.95 | 3 | 25 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 100 | 1400 | 9453 | 1415 | 94.6 | 11.8 | 0.93 | 0.95 | 3 | 27 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 100 | 1650 | 10456 | 1549 | 99.5 | 12.4 | 1.00 | 0.96 | 5 | 45 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 150 | 1024 | 9832 | 1451 | 102.9 | 12.9 | 0.96 | 0.95 | 2 | 32 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 150 | 1200 | 9697 | 1444 | 90.9 | 11.4 | 0.95 | 0.94 | 1 | 27 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 150 | 1400 | 10228 | 1521 | 98.4 | 12.3 | 1.00 | 0.98 | 4 | 35 | 100% |  |
-| Even OPD Policy Document | gemma-4-e4b | 150 | 1650 | 9251 | 1369 | 93.1 | 11.6 | 0.90 | 0.93 | 5 | 24 | 100% |  |
-| IT Support Analyst - India | gemma-4-12b-qat | 50 | 1024 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | timeout |
-| IT Support Analyst - India | glm-4.6v-flash | 50 | 1024 | 4737 | 632 | 64.7 | 32.4 | 0.89 | 0.82 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | glm-4.6v-flash | 50 | 1200 | 4737 | 632 | 64.7 | 32.4 | 0.89 | 0.82 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | glm-4.6v-flash | 50 | 1400 | 4737 | 632 | 64.7 | 32.4 | 0.89 | 0.82 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | glm-4.6v-flash | 50 | 1650 | 4737 | 632 | 64.7 | 32.4 | 0.89 | 0.82 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | glm-4.6v-flash | 100 | 1024 | 5346 | 713 | 48.9 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | glm-4.6v-flash | 100 | 1200 | 5346 | 713 | 48.9 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | glm-4.6v-flash | 100 | 1400 | 5346 | 713 | 48.9 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | glm-4.6v-flash | 100 | 1650 | 5346 | 713 | 48.9 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | glm-4.6v-flash | 150 | 1024 | 5358 | 713 | 45.3 | 22.7 | 1.00 | 1.00 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | glm-4.6v-flash | 150 | 1200 | 5358 | 713 | 47.7 | 23.9 | 1.00 | 1.00 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | glm-4.6v-flash | 150 | 1400 | 5366 | 713 | 48.8 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% |  |
-| IT Support Analyst - India | glm-4.6v-flash | 150 | 1650 | 5366 | 713 | 48.8 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 50 | 1024 | 10631 | 1513 | 150.5 | 18.8 | 1.00 | 1.00 | 0 | 40 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 50 | 1200 | 10631 | 1513 | 150.5 | 18.8 | 1.00 | 1.00 | 0 | 40 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 50 | 1400 | 10631 | 1513 | 150.5 | 18.8 | 1.00 | 1.00 | 0 | 40 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 50 | 1650 | 10631 | 1513 | 150.5 | 18.8 | 1.00 | 1.00 | 0 | 40 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 100 | 1024 | 10429 | 1517 | 176.5 | 22.1 | 1.00 | 1.00 | 1 | 40 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 100 | 1200 | 12129 | 1516 | 188.7 | 23.6 | 1.00 | 1.00 | 1 | 34 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 100 | 1400 | 13225 | 1524 | 228.0 | 28.5 | 1.00 | 1.00 | 0 | 28 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 100 | 1650 | 11405 | 1513 | 152.2 | 19.0 | 1.00 | 1.00 | 0 | 34 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 150 | 1024 | 10978 | 1509 | 153.4 | 19.2 | 0.99 | 1.00 | 1 | 43 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 150 | 1200 | 11959 | 1517 | 173.6 | 21.7 | 1.00 | 1.00 | 1 | 36 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 150 | 1400 | 10912 | 1526 | 204.6 | 25.6 | 1.00 | 1.00 | 0 | 37 | 100% |  |
-| Even OPD Policy Document | glm-4.6v-flash | 150 | 1650 | 10902 | 1517 | 210.3 | 26.3 | 1.00 | 1.00 | 0 | 34 | 100% |  |
-| IT Support Analyst - India | ministral-3-14b | 50 | 1024 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | timeout |
-| IT Support Analyst - India | qwen3.5-9b-mtp | 50 | 1024 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | timeout |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 50 | 1024 | 5221 | 691 | 35.8 | 17.9 | 0.97 | 0.93 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 50 | 1200 | 5221 | 691 | 35.8 | 17.9 | 0.97 | 0.93 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 50 | 1400 | 5221 | 691 | 35.8 | 17.9 | 0.97 | 0.93 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 50 | 1650 | 5221 | 691 | 35.8 | 17.9 | 0.97 | 0.93 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 100 | 1024 | 5389 | 715 | 59.9 | 30.0 | 1.00 | 1.00 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 100 | 1200 | 5389 | 715 | 59.9 | 30.0 | 1.00 | 1.00 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 100 | 1400 | 5389 | 715 | 59.9 | 30.0 | 1.00 | 1.00 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 100 | 1650 | 5389 | 715 | 59.9 | 30.0 | 1.00 | 1.00 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 150 | 1024 | 5364 | 714 | 59.6 | 29.8 | 1.00 | 1.00 | 5 | 0 | 100% |  |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 150 | 1200 | 5398 | 716 | 84.1 | 42.1 | 1.00 | 1.00 | 2 | 0 | 100% |  |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 150 | 1400 | 5372 | 717 | 124.2 | 62.1 | 1.00 | 1.00 | 6 | 0 | 100% |  |
-| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 150 | 1650 | 5372 | 717 | 124.2 | 62.1 | 1.00 | 1.00 | 6 | 0 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 50 | 1024 | 11391 | 1698 | 130.7 | 16.3 | 1.00 | 0.97 | 21 | 8 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 50 | 1200 | 11391 | 1698 | 130.7 | 16.3 | 1.00 | 0.97 | 21 | 8 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 50 | 1400 | 11391 | 1698 | 130.7 | 16.3 | 1.00 | 0.97 | 21 | 8 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 50 | 1650 | 11391 | 1698 | 130.7 | 16.3 | 1.00 | 0.97 | 21 | 8 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 100 | 1024 | 9967 | 1466 | 193.7 | 24.2 | 0.97 | 0.97 | 20 | 11 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 100 | 1200 | 9970 | 1471 | 271.3 | 33.9 | 0.97 | 0.97 | 25 | 11 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 100 | 1400 | 10477 | 1536 | 405.8 | 50.7 | 1.00 | 0.97 | 20 | 27 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 100 | 1650 | 10054 | 1483 | 667.9 | 83.5 | 0.98 | 0.97 | 30 | 19 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 150 | 1024 | 9994 | 1462 | 192.8 | 24.1 | 0.96 | 0.97 | 17 | 11 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 150 | 1200 | 9965 | 1469 | 270.1 | 33.8 | 0.97 | 0.97 | 25 | 11 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 150 | 1400 | 10286 | 1535 | 404.1 | 50.5 | 1.00 | 0.97 | 22 | 8 | 100% |  |
-| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 150 | 1650 | 10049 | 1476 | 667.7 | 83.5 | 0.97 | 0.97 | 30 | 19 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 50 | 1024 | 3937 | 529 | 12.1 | 6.1 | 0.75 | 0.75 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 50 | 1200 | 3937 | 529 | 12.1 | 6.1 | 0.75 | 0.75 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 50 | 1400 | 3937 | 529 | 12.1 | 6.1 | 0.75 | 0.75 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 50 | 1650 | 3937 | 529 | 12.1 | 6.1 | 0.75 | 0.75 | 3 | 0 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 100 | 1024 | 4165 | 548 | 6.0 | 3.0 | 0.77 | 0.81 | 4 | 0 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 100 | 1200 | 4165 | 548 | 6.0 | 3.0 | 0.77 | 0.81 | 4 | 0 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 100 | 1400 | 4165 | 548 | 6.0 | 3.0 | 0.77 | 0.81 | 4 | 0 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 100 | 1650 | 4165 | 548 | 6.0 | 3.0 | 0.77 | 0.81 | 4 | 0 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 150 | 1024 | 4747 | 626 | 6.8 | 3.4 | 0.88 | 0.87 | 4 | 0 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 150 | 1200 | 5355 | 711 | 9.1 | 4.5 | 1.00 | 1.00 | 2 | 0 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 150 | 1400 | 5355 | 711 | 9.0 | 4.5 | 1.00 | 1.00 | 2 | 0 | 100% |  |
-| IT Support Analyst - India | lfm2.5-vl-3b | 150 | 1650 | 5355 | 711 | 9.0 | 4.5 | 1.00 | 1.00 | 2 | 0 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 50 | 1024 | 8527 | 1233 | 14.7 | 1.8 | 0.81 | 0.84 | 12 | 33 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 50 | 1200 | 8527 | 1233 | 14.7 | 1.8 | 0.81 | 0.84 | 12 | 33 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 50 | 1400 | 8527 | 1233 | 14.7 | 1.8 | 0.81 | 0.84 | 12 | 33 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 50 | 1650 | 8527 | 1233 | 14.7 | 1.8 | 0.81 | 0.84 | 12 | 33 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 100 | 1024 | 9314 | 1332 | 16.6 | 2.1 | 0.88 | 0.85 | 8 | 26 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 100 | 1200 | 10315 | 1534 | 22.9 | 2.9 | 1.00 | 0.99 | 8 | 40 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 100 | 1400 | 10321 | 1528 | 22.9 | 2.9 | 1.00 | 0.99 | 8 | 40 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 100 | 1650 | 10291 | 1528 | 23.1 | 2.9 | 1.00 | 0.99 | 8 | 40 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 150 | 1024 | 9461 | 1366 | 17.0 | 2.1 | 0.90 | 0.87 | 8 | 21 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 150 | 1200 | 9992 | 1470 | 22.3 | 2.8 | 0.97 | 0.97 | 8 | 40 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 150 | 1400 | 9968 | 1470 | 22.3 | 2.8 | 0.97 | 0.97 | 8 | 40 | 100% |  |
-| Even OPD Policy Document | lfm2.5-vl-3b | 150 | 1650 | 10310 | 1528 | 22.9 | 2.9 | 1.00 | 0.99 | 8 | 40 | 100% |  |
-
-### LFM3 details (150 DPI / 1200 px)
-
-The current production model, measured with the text-fidelity and expected-facts metrics (see [Selection criteria](#selection-criteria) for how to read them). `Facts` is strict/lenient/total against the whitepaper's 50 facts; `—` means the document has no facts file.
+| PDF | Provider | DPI | MaxDim | Chars | Words | TotalS | AvgPageS | WordRatio | TokenOvl | Headings | TableRows | NonEmpty% | WordF1 | NumR | NumP | Order | FactsStrict | FactsLenient | FailedPages | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| IT Support Analyst - India | gemma-4-12b | 50 | 1024 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | timeout |
+| IT Support Analyst - India | gemma-4-e4b | 50 | 1024 | 4140 | 526 | 40.4 | 20.2 | 0.74 | 0.60 | 1 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-e4b | 50 | 1200 | 4140 | 526 | 40.4 | 20.2 | 0.74 | 0.60 | 1 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-e4b | 50 | 1400 | 4140 | 526 | 40.4 | 20.2 | 0.74 | 0.60 | 1 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-e4b | 50 | 1650 | 4140 | 526 | 40.4 | 20.2 | 0.74 | 0.60 | 1 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-e4b | 100 | 1024 | 4743 | 627 | 31.6 | 15.8 | 0.88 | 0.88 | 2 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-e4b | 100 | 1200 | 4743 | 627 | 31.6 | 15.8 | 0.88 | 0.88 | 2 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-e4b | 100 | 1400 | 4743 | 627 | 31.6 | 15.8 | 0.88 | 0.88 | 2 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-e4b | 100 | 1650 | 4743 | 627 | 31.6 | 15.8 | 0.88 | 0.88 | 2 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-e4b | 150 | 1024 | 4255 | 566 | 32.8 | 16.4 | 0.80 | 0.82 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-e4b | 150 | 1200 | 4698 | 626 | 26.8 | 13.4 | 0.88 | 0.90 | 1 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-e4b | 150 | 1400 | 4866 | 643 | 21.6 | 10.8 | 0.91 | 0.92 | 4 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-e4b | 150 | 1650 | 4866 | 643 | 21.6 | 10.8 | 0.91 | 0.92 | 4 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 50 | 1024 | 10096 | 1472 | 117.9 | 14.7 | 0.97 | 0.95 | 3 | 27 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 50 | 1200 | 10096 | 1472 | 117.9 | 14.7 | 0.97 | 0.95 | 3 | 27 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 50 | 1400 | 10096 | 1472 | 117.9 | 14.7 | 0.97 | 0.95 | 3 | 27 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 50 | 1650 | 10096 | 1472 | 117.9 | 14.7 | 0.97 | 0.95 | 3 | 27 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 100 | 1024 | 9734 | 1444 | 109.1 | 13.6 | 0.95 | 0.95 | 4 | 33 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 100 | 1200 | 9701 | 1441 | 95.5 | 11.9 | 0.95 | 0.95 | 3 | 25 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 100 | 1400 | 9453 | 1415 | 94.6 | 11.8 | 0.93 | 0.95 | 3 | 27 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 100 | 1650 | 10456 | 1549 | 99.5 | 12.4 | 1.00 | 0.96 | 5 | 45 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 150 | 1024 | 9832 | 1451 | 102.9 | 12.9 | 0.96 | 0.95 | 2 | 32 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 150 | 1200 | 9697 | 1444 | 90.9 | 11.4 | 0.95 | 0.94 | 1 | 27 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 150 | 1400 | 10228 | 1521 | 98.4 | 12.3 | 1.00 | 0.98 | 4 | 35 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | gemma-4-e4b | 150 | 1650 | 9251 | 1369 | 93.1 | 11.6 | 0.90 | 0.93 | 5 | 24 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | gemma-4-12b-qat | 50 | 1024 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | timeout |
+| IT Support Analyst - India | glm-4.6v-flash | 50 | 1024 | 4737 | 632 | 64.7 | 32.4 | 0.89 | 0.82 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | glm-4.6v-flash | 50 | 1200 | 4737 | 632 | 64.7 | 32.4 | 0.89 | 0.82 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | glm-4.6v-flash | 50 | 1400 | 4737 | 632 | 64.7 | 32.4 | 0.89 | 0.82 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | glm-4.6v-flash | 50 | 1650 | 4737 | 632 | 64.7 | 32.4 | 0.89 | 0.82 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | glm-4.6v-flash | 100 | 1024 | 5346 | 713 | 48.9 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | glm-4.6v-flash | 100 | 1200 | 5346 | 713 | 48.9 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | glm-4.6v-flash | 100 | 1400 | 5346 | 713 | 48.9 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | glm-4.6v-flash | 100 | 1650 | 5346 | 713 | 48.9 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | glm-4.6v-flash | 150 | 1024 | 5358 | 713 | 45.3 | 22.7 | 1.00 | 1.00 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | glm-4.6v-flash | 150 | 1200 | 5358 | 713 | 47.7 | 23.9 | 1.00 | 1.00 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | glm-4.6v-flash | 150 | 1400 | 5366 | 713 | 48.8 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | glm-4.6v-flash | 150 | 1650 | 5366 | 713 | 48.8 | 24.4 | 1.00 | 1.00 | 0 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 50 | 1024 | 10631 | 1513 | 150.5 | 18.8 | 1.00 | 1.00 | 0 | 40 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 50 | 1200 | 10631 | 1513 | 150.5 | 18.8 | 1.00 | 1.00 | 0 | 40 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 50 | 1400 | 10631 | 1513 | 150.5 | 18.8 | 1.00 | 1.00 | 0 | 40 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 50 | 1650 | 10631 | 1513 | 150.5 | 18.8 | 1.00 | 1.00 | 0 | 40 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 100 | 1024 | 10429 | 1517 | 176.5 | 22.1 | 1.00 | 1.00 | 1 | 40 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 100 | 1200 | 12129 | 1516 | 188.7 | 23.6 | 1.00 | 1.00 | 1 | 34 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 100 | 1400 | 13225 | 1524 | 228.0 | 28.5 | 1.00 | 1.00 | 0 | 28 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 100 | 1650 | 11405 | 1513 | 152.2 | 19.0 | 1.00 | 1.00 | 0 | 34 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 150 | 1024 | 10978 | 1509 | 153.4 | 19.2 | 0.99 | 1.00 | 1 | 43 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 150 | 1200 | 11959 | 1517 | 173.6 | 21.7 | 1.00 | 1.00 | 1 | 36 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 150 | 1400 | 10912 | 1526 | 204.6 | 25.6 | 1.00 | 1.00 | 0 | 37 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | glm-4.6v-flash | 150 | 1650 | 10902 | 1517 | 210.3 | 26.3 | 1.00 | 1.00 | 0 | 34 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | ministral-3-14b | 50 | 1024 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | timeout |
+| IT Support Analyst - India | qwen3.5-9b-mtp | 50 | 1024 | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | timeout |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 50 | 1024 | 5221 | 691 | 35.8 | 17.9 | 0.97 | 0.93 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 50 | 1200 | 5221 | 691 | 35.8 | 17.9 | 0.97 | 0.93 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 50 | 1400 | 5221 | 691 | 35.8 | 17.9 | 0.97 | 0.93 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 50 | 1650 | 5221 | 691 | 35.8 | 17.9 | 0.97 | 0.93 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 100 | 1024 | 5389 | 715 | 59.9 | 30.0 | 1.00 | 1.00 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 100 | 1200 | 5389 | 715 | 59.9 | 30.0 | 1.00 | 1.00 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 100 | 1400 | 5389 | 715 | 59.9 | 30.0 | 1.00 | 1.00 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 100 | 1650 | 5389 | 715 | 59.9 | 30.0 | 1.00 | 1.00 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 150 | 1024 | 5364 | 714 | 59.6 | 29.8 | 1.00 | 1.00 | 5 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 150 | 1200 | 5398 | 716 | 84.1 | 42.1 | 1.00 | 1.00 | 2 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 150 | 1400 | 5372 | 717 | 124.2 | 62.1 | 1.00 | 1.00 | 6 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | qwen2.5-vl-7b-instruct | 150 | 1650 | 5372 | 717 | 124.2 | 62.1 | 1.00 | 1.00 | 6 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 50 | 1024 | 11391 | 1698 | 130.7 | 16.3 | 1.00 | 0.97 | 21 | 8 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 50 | 1200 | 11391 | 1698 | 130.7 | 16.3 | 1.00 | 0.97 | 21 | 8 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 50 | 1400 | 11391 | 1698 | 130.7 | 16.3 | 1.00 | 0.97 | 21 | 8 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 50 | 1650 | 11391 | 1698 | 130.7 | 16.3 | 1.00 | 0.97 | 21 | 8 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 100 | 1024 | 9967 | 1466 | 193.7 | 24.2 | 0.97 | 0.97 | 20 | 11 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 100 | 1200 | 9970 | 1471 | 271.3 | 33.9 | 0.97 | 0.97 | 25 | 11 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 100 | 1400 | 10477 | 1536 | 405.8 | 50.7 | 1.00 | 0.97 | 20 | 27 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 100 | 1650 | 10054 | 1483 | 667.9 | 83.5 | 0.98 | 0.97 | 30 | 19 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 150 | 1024 | 9994 | 1462 | 192.8 | 24.1 | 0.96 | 0.97 | 17 | 11 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 150 | 1200 | 9965 | 1469 | 270.1 | 33.8 | 0.97 | 0.97 | 25 | 11 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 150 | 1400 | 10286 | 1535 | 404.1 | 50.5 | 1.00 | 0.97 | 22 | 8 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | qwen2.5-vl-7b-instruct | 150 | 1650 | 10049 | 1476 | 667.7 | 83.5 | 0.97 | 0.97 | 30 | 19 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 50 | 1024 | 3937 | 529 | 12.1 | 6.1 | 0.75 | 0.75 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 50 | 1200 | 3937 | 529 | 12.1 | 6.1 | 0.75 | 0.75 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 50 | 1400 | 3937 | 529 | 12.1 | 6.1 | 0.75 | 0.75 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 50 | 1650 | 3937 | 529 | 12.1 | 6.1 | 0.75 | 0.75 | 3 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 100 | 1024 | 4165 | 548 | 6.0 | 3.0 | 0.77 | 0.81 | 4 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 100 | 1200 | 4165 | 548 | 6.0 | 3.0 | 0.77 | 0.81 | 4 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 100 | 1400 | 4165 | 548 | 6.0 | 3.0 | 0.77 | 0.81 | 4 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 100 | 1650 | 4165 | 548 | 6.0 | 3.0 | 0.77 | 0.81 | 4 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 150 | 1024 | 4747 | 626 | 6.8 | 3.4 | 0.88 | 0.87 | 4 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 150 | 1200 | 5355 | 711 | 9.1 | 4.5 | 1.00 | 1.00 | 2 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 150 | 1400 | 5355 | 711 | 9.0 | 4.5 | 1.00 | 1.00 | 2 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| IT Support Analyst - India | lfm2.5-vl-3b | 150 | 1650 | 5355 | 711 | 9.0 | 4.5 | 1.00 | 1.00 | 2 | 0 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 50 | 1024 | 8527 | 1233 | 14.7 | 1.8 | 0.81 | 0.84 | 12 | 33 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 50 | 1200 | 8527 | 1233 | 14.7 | 1.8 | 0.81 | 0.84 | 12 | 33 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 50 | 1400 | 8527 | 1233 | 14.7 | 1.8 | 0.81 | 0.84 | 12 | 33 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 50 | 1650 | 8527 | 1233 | 14.7 | 1.8 | 0.81 | 0.84 | 12 | 33 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 100 | 1024 | 9314 | 1332 | 16.6 | 2.1 | 0.88 | 0.85 | 8 | 26 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 100 | 1200 | 10315 | 1534 | 22.9 | 2.9 | 1.00 | 0.99 | 8 | 40 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 100 | 1400 | 10321 | 1528 | 22.9 | 2.9 | 1.00 | 0.99 | 8 | 40 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 100 | 1650 | 10291 | 1528 | 23.1 | 2.9 | 1.00 | 0.99 | 8 | 40 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 150 | 1024 | 9461 | 1366 | 17.0 | 2.1 | 0.90 | 0.87 | 8 | 21 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 150 | 1200 | 9992 | 1470 | 22.3 | 2.8 | 0.97 | 0.97 | 8 | 40 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 150 | 1400 | 9968 | 1470 | 22.3 | 2.8 | 0.97 | 0.97 | 8 | 40 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
+| Even OPD Policy Document | lfm2.5-vl-3b | 150 | 1650 | 10310 | 1528 | 22.9 | 2.9 | 1.00 | 0.99 | 8 | 40 | 100% | N/A | N/A | N/A | N/A | N/A | N/A | N/A |  |
 
 | PDF | Provider | DPI | MaxDim | Chars | Words | TotalS | AvgPageS | WordRatio | TokenOvl | Headings | TableRows | NonEmpty% | WordF1 | NumR | NumP | Order | FactsStrict | FactsLenient | FailedPages | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
