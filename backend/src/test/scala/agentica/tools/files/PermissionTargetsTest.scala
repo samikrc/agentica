@@ -139,9 +139,20 @@ class PermissionTargetsTest extends AnyFunSuite
             val t = PermissionTargets.directoryTarget("doc.pdf", enrichImages = true, ".pdf",
                 ctx(ws, VisionStub(true)))
             assert(t.isDefined)
-            assert(t.get.grantKey == ws.relativize(ws.resolve("doc.pdf").getParent).toString ||
-                   t.get.grantKey.nonEmpty, s"expected parent-dir grant key, got ${t.get.grantKey}")
-            assert(t.get.displayPath.contains(t.get.grantKey))
+            assert(t.get.grantKey == ".", s"expected root '.' grant key, got ${t.get.grantKey}")
+            assert(t.get.displayPath.contains("."))
+        }
+    }
+
+    test("directoryTarget: nested source returns the relative parent directory") {
+        withWorkspace { ws =>
+            Files.createDirectories(ws.resolve("docs"))
+            Files.writeString(ws.resolve("docs/doc.pdf"), "fake pdf")
+            val t = PermissionTargets.directoryTarget("docs/doc.pdf", enrichImages = true, ".pdf",
+                ctx(ws, VisionStub(true)))
+            assert(t.isDefined)
+            assert(t.get.grantKey == "docs", s"expected 'docs' grant key, got ${t.get.grantKey}")
+            assert(t.get.displayPath.contains("docs"))
         }
     }
 }

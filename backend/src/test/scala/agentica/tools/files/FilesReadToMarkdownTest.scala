@@ -61,14 +61,16 @@ class FilesReadToMarkdownTest extends AnyFunSuite
         def deleteForSession(sessionId: String): Unit = ()
     }
 
-    /** ScopeStore stub granting nothing; records `addGrant` invocations. */
+    /** ScopeStore stub granting nothing; records grant-store invocations. */
     private class RecordingScopeStore extends ScopeStore
     {
-        var addGrantCalls = 0
+        var addGrantCalls    = 0
+        var consumeOnceCalls = 0
         def hasGrant(sessionId: String, toolName: String, resolvedPath: String): Boolean = false
         def addGrant(sessionId: String, toolName: String, decision: GrantDecision.Granted): Unit =
             addGrantCalls += 1
-        def consumeOnce(sessionId: String, toolName: String, resolvedPath: String): Unit = ()
+        def consumeOnce(sessionId: String, toolName: String, resolvedPath: String): Unit =
+            consumeOnceCalls += 1
         def deleteForSession(sessionId: String): Unit = ()
     }
 
@@ -281,7 +283,7 @@ class FilesReadToMarkdownTest extends AnyFunSuite
             assert(perms.length == 1)
             assert(perms.head.requestId.nonEmpty)
             assert(perms.head.tool == "files_read_pdf_to_markdown")
-            assert(perms.head.path.contains(""))
+            assert(perms.head.path.contains("."))
             assert(!Files.exists(ws.resolve("doc.md")))
             assert(provider.callCount.get() == 0)
         }
@@ -306,6 +308,30 @@ class FilesReadToMarkdownTest extends AnyFunSuite
             assert(!resp.text.contains("error:"), s"expected success, got: ${resp.text}")
             assert(Files.exists(ws.resolve("doc.md")))
             assert(scope.addGrantCalls == 1)
+        }
+    }
+
+    test("files_read_pdf_to_markdown: Once grant is consumed after the .md write") {
+        withWorkspace { ws =>
+            copyFixture(pdfFixture, ws, "doc.pdf")
+            val provider    = StubVisionProvider()
+            val scope       = RecordingScopeStore()
+            val coordinator = new PermissionCoordinator("pdf-once")
+            val registry    = CommandRegistry()
+            registry.register(FilesReadPDFToMarkdown)
+            val shell       = VirtualShell(registry)
+
+            val (_, resp) = shell.executeNative(
+                "files_read_pdf_to_markdown",
+                """{"path":"doc.pdf","enrich_images":"true"}""",
+                ctx(ws, scope, provider, coordinator = coordinator,
+                    decision = Some(GrantDecision.Granted(GrantTTL.Once, None))))
+
+            assert(!resp.text.contains("error:"), s"expected success, got: ${resp.text}")
+            assert(Files.exists(ws.resolve("doc.md")))
+            assert(scope.addGrantCalls == 1)
+            assert(scope.consumeOnceCalls == 1,
+                s"expected the Once grant to be consumed after the write, got ${scope.consumeOnceCalls}")
         }
     }
 

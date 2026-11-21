@@ -242,6 +242,10 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
                     )
             }
 
+            // Consume any `Once`-scoped grant covering the write directory.
+            val grantDir = Option(Paths.get(mdRelPath).getParent).map(_.toString).getOrElse(".")
+            ctx.scopeStore.consumeOnce(ctx.session.id, name, grantDir)
+
             FilesReadPDFToMarkdownOutput(mdRelPath, pageCount, sizeBytes, sourcePath, true)
         }
         catch

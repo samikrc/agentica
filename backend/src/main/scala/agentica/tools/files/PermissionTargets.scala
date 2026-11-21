@@ -1,8 +1,9 @@
 package agentica.tools.files
 
+import agentica.observability.TraceLogger
 import agentica.shell.PathSandbox
 import agentica.tools.{ExecutionContext, PermissionTarget}
-import java.nio.file.{Files, Paths}
+import java.nio.file.{Files, InvalidPathException, Paths}
 import java.nio.file.attribute.BasicFileAttributes
 
 /**
@@ -18,6 +19,8 @@ private[files] object PermissionTargets
      *  @param rawPath  Raw file path argument.
      *  @param ctx      Runtime execution context.
      *  @return         Grant target on the resolved file, or `None` on escape.
+     *  @throws RuntimeException on unexpected inspection failures — only
+     *          anticipated I/O and path errors yield `None`.
      */
     def singleFileTarget(rawPath: String, ctx: ExecutionContext): Option[PermissionTarget] =
         try
@@ -28,7 +31,12 @@ private[files] object PermissionTargets
                 PermissionTarget(grantKey = resolved.toString, displayPath = Some(sourcePath))
             }
         }
-        catch { case _: Throwable => None }
+        catch
+        {
+            case ex: java.io.IOException  => logInspectionFailure(ctx, rawPath, ex)
+            case ex: InvalidPathException => logInspectionFailure(ctx, rawPath, ex)
+            case ex: SecurityException    => logInspectionFailure(ctx, rawPath, ex)
+        }
 
 
     /**
@@ -47,6 +55,8 @@ private[files] object PermissionTargets
      *                         e.g. `DocToolDetector.available` for LibreOffice.
      *  @return              Grant target on the containing directory, or `None`
      *                       when the call cannot reach the write.
+     *  @throws RuntimeException on unexpected inspection failures — only
+     *          anticipated I/O and path errors yield `None`.
      */
     def directoryTarget(
         inputPath:      String,
@@ -80,10 +90,33 @@ private[files] object PermissionTargets
                     }
                     else
                     {
+                        // Root-level documents relativize to ""; use "." so the
+                        // grant key is non-empty and the prompt shows a path.
                         val parentRelPath = Paths.get(rootStr).toAbsolutePath.normalize().relativize(resolved.getParent).toString
-                        Some(PermissionTarget(grantKey = parentRelPath, displayPath = Some(parentRelPath)))
+                        val dirKey = if (parentRelPath.isEmpty) "." else parentRelPath
+                        Some(PermissionTarget(grantKey = dirKey, displayPath = Some(dirKey)))
                     }
                 }
         }
-        catch { case _: Throwable => None }
+        catch
+        {
+            case ex: java.io.IOException  => logInspectionFailure(ctx, inputPath, ex)
+            case ex: InvalidPathException => logInspectionFailure(ctx, inputPath, ex)
+            case ex: SecurityException    => logInspectionFailure(ctx, inputPath, ex)
+        }
+
+    /**
+     *  Logs an anticipated failure to inspect the filesystem and declines to
+     *  declare a target — `execute` will surface the same failure itself.
+     *  @param ctx  Runtime execution context carrying the trace id.
+     *  @param arg  Path argument that failed inspection.
+     *  @param ex   The I/O, path, or security failure encountered.
+     *  @return     Always `None`.
+     */
+    private def logInspectionFailure(ctx: ExecutionContext, arg: String, ex: Throwable): Option[PermissionTarget] =
+    {
+        TraceLogger.warn(ctx.traceId, "permission_target_inspection",
+            Map("arg" -> arg, "error" -> String.valueOf(ex.getMessage)))
+        None
+    }
 }

@@ -246,6 +246,10 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
                     )
             }
 
+            // Consume any `Once`-scoped grant covering the write directory.
+            val grantDir = Option(Paths.get(mdRelPath).getParent).map(_.toString).getOrElse(".")
+            ctx.scopeStore.consumeOnce(ctx.session.id, name, grantDir)
+
             FilesReadDOCXToMarkdownOutput(mdRelPath, pageCount, sizeBytes, sourcePath, true)
         }
         catch

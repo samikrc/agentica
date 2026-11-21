@@ -231,6 +231,10 @@ object FilesReadPPTXToMarkdown extends Tool[FilesReadPPTXToMarkdownInput, FilesR
                     )
             }
 
+            // Consume any `Once`-scoped grant covering the write directory.
+            val grantDir = Option(Paths.get(mdRelPath).getParent).map(_.toString).getOrElse(".")
+            ctx.scopeStore.consumeOnce(ctx.session.id, name, grantDir)
+
             FilesReadPPTXToMarkdownOutput(mdRelPath, slideCount, sizeBytes, sourcePath, true)
         }
         catch
