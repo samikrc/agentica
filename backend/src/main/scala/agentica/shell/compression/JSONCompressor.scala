@@ -21,7 +21,7 @@ import scala.util.matching.Regex
  *  smaller than the input passes the original through. Re-serialisation
  *  alone (whitespace, key order) never counts as a reduction.
  */
-object JsonCompressor extends Compressor
+object JSONCompressor extends Compressor
 {
     /** Arrays longer than this are eligible to collapse. */
     private val ArrayThreshold = 8
@@ -87,7 +87,7 @@ object JsonCompressor extends Compressor
 
         val shaped = transform(parsed.get, preserve = false)
         if (!collapsed) return None
-        val out = renderJson(shaped)
+        val out = renderJSON(shaped)
         if (out.length >= text.length) None else Some(out)
     }
 
@@ -105,7 +105,7 @@ object JsonCompressor extends Compressor
                             markDropped: () => Unit): ujson.Value =
     {
         val n    = arr.size
-        val docs = arr.map(renderJson)
+        val docs = arr.map(renderJSON)
         val keep = Array.fill(n)(false)
         for (i <- 0 until KeepFirst.min(n)) keep(i) = true
         for (i <- (n - KeepLast) until n) keep(i) = true
@@ -181,7 +181,7 @@ object JsonCompressor extends Compressor
      *  decimal point so kept content stays as close to its input form as the
      *  parse allows.
      */
-    private def renderJson(v: ujson.Value): String =
+    private def renderJSON(v: ujson.Value): String =
     {
         val sb = new StringBuilder
         def go(x: ujson.Value): Unit = x match

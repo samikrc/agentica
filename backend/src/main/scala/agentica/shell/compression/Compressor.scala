@@ -32,7 +32,7 @@ trait Compressor
 /**
  *  The ordered compressor registry.
  *
- *  Order matters: strict parsers ([[JsonCompressor]], [[TabularCompressor]])
+ *  Order matters: strict parsers ([[JSONCompressor]], [[TabularCompressor]])
  *  fail fast on foreign content, then [[TextCompressor]] handles structured
  *  prose — delegating embedded tables to the tabular selection — and
  *  [[LinesCompressor]] is the generic line-oriented fallback. Text runs
@@ -45,7 +45,7 @@ object Compressors
 {
     /** Built-in compressors in detection order. */
     val all: List[Compressor] = List(
-        JsonCompressor,
+        JSONCompressor,
         TabularCompressor,
         TextCompressor,
         LinesCompressor
