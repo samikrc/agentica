@@ -2,6 +2,8 @@ package agentica.shell
 
 import agentica.llm.ToolSpec
 import agentica.observability.TraceLogger
+import agentica.permissions.PermissionMiddleware
+import agentica.shell.compression.CompressionMiddleware
 import agentica.tools.{AgentResponse, ExecutionContext, ToolResult, ToolStatus}
 
 /**
@@ -29,12 +31,13 @@ class VirtualShell(
 )
 {
     /**
-     *  The dispatch chain: permission gating first, then caller-supplied
-     *  components. Run-scoped components (loop guard, compression) are passed
-     *  per call via `executeCommand`'s `extra` parameter instead.
+     *  The dispatch chain: permission gating first, then result compression,
+     *  then caller-supplied components. `after` hooks run in reverse order, so
+     *  compression sees the fully-transformed result just before presentation.
+     *  Run-scoped components are passed per call via `executeCommand`'s `extra`.
      */
     private val chain: List[ToolMiddleware] =
-        new agentica.permissions.PermissionMiddleware(registry) +: middleware
+        new PermissionMiddleware(registry) +: CompressionMiddleware() +: middleware
     /**
      *  Executes a raw command string and returns the formatted [[AgentResponse]].
      *
@@ -155,10 +158,10 @@ class VirtualShell(
     private def displayCommand(cmd: Command): String =
     {
         val argStr = cmd.args.map { case (k, v) =>
-            if v.contains(' ') || v.contains('"') then s"""$k="${v.replace("\"", "\\\"")}""""
+            if (v.contains(' ') || v.contains('"')) s"""$k="${v.replace("\"", "\\\"")}""""
             else s"$k=$v"
         }.mkString(" ")
-        if argStr.isEmpty then cmd.fullName else s"${cmd.fullName} $argStr"
+        if (argStr.isEmpty) cmd.fullName else s"${cmd.fullName} $argStr"
     }
 
     // ── Substitution pass ─────────────────────────────────────────────────────
@@ -201,7 +204,7 @@ class VirtualShell(
         // Accepts: "help", "help files", "help files_read"
         // Represented as: family="help" verb=<topic>, or Command("help","index",Map.empty)
         val topic = cmd.args.get("topic")
-            .orElse(if cmd.verb != "index" then Some(cmd.verb) else None)
+            .orElse(if (cmd.verb != "index") Some(cmd.verb) else None)
             .getOrElse("")
 
         if (topic.isEmpty)

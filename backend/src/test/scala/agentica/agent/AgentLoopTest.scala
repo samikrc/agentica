@@ -1294,7 +1294,7 @@ class AgentLoopTest extends AnyFunSuite
         {
             capturedInputs  += input
             capturedPrevIds += previousResponseId
-            val scripted = if queue.nonEmpty then queue.dequeue() else ScriptedResponse("")
+            val scripted = if (queue.nonEmpty) queue.dequeue() else ScriptedResponse("")
             scripted.content.split("(?<=\\n)|(?=\\n)").filter(_.nonEmpty).foreach(onToken)
             LLMResponse(
                 model            = modelName,

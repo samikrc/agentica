@@ -35,8 +35,8 @@ class MessageStore(conn: () => Connection)
         val rs = st.executeQuery("PRAGMA table_info(messages)")
         while rs.next() do columns += rs.getString("name")
         rs.close()
-        if !columns.contains("tool_call_id") then st.execute("ALTER TABLE messages ADD COLUMN tool_call_id TEXT")
-        if !columns.contains("tool_calls") then st.execute("ALTER TABLE messages ADD COLUMN tool_calls TEXT")
+        if (!columns.contains("tool_call_id")) st.execute("ALTER TABLE messages ADD COLUMN tool_call_id TEXT")
+        if (!columns.contains("tool_calls")) st.execute("ALTER TABLE messages ADD COLUMN tool_calls TEXT")
         st.close()
         } finally { c.close() }
     }
@@ -62,8 +62,8 @@ class MessageStore(conn: () => Connection)
     def appendMessage(message: Message): Message =
     {
         val msg = message.copy(
-            id        = if message.id.nonEmpty then message.id else UUID.randomUUID().toString,
-            timestamp = if message.timestamp.nonEmpty then message.timestamp else Instant.now().toString
+            id        = if (message.id.nonEmpty) message.id else UUID.randomUUID().toString,
+            timestamp = if (message.timestamp.nonEmpty) message.timestamp else Instant.now().toString
         )
         val c  = conn()
         val ps = c.prepareStatement(

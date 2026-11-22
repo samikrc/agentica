@@ -57,8 +57,8 @@ class AgentTurnStoreTest extends AnyFunSuite with BeforeAndAfterEach
             realConn.getClass.getClassLoader,
             Array(classOf[Connection]),
             (_, method, args) =>
-                if method.getName == "close" then null
-                else if args == null then method.invoke(realConn)
+                if (method.getName == "close") null
+                else if (args == null) method.invoke(realConn)
                 else method.invoke(realConn, args*)
         ).asInstanceOf[Connection]
         store = new AgentTurnStore(() => proxy)

@@ -105,7 +105,7 @@ class SessionStore(conn: () => Connection)
         val ps     = c.prepareStatement("SELECT * FROM sessions WHERE id = ?")
         ps.setString(1, id)
         val rs     = ps.executeQuery()
-        val result = if rs.next() then
+        val result = if (rs.next())
         {
             Some(Session(
                 id             = rs.getString("id"),

@@ -82,9 +82,9 @@ class Routes(
     private def serveFile(relativePath: String): Response[Response.Data] =
     {
         val path = uiRoot.resolve(relativePath).normalize()
-        if !path.startsWith(uiRoot) then
+        if (!path.startsWith(uiRoot))
             Response("Forbidden", statusCode = 403)
-        else if !Files.exists(path) then
+        else if (!Files.exists(path))
             Response("Not found", statusCode = 404)
         else
             Response(
@@ -97,7 +97,7 @@ class Routes(
     /** Redirects `/` to `/index.html`, preserving the optional query-token. */
     @cask.get("/")
     def root(token: String = "", request: Request): Response[Response.Data] =
-        val loc = if token.nonEmpty then s"/index.html?token=$token" else "/index.html"
+        val loc = if (token.nonEmpty) s"/index.html?token=$token" else "/index.html"
         Response("", statusCode = 302, headers = Seq("Location" -> loc))
 
     /** Serves the browser UI entrypoint. */
@@ -236,7 +236,7 @@ class Routes(
             val body     = ujson.read(request.text())
             val title    = body.obj.get("title").map(_.str).getOrElse("New Session")
             val model    = body.obj.get("model").map(_.str).getOrElse("llama3.2")
-            val rootPath = body.obj.get("rootPath").flatMap(v => if v.isNull then None else Some(v.str))
+            val rootPath = body.obj.get("rootPath").flatMap(v => if (v.isNull) None else Some(v.str))
             val allowed  = AllowedRoots.roots(settingsValue = Option(settingsStore.load().allowedRoots))
             rootPath match
             {
@@ -389,7 +389,7 @@ class Routes(
                                     traceId         = traceId,
                                     cancelFlag      = cancel,
                                     permissionCoordinator = permissionCoordinator,
-                                    emitToken       = tok => if !cancel.get() then queue.offer(sseEvent("token", tok)),
+                                    emitToken       = tok => if (!cancel.get()) queue.offer(sseEvent("token", tok)),
                                     emitEvent  = ev =>
                                     {
                                         val eventStr = ev match
@@ -401,7 +401,7 @@ class Routes(
                                                 sseEvent("llm_call_start", s"""{"iteration":$i,"model":$mJson,"msgCount":$n}""")
                                             case AgentEvent.ToolCallStart(t, inp) =>
                                                 val tJson   = ujson.Str(t).render()
-                                                val inpJson = if inp.isEmpty then "{}" else inp
+                                                val inpJson = if (inp.isEmpty) "{}" else inp
                                                 sseEvent("tool_start", s"""{"tool":$tJson,"input":$inpJson}""")
                                             case AgentEvent.ToolCallResult(t, out, ms) =>
                                                 val tJson   = ujson.Str(t).render()
@@ -559,7 +559,7 @@ class Routes(
                         case _            => GrantTTL.Once
                     }
                     val pathPrefix = body.obj.get("pathPrefix").flatMap(v =>
-                        if v.isNull then None else Some(v.str)
+                        if (v.isNull) None else Some(v.str)
                     )
                     GrantDecision.Granted(ttl = ttl, pathPrefix = pathPrefix)
                 case _ => GrantDecision.Denied
@@ -657,7 +657,7 @@ class Routes(
                     var lastPos  = 0L
 
                     // Replay last 200 lines
-                    val replayLines = if (Files.exists(logFile)) then
+                    val replayLines = if (Files.exists(logFile))
                     {
                         val allLines = Files.readAllLines(logFile).asScala
                         lastPos = Files.size(logFile)
@@ -743,7 +743,7 @@ class Routes(
     def logViewerPage(token: String = "", request: Request): Response[Response.Data] =
     {
         val file = uiRoot.resolve("log-viewer.html")
-        if (Files.exists(file)) then
+        if (Files.exists(file))
         {
             Response(Files.readString(file), headers = Seq("Content-Type" -> "text/html"))
         }

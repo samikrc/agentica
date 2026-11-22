@@ -70,7 +70,7 @@ class DocEvalTest extends EvalSuite
                     s"${r.providerLabel}/${r.sessionType}: expected ${questions.length} answers, got ${r.answers.length}")
             }
 
-            if results.nonEmpty then
+            if (results.nonEmpty)
             {
                 EvalHarness.writeResultSummary(docName, results, workDir)
             }
