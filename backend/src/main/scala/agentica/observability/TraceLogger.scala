@@ -52,7 +52,7 @@ object TraceLogger
         lock.lock()
         try
         {
-            if (AppDirs.logFile.toFile.exists() && AppDirs.logFile.toFile.length() > maxBytes) then rotate()
+            if (AppDirs.logFile.toFile.exists() && AppDirs.logFile.toFile.length() > maxBytes) rotate()
             val obj = ujson.Obj(
                 "ts"      -> Instant.now().toString,
                 "level"   -> level,

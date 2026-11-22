@@ -6,7 +6,7 @@ import java.nio.file.{Files, Path, Paths}
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters.*
 
-/** Verifies contract-style Scaladoc, brace-style enums, and parenthesised `if` conditions in production and test sources. */
+/** Verifies contract-style Scaladoc, brace-style enums, and parenthesised `if` conditions without a redundant `then` in production and test sources. */
 class ScalaStyleCoverageTest extends AnyFunSuite
 {
     private val MethodDeclaration = """^\s*(?:override\s+)?(?:(?:private|protected)(?:\[[^]]+\])?\s+)?def\s+[A-Za-z_$][A-Za-z0-9_$]*.*""".r
@@ -42,7 +42,7 @@ class ScalaStyleCoverageTest extends AnyFunSuite
     {
         val lines = Files.readAllLines(path).asScala.toVector
         lines.indices.flatMap { index =>
-            if (!isPublishedMember(lines(index))) then Nil
+            if (!isPublishedMember(lines(index))) Nil
             else
             {
                 val location  = s"${path.toString}:${index + 1}"
@@ -84,7 +84,7 @@ class ScalaStyleCoverageTest extends AnyFunSuite
         while index < lines.length && !complete do
         {
             val line = lines(index).trim
-            if (result.nonEmpty) then result.append(' ')
+            if (result.nonEmpty) result.append(' ')
             result.append(line)
             var charIndex = 0
             while charIndex < line.length && !complete do
@@ -102,7 +102,7 @@ class ScalaStyleCoverageTest extends AnyFunSuite
             }
             if (!complete && roundDepth == 0 && squareDepth == 0 &&
                 (line.matches(".*\\)\\s*:\\s*[^=]+") || line.matches(".*\\bdef\\s+[A-Za-z_$][A-Za-z0-9_$]*\\s*:\\s*[^=]+")))
-            then complete = true
+            complete = true
             index += 1
         }
         result.toString
@@ -119,7 +119,7 @@ class ScalaStyleCoverageTest extends AnyFunSuite
     {
         var end = declarationIndex - 1
         while end >= 0 && (lines(end).trim.isEmpty || lines(end).trim.startsWith("@")) do end -= 1
-        if (end < 0 || !lines(end).trim.endsWith("*/")) then None
+        if (end < 0 || !lines(end).trim.endsWith("*/")) None
         else
         {
             var start = end
@@ -149,9 +149,9 @@ class ScalaStyleCoverageTest extends AnyFunSuite
         documentedTypes.filterNot(typeParameters.contains).foreach(name => violations += s"$location: unknown @tparam $name")
 
         explicitReturnType(signature).filterNot(_ == "Unit").foreach { _ =>
-            if (!doc.contains("@return")) then violations += s"$location: missing @return"
+            if (!doc.contains("@return")) violations += s"$location: missing @return"
         }
-        if (!hasDescription(doc)) then violations += s"$location: missing behavioral description"
+        if (!hasDescription(doc)) violations += s"$location: missing behavioral description"
         violations.toList
     }
 
@@ -211,11 +211,11 @@ class ScalaStyleCoverageTest extends AnyFunSuite
         val methodPrefix = signature.drop(signature.indexOf("def ") + 4)
         val open = methodPrefix.indexOf('[')
         val paren = methodPrefix.indexOf('(')
-        if (open < 0 || (paren >= 0 && open > paren)) then Nil
+        if (open < 0 || (paren >= 0 && open > paren)) Nil
         else
         {
             val close = methodPrefix.indexOf(']', open + 1)
-            if (close < 0) then Nil
+            if (close < 0) Nil
             else methodPrefix.substring(open + 1, close).split(',').toList.map(_.trim.takeWhile(c => c.isLetterOrDigit || c == '_' || c == '$')).filter(_.nonEmpty)
         }
     }
@@ -233,15 +233,15 @@ class ScalaStyleCoverageTest extends AnyFunSuite
         var depth = 0
         var start = -1
         text.indices.foreach { index =>
-            if (text(index) == open) then
+            if (text(index) == open)
             {
-                if (depth == 0) then start = index + 1
+                if (depth == 0) start = index + 1
                 depth += 1
             }
-            else if (text(index) == close) then
+            else if (text(index) == close)
             {
                 depth -= 1
-                if (depth == 0 && start >= 0) then regions += text.substring(start, index)
+                if (depth == 0 && start >= 0) regions += text.substring(start, index)
             }
         }
         regions.toList
@@ -254,12 +254,12 @@ class ScalaStyleCoverageTest extends AnyFunSuite
      */
     private def explicitReturnType(signature: String): Option[String] =
     {
-        if (signature.matches(".*\\bdef\\s+this\\b.*")) then None
+        if (signature.matches(".*\\bdef\\s+this\\b.*")) None
         else
         {
             val delimiter = topLevelBodyDelimiter(signature)
             val beforeBody = signature.substring(0, delimiter.getOrElse(signature.length)).trim
-            val afterParams = if (beforeBody.lastIndexOf(')') >= 0) then beforeBody.substring(beforeBody.lastIndexOf(')') + 1) else beforeBody.drop(beforeBody.indexOf("def ") + 4).dropWhile(c => c != ':')
+            val afterParams = if (beforeBody.lastIndexOf(')') >= 0) beforeBody.substring(beforeBody.lastIndexOf(')') + 1) else beforeBody.drop(beforeBody.indexOf("def ") + 4).dropWhile(c => c != ':')
             val colon = afterParams.indexOf(':')
             Option.when(colon >= 0)(afterParams.substring(colon + 1).trim).filter(_.nonEmpty)
         }
@@ -308,7 +308,7 @@ class ScalaStyleCoverageTest extends AnyFunSuite
         val lines = Files.readAllLines(path).asScala.toVector
         lines.indices.flatMap { index =>
             val line = lines(index)
-            if (!EnumDeclaration.matches(line) || line.contains("/*")) then Nil
+            if (!EnumDeclaration.matches(line) || line.contains("/*")) Nil
             else
             {
                 val nextCode = lines.indexWhere(l =>
@@ -316,11 +316,95 @@ class ScalaStyleCoverageTest extends AnyFunSuite
                     !l.trim.startsWith("*") && !l.trim.startsWith("@"), index + 1)
                 val bracesHere   = line.contains("{")
                 val bracesNext   = nextCode >= 0 && lines(nextCode).trim.startsWith("{")
-                if (!bracesHere && !bracesNext) then
+                if (!bracesHere && !bracesNext)
                     List(s"${path.toString}:${index + 1}: enum must use brace syntax: ${line.trim}")
                 else Nil
             }
         }.toList
+    }
+
+    /**
+     *  Blanks comments, string literals, and character literals so style scans
+     *  see only code, preserving line and column positions.
+     *  @param lines  Raw source lines.
+     *  @return       Lines of equal length where non-code characters are spaces.
+     */
+    private def codeOnly(lines: Vector[String]): Vector[String] =
+    {
+        val result   = ListBuffer.empty[String]
+        var inBlock  = 0
+        var inTriple = false
+        lines.foreach { line =>
+            val code = StringBuilder()
+            var i    = 0
+            val n    = line.length
+            while (i < n)
+            {
+                if (inTriple)
+                {
+                    val close = tripleQuoteEnd(line, i)
+                    val end   = if (close < 0) n else close
+                    code.append(" " * (end - i))
+                    i = end
+                    if (close >= 0) inTriple = false
+                }
+                else if (inBlock > 0)
+                {
+                    if (line.startsWith("/*", i)) { inBlock += 1; code.append("  "); i += 2 }
+                    else if (line.startsWith("*/", i)) { inBlock -= 1; code.append("  "); i += 2 }
+                    else { code.append(' '); i += 1 }
+                }
+                else if (line.startsWith("//", i)) { code.append(" " * (n - i)); i = n }
+                else if (line.startsWith("/*", i)) { inBlock = 1; code.append("  "); i += 2 }
+                else if (line.startsWith("\"\"\"", i)) { inTriple = true; code.append("   "); i += 3 }
+                else if (line(i) == '"')
+                {
+                    var j = i + 1
+                    while (j < n && line(j) != '"')
+                    {
+                        if (line(j) == '\\') j += 1
+                        j += 1
+                    }
+                    val end = math.min(j + 1, n)
+                    code.append(" " * (end - i))
+                    i = end
+                }
+                else if (line(i) == '\'')
+                {
+                    val close = line.indexOf("'", i + 1)
+                    if (close > i && close <= i + 5) { code.append(" " * (close + 1 - i)); i = close + 1 }
+                    else { code.append('\''); i += 1 }
+                }
+                else { code.append(line(i)); i += 1 }
+            }
+            result += code.toString
+        }
+        result.toVector
+    }
+
+    /**
+     *  Finds the end of a triple-quoted string body on one line: the index just
+     *  past the first run of three or more quotes, whose last three close the
+     *  string. A run of four therefore leaves one quote of content.
+     *  @param line  Source line.
+     *  @param from  Index to start scanning from.
+     *  @return      Index just past the closing run, or `-1` when unterminated.
+     */
+    private def tripleQuoteEnd(line: String, from: Int): Int =
+    {
+        var i = from
+        while (i < line.length)
+        {
+            if (line(i) == '"')
+            {
+                var run = 0
+                while (i + run < line.length && line(i + run) == '"') run += 1
+                if (run >= 3) return i + run
+                i += run
+            }
+            else i += 1
+        }
+        -1
     }
 
     /**
@@ -333,88 +417,62 @@ class ScalaStyleCoverageTest extends AnyFunSuite
     private def ifParenthesisViolations(path: Path): List[String] =
     {
         val lines      = Files.readAllLines(path).asScala.toVector
+        val masked     = codeOnly(lines)
         val violations = ListBuffer.empty[String]
-        var inBlock    = 0
-        var inTriple   = false
         var forGroups  = List.empty[Boolean]
-        lines.indices.foreach { index =>
-            val line = lines(index)
-            val code = StringBuilder()
-            var i    = 0
-            val n    = line.length
-            while (i < n)
-            {
-                if (inTriple)
-                {
-                    val close = line.indexOf("\"\"\"", i)
-                    val end   = if (close < 0) n else close + 3
-                    code.append(" " * (end - i))
-                    i = end
-                    if (close >= 0) then inTriple = false
-                }
-                else if (inBlock > 0)
-                {
-                    if (line.startsWith("/*", i)) then { inBlock += 1; code.append("  "); i += 2 }
-                    else if (line.startsWith("*/", i)) then { inBlock -= 1; code.append("  "); i += 2 }
-                    else { code.append(' '); i += 1 }
-                }
-                else if (line.startsWith("//", i)) then { code.append(" " * (n - i)); i = n }
-                else if (line.startsWith("/*", i)) then { inBlock = 1; code.append("  "); i += 2 }
-                else if (line.startsWith("\"\"\"", i)) then { inTriple = true; code.append("   "); i += 3 }
-                else if (line(i) == '"') then
-                {
-                    var j = i + 1
-                    while (j < n && line(j) != '"')
-                    {
-                        if (line(j) == '\\') then j += 1
-                        j += 1
-                    }
-                    val end = math.min(j + 1, n)
-                    code.append(" " * (end - i))
-                    i = end
-                }
-                else if (line(i) == '\'') then
-                {
-                    val close = line.indexOf("'", i + 1)
-                    if (close > i && close <= i + 5) then { code.append(" " * (close + 1 - i)); i = close + 1 }
-                    else { code.append('\''); i += 1 }
-                }
-                else { code.append(line(i)); i += 1 }
-            }
-            val text = code.toString
+        masked.indices.foreach { index =>
+            val text = masked(index)
             var k    = 0
             while (k < text.length)
             {
                 val char = text(k)
-                if (char == '(' || char == '{') then
+                if (char == '(' || char == '{')
                 {
                     forGroups ::= "\\bfor\\s*$".r.findFirstIn(text.take(k)).isDefined
                 }
-                else if (char == ')' || char == '}') then
+                else if (char == ')' || char == '}')
                 {
-                    if (forGroups.nonEmpty) then forGroups = forGroups.tail
+                    if (forGroups.nonEmpty) forGroups = forGroups.tail
                 }
-                else if (text.startsWith("if", k)) then
+                else if (text.startsWith("if", k))
                 {
                     val before    = if (k == 0) ' ' else text(k - 1)
                     val afterIf   = if (k + 2 >= text.length) ' ' else text(k + 2)
                     val wordStart = !(before.isLetterOrDigit || before == '_' || before == '.' || before == '$')
                     val wordEnd   = !(afterIf.isLetterOrDigit || afterIf == '_')
-                    if (wordStart && wordEnd) then
+                    if (wordStart && wordEnd)
                     {
                         var after = k + 2
                         while (after < text.length && text(after) == ' ') after += 1
                         val parenthesised = after < text.length && text(after) == '('
-                        val guard         = "\\bcase\\b".r.findFirstIn(text.take(k)).isDefined ||
+                        val prefix        = text.take(k)
+                        val guard         = ("\\bcase\\b".r.findFirstIn(prefix).isDefined && !prefix.contains("=>")) ||
                             text.trim.matches("if\\b.*=>\\s*$")
-                        if (!parenthesised && !guard && !forGroups.contains(true)) then
-                            violations += s"${path.toString}:${index + 1}: if condition must be parenthesised: ${line.trim}"
+                        if (!parenthesised && !guard && !forGroups.contains(true))
+                            violations += s"${path.toString}:${index + 1}: if condition must be parenthesised: ${lines(index).trim}"
                     }
                 }
                 k += 1
             }
         }
         violations.toList
+    }
+
+    /**
+     *  Reports parenthesised `if` conditions still followed by a redundant
+     *  `then` in one source file. With a parenthesised condition the keyword is
+     *  optional, and the codebase omits it.
+     *  @param path  Scala source file to inspect.
+     *  @return      Violations including file and line number.
+     */
+    private def redundantThenViolations(path: Path): List[String] =
+    {
+        val lines  = Files.readAllLines(path).asScala.toVector
+        val joined = codeOnly(lines).mkString("\n")
+        "(?s)\\)\\s+then\\b".r.findAllMatchIn(joined).map { match_ =>
+            val lineNo = joined.take(match_.start).count(_ == '\n') + 1
+            s"${path.toString}:$lineNo: redundant then after a parenthesised if condition: ${lines(lineNo - 1).trim}"
+        }.toList
     }
 
     test("every enum uses brace syntax") {
@@ -428,6 +486,13 @@ class ScalaStyleCoverageTest extends AnyFunSuite
         val violations = roots.flatMap(scalaFiles).flatMap(ifParenthesisViolations).sorted
         assert(violations.isEmpty,
             s"${violations.size} if conditions without parens:\n${violations.mkString("\n")}")
+    }
+
+    test("no redundant then after a parenthesised if condition") {
+        val roots = List(Paths.get("src/main/scala"), Paths.get("src/test/scala"))
+        val violations = roots.flatMap(scalaFiles).flatMap(redundantThenViolations).sorted
+        assert(violations.isEmpty,
+            s"${violations.size} redundant then keywords:\n${violations.mkString("\n")}")
     }
 
     test("every published Scala method has Scaladoc") {

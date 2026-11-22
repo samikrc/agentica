@@ -48,9 +48,9 @@ object Presentation
 
         // Line 1: command echo
         val argStr = cmd.args.map { case (k, v) =>
-            if (v.contains(' ')) then s"""$k="$v"""" else s"$k=$v"
+            if (v.contains(' ')) s"""$k="$v"""" else s"$k=$v"
         }.mkString(" ")
-        lines += (if (argStr.isEmpty) then s"$$ ${cmd.fullName}" else s"$$ ${cmd.fullName} $argStr")
+        lines += (if (argStr.isEmpty) s"$$ ${cmd.fullName}" else s"$$ ${cmd.fullName} $argStr")
 
         // Line 2: status
         result.status match

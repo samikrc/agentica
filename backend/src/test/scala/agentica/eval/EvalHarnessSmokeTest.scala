@@ -326,7 +326,7 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         override def streamChatCompletions(messages: List[Message], onToken: String => Unit,
                                            tools: List[ToolSpec] = Nil): LLMResponse =
         {
-            if (firstCall.getAndSet(false)) then
+            if (firstCall.getAndSet(false))
                 throw new IllegalStateException(
                     "OpenAI-compatible endpoint returned HTTP 400: peg-native format")
             else super.streamChatCompletions(messages, onToken, tools)
@@ -474,7 +474,7 @@ class EvalHarnessSmokeTest extends AnyFunSuite
         override def streamChatCompletions(messages: List[Message], onToken: String => Unit,
                                            tools: List[ToolSpec] = Nil): LLMResponse =
         {
-            if (firstCall.getAndSet(false)) then
+            if (firstCall.getAndSet(false))
             {
                 try
                 {

@@ -378,7 +378,7 @@ class AgentLoop(
                                     tool       = toolName,
                                     input      = displayCmd,
                                     output     = response.text,
-                                    status     = if (isErr) then RunStatus.Error else RunStatus.Success,
+                                    status     = if (isErr) RunStatus.Error else RunStatus.Success,
                                     traceId    = traceId,
                                     durationMs = durMs,
                                     iteration  = iteration

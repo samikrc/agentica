@@ -80,7 +80,7 @@ object Auth
         secureRandom.nextBytes(bytes)
         val t = bytes.map("%02x".format(_)).mkString
         tickets.put(t, System.currentTimeMillis() + ticketTTLMs)
-        if (tickets.size() > 1024) then
+        if (tickets.size() > 1024)
         {
             val now = System.currentTimeMillis()
             tickets.entrySet().removeIf(_.getValue < now)

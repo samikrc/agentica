@@ -48,8 +48,8 @@ object Tokenizer
 
         // ── 1. Extract family_verb head ──────────────────────────────────────
         val spaceIdx = trimmed.indexWhere(c => c == ' ' || c == '\t')
-        val head     = if (spaceIdx < 0) then trimmed else trimmed.substring(0, spaceIdx)
-        val rest     = if (spaceIdx < 0) then "" else trimmed.substring(spaceIdx + 1).trim
+        val head     = if (spaceIdx < 0) trimmed else trimmed.substring(0, spaceIdx)
+        val rest     = if (spaceIdx < 0) "" else trimmed.substring(spaceIdx + 1).trim
 
         val separatorIdx = head.indexOf('_')
         if (separatorIdx <= 0 || separatorIdx == head.length - 1)

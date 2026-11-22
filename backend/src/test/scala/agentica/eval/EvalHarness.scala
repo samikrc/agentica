@@ -312,7 +312,7 @@ object EvalConfig
     def loadRunFromResource(resourceName: String = DefaultResourceName): Option[EvalRunConfig] =
     {
         val stream = getClass.getResourceAsStream(resourceName)
-        if (stream == null) then None
+        if (stream == null) None
         else
             try
             {
@@ -511,17 +511,17 @@ object JudgeVerdict
 
     /** Maps a numeric score to the nearest verdict bucket (tolerant of stray floats). */
     def fromScore(score: Double): JudgeVerdict =
-        if (score >= 0.75) then Correct
-        else if (score >= 0.25) then PartiallyCorrect
+        if (score >= 0.75) Correct
+        else if (score >= 0.25) PartiallyCorrect
         else Wrong
 
     /** Normalizes a free-form verdict string ("correct", "partially correct", ...) to a verdict. */
     def parse(text: String): Option[JudgeVerdict] =
     {
         val n = text.toLowerCase.filter(_.isLetter)
-        if (n.contains("partial")) then Some(PartiallyCorrect)
-        else if (n.contains("wrong") || n.contains("incorrect")) then Some(Wrong)
-        else if (n.contains("correct")) then Some(Correct)
+        if (n.contains("partial")) Some(PartiallyCorrect)
+        else if (n.contains("wrong") || n.contains("incorrect")) Some(Wrong)
+        else if (n.contains("correct")) Some(Correct)
         else None
     }
 }
@@ -667,7 +667,7 @@ object EvalHarness
         val stamp       = java.time.LocalDateTime.now().format(formatter)
         Files.createDirectories(AppDirs.evalsDir)
         Iterator.iterate(0)(_ + 1)
-            .map(i => AppDirs.evalsDir.resolve(if (i == 0) then s"doc-eval-$stamp" else s"doc-eval-$stamp-$i"))
+            .map(i => AppDirs.evalsDir.resolve(if (i == 0) s"doc-eval-$stamp" else s"doc-eval-$stamp-$i"))
             .find { dir =>
                 try { Files.createDirectory(dir); true }
                 catch { case _: java.nio.file.FileAlreadyExistsException => false }
@@ -977,7 +977,7 @@ object EvalHarness
                 (out.markdownPath, out.error)
         }
 
-        if (error.isDefined) then
+        if (error.isDefined)
         {
             throw new RuntimeException(
                 s"Document conversion failed for ${docPath.getFileName}: ${error.getOrElse("unknown error")}"
@@ -1004,7 +1004,7 @@ object EvalHarness
     def scoreMarkdown(markdown: String, docPath: Path): MarkdownScore =
     {
         val name = docPath.getFileName.toString.toLowerCase
-        if (name.endsWith(".pdf")) then
+        if (name.endsWith(".pdf"))
         {
             val referenceText = MarkdownScorer.extractPDFText(docPath)
             val pageCount     = PDFPageRenderer.pageCount(docPath)
@@ -1088,7 +1088,7 @@ object EvalHarness
     ): TurnResult =
     {
         val first = answerQuestion(question, markdownRelPath, agent, session, history, timeoutMs)
-        if (first.status != AnswerStatus.Timeout) then return first
+        if (first.status != AnswerStatus.Timeout) return first
 
         val delayMs = pickRetryDelay(retryDelayMs, RetryDelayMinMs, RetryDelayJitterMs)
         log(s"  Retrying timed-out question after ${delayMs}ms: ${question.take(60)}")
@@ -1129,7 +1129,7 @@ object EvalHarness
                 case _                                     => ()
             }
             val next = cur.getCause
-            cur = if (next eq cur) then null else next
+            cur = if (next eq cur) null else next
         }
         false
     }
@@ -1247,7 +1247,7 @@ object EvalHarness
                 future.cancel(true)
                 permissionCoordinator.close()
                 val (toolCalls, toolCounts) = capturedTools
-                val status = if (isTimeoutCause(t)) then AnswerStatus.Timeout else AnswerStatus.Error
+                val status = if (isTimeoutCause(t)) AnswerStatus.Timeout else AnswerStatus.Error
                 TurnResult(s"[Agent turn error: ${t.getClass.getSimpleName}: ${t.getMessage}]", "", toolCalls, toolCounts, status)
         }
     }
@@ -1398,7 +1398,7 @@ object EvalHarness
             log(s"Judge call complete attempt=$attempt elapsed=${System.currentTimeMillis() - t0}ms")
             val JudgeResult(verdict, rationale, correctItems, referenceItems, hallucinatedItems) = parseJudgeResponse(responseText)
             val (finalVerdict, finalRationale) = applyItemRubric(verdict, rationale, correctItems, referenceItems, hallucinatedItems)
-            (finalVerdict, finalRationale, if (finalVerdict.isDefined) then JudgeStatus.Judged else JudgeStatus.JudgeError)
+            (finalVerdict, finalRationale, if (finalVerdict.isDefined) JudgeStatus.Judged else JudgeStatus.JudgeError)
         }
         catch
         {
@@ -1482,11 +1482,11 @@ object EvalHarness
         (referenceItems, correctItems, hallucinatedItems) match
         {
             case (Some(ref), Some(corr), Some(hall)) if ref >= 3 =>
-                if (corr >= 3 && hall == 0) then
+                if (corr >= 3 && hall == 0)
                     (Some(JudgeVerdict.Correct), s"Item-based: $corr/$ref correct, 0 hallucinated. $rationale")
-                else if (corr > 0 && hall == 0) then
+                else if (corr > 0 && hall == 0)
                     (Some(JudgeVerdict.PartiallyCorrect), s"Item-based: $corr/$ref correct, 0 hallucinated. $rationale")
-                else if (corr > 0) then
+                else if (corr > 0)
                     (Some(JudgeVerdict.PartiallyCorrect), s"Item-based: $corr/$ref correct, $hall hallucinated. $rationale")
                 else
                     (Some(JudgeVerdict.Wrong), s"Item-based: 0/$ref correct. $rationale")
@@ -1770,7 +1770,7 @@ object EvalHarness
             log(s"=== Provider: ${bundle.label} | session types: ${bundle.sessionTypes.map(_.label).mkString(", ")} ===")
 
             val providerDir = fileDir.resolve(bundle.label)
-            if (!Files.exists(providerDir)) then
+            if (!Files.exists(providerDir))
             {
                 Files.createDirectory(providerDir)
             }
@@ -1853,7 +1853,7 @@ object EvalHarness
                         log(s"--- Judging: ${bundle.label} / ${sessionType.label} (${qaPairs.length} answers) ---")
                         val answerResults = qaPairs.map { case (q, tr) =>
                             val (verdict, rationale, jStatus, judgeAttempts) =
-                                if (tr.status == AnswerStatus.Answered) then
+                                if (tr.status == AnswerStatus.Answered)
                                     judgeAnswer(q.question, q.referenceAnswer, tr.actual, bundle.judge, questionTimeoutMs)
                                 else
                                     (None, s"Not judged — agent turn ${tr.status.label}", JudgeStatus.Skipped, 0)
@@ -1870,7 +1870,7 @@ object EvalHarness
                     catch
                     {
                         case t: Throwable =>
-                            val status = if (isTimeoutCause(t)) then SweepStatus.FailedTimeout else SweepStatus.FailedError
+                            val status = if (isTimeoutCause(t)) SweepStatus.FailedTimeout else SweepStatus.FailedError
                             val msg    = s"${t.getClass.getSimpleName}: ${t.getMessage}"
                             log(s"ERROR judging ${bundle.label}/${sessionType.label}: $msg")
                             EvalResult(bundle.label, sessionType.label, mdSavePath, mdScore, Nil, status, msg)
@@ -1880,7 +1880,7 @@ object EvalHarness
             catch
             {
                 case t: Throwable =>
-                    val status = if (isTimeoutCause(t)) then SweepStatus.FailedTimeout else SweepStatus.FailedError
+                    val status = if (isTimeoutCause(t)) SweepStatus.FailedTimeout else SweepStatus.FailedError
                     val msg    = s"${t.getClass.getSimpleName}: ${t.getMessage}"
                     log(s"ERROR for ${bundle.label}: $msg")
                     bundle.sessionTypes.map { st =>
@@ -1949,7 +1949,7 @@ object EvalHarness
                 reuseMarkdownCache   = config.reuseMarkdownCache,
                 markdownCacheIdentity = config.vlmModel.getOrElse(config.llmModel),
                 beforeJudge          = () => {
-                    if (LMStudioClient.isLocal(judgeBaseURL)) then
+                    if (LMStudioClient.isLocal(judgeBaseURL))
                     {
                         log(s"Pre-judge cleanup: unloading loaded models on $judgeBaseURL...")
                         LMStudioClient.unloadAllLocalModels(judgeBaseURL, judgeAPIKey)
@@ -2143,7 +2143,7 @@ object EvalHarness
         summaryBuf.append("Verdicts are mapped to numeric scores for the average: correct=1.0, partial=0.5, wrong=0.0\n\n")
 
         results.foreach { r =>
-            if (r.status != SweepStatus.Ok) then
+            if (r.status != SweepStatus.Ok)
             {
                 val header = s"  ${r.providerLabel} / ${r.sessionType}  —  FAILED (${r.status.label}): ${r.statusMessage}"
                 println(header)
@@ -2167,7 +2167,7 @@ object EvalHarness
                     Option.when(jTimeouts > 0)(s"$jTimeouts judge-timeout"),
                     Option.when(jErrors > 0)(s"$jErrors judge-error")
                 ).flatten
-                val annot = if (flags.isEmpty) then "" else flags.mkString("; ", "; ", "")
+                val annot = if (flags.isEmpty) "" else flags.mkString("; ", "; ", "")
 
                 val byCategory = judged.groupBy(_.category)
                 val categoryLines = byCategory.toList.sortBy(_._1).map { case (cat, as) =>
@@ -2186,7 +2186,7 @@ object EvalHarness
                 categoryLines.foreach(l => summaryBuf.append(s"$l\n"))
 
                 val wrong = judged.filter(_.judgeVerdict.contains(JudgeVerdict.Wrong))
-                if (wrong.nonEmpty) then
+                if (wrong.nonEmpty)
                 {
                     summaryBuf.append("    Questions judged wrong:\n")
                     wrong.foreach { a =>
@@ -2195,11 +2195,11 @@ object EvalHarness
                 }
 
                 val notAnswered = answers.filter(_.status != AnswerStatus.Answered)
-                if (notAnswered.nonEmpty) then
+                if (notAnswered.nonEmpty)
                 {
                     summaryBuf.append("    Questions not answered:\n")
                     notAnswered.foreach { a =>
-                        val tries = if (a.attempts > 1) then s" after ${a.attempts} attempts" else ""
+                        val tries = if (a.attempts > 1) s" after ${a.attempts} attempts" else ""
                         summaryBuf.append(s"      [${a.status.label}$tries] (${a.category}) ${a.question}\n")
                     }
                 }
@@ -2219,9 +2219,9 @@ object EvalHarness
                 a.toolCounts.foldLeft(acc) { case (m, (k, v)) => m.updated(k, m.getOrElse(k, 0) + v) }
             }
             val totalCalls = totalToolCounts.values.sum
-            val maxIterations = if (answers.isEmpty) then 0
-                else answers.map(a => if (a.toolCalls.isEmpty) then 0 else a.toolCalls.map(_.iteration).max).max
-            val avgCallsPerQ = if (answers.isEmpty) then 0.0 else totalCalls.toDouble / answers.length
+            val maxIterations = if (answers.isEmpty) 0
+                else answers.map(a => if (a.toolCalls.isEmpty) 0 else a.toolCalls.map(_.iteration).max).max
+            val avgCallsPerQ = if (answers.isEmpty) 0.0 else totalCalls.toDouble / answers.length
 
             val sweepLine = f"  ${r.providerLabel} / ${r.sessionType}  —  $totalCalls%d calls  (${avgCallsPerQ}%.1f avg/question, max iteration: $maxIterations%d)"
             summaryBuf.append(s"$sweepLine\n")

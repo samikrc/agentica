@@ -158,10 +158,10 @@ class VirtualShell(
     private def displayCommand(cmd: Command): String =
     {
         val argStr = cmd.args.map { case (k, v) =>
-            if (v.contains(' ') || v.contains('"')) then s"""$k="${v.replace("\"", "\\\"")}""""
+            if (v.contains(' ') || v.contains('"')) s"""$k="${v.replace("\"", "\\\"")}""""
             else s"$k=$v"
         }.mkString(" ")
-        if (argStr.isEmpty) then cmd.fullName else s"${cmd.fullName} $argStr"
+        if (argStr.isEmpty) cmd.fullName else s"${cmd.fullName} $argStr"
     }
 
     // ── Substitution pass ─────────────────────────────────────────────────────
@@ -204,7 +204,7 @@ class VirtualShell(
         // Accepts: "help", "help files", "help files_read"
         // Represented as: family="help" verb=<topic>, or Command("help","index",Map.empty)
         val topic = cmd.args.get("topic")
-            .orElse(if (cmd.verb != "index") then Some(cmd.verb) else None)
+            .orElse(if (cmd.verb != "index") Some(cmd.verb) else None)
             .getOrElse("")
 
         if (topic.isEmpty)
