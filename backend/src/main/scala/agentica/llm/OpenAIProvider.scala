@@ -129,7 +129,7 @@ class OpenAIProvider(
             {
                 ujson.Obj(
                     "role"       -> "assistant",
-                    "content"    -> (if m.content.isEmpty then ujson.Null else Str(m.content)),
+                    "content"    -> (if (m.content.isEmpty) then ujson.Null else Str(m.content)),
                     "tool_calls" -> ujson.read(m.toolCallsJson.get)
                 )
             }
@@ -209,7 +209,7 @@ class OpenAIProvider(
         )
         temperature.foreach(t => body("temperature") = t)
         applyReasoning(body)
-        if tools.nonEmpty then
+        if (tools.nonEmpty) then
         {
             body("tools")       = toCCFunctionSpecs(tools)
             body("tool_choice") = "auto"
@@ -236,7 +236,7 @@ class OpenAIProvider(
         }
 
         val (promptTokens, completionTokens) = extractUsage(json)
-        if content.nonEmpty then onToken(content)
+        if (content.nonEmpty) then onToken(content)
 
         LLMResponse(
             model            = modelName,
@@ -277,7 +277,7 @@ class OpenAIProvider(
             "input" -> inputJSON
         )
         previousResponseId.foreach { id => body("previous_response_id") = id }
-        if tools.nonEmpty then
+        if (tools.nonEmpty) then
         {
             body("tools") = ujson.Arr(tools.map { t =>
                 ujson.Obj(
@@ -321,7 +321,7 @@ class OpenAIProvider(
 
         val responseId                        = json.obj.get("id").map(_.str)
         val (promptTokens, completionTokens) = extractUsage(json)
-        if content.nonEmpty then onToken(content)
+        if (content.nonEmpty) then onToken(content)
 
         LLMResponse(
             model            = modelName,

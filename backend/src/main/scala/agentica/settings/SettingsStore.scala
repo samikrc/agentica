@@ -83,7 +83,7 @@ class SettingsStore(path: Path)
     def load(): AppSettings =
     {
         this.synchronized {
-            if !Files.exists(path) then
+            if (!Files.exists(path)) then
             {
                 save(defaultSettings)
                 defaultSettings

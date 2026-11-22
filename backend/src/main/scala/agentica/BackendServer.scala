@@ -94,7 +94,7 @@ object BackendServer extends cask.Main
             val model   = sys.env.getOrElse("OLLAMA_MODEL", "llama3.2")
             OllamaProvider(baseURL = baseURL, modelName = model)
         case _ =>
-            val apiKey = if settings.apiKey.nonEmpty then settings.apiKey
+            val apiKey = if (settings.apiKey.nonEmpty) then settings.apiKey
                          else sys.env.getOrElse("LLM_API_KEY", "lm-studio")
             OpenAIProvider(
                 baseURL = settings.serverURL,
@@ -116,8 +116,8 @@ object BackendServer extends cask.Main
     def buildVLMProvider(settings: AppSettings): Option[LLMProvider] =
         val hasUrl   = settings.vlmServerURL.nonEmpty
         val hasModel = settings.vlmModel.nonEmpty
-        if hasUrl && hasModel then
-            val vlmAPIKey = if settings.vlmAPIKey.nonEmpty then settings.vlmAPIKey
+        if (hasUrl && hasModel) then
+            val vlmAPIKey = if (settings.vlmAPIKey.nonEmpty) then settings.vlmAPIKey
                             else sys.env.getOrElse("VLM_API_KEY", "lm-studio")
             Some(OpenAIProvider(
                 baseURL = settings.vlmServerURL,
@@ -126,7 +126,7 @@ object BackendServer extends cask.Main
                 reasoningEffort = Some("none")
             ))
         else
-            if hasUrl || hasModel then
+            if (hasUrl || hasModel) then
                 TraceLogger.warn("-", "vlm_provider_partial_config",
                     Map("hasUrl" -> hasUrl.toString, "hasModel" -> hasModel.toString,
                         "vlmServerURL" -> settings.vlmServerURL, "vlmModel" -> settings.vlmModel))

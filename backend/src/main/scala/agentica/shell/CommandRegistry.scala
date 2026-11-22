@@ -113,7 +113,7 @@ class CommandRegistry
             case Some(tool) =>
                 val s    = tool.schema
                 val args = s.args.map { a =>
-                    val req = if a.required then "(required)" else s"(optional, default: ${a.default.getOrElse("none")})"
+                    val req = if (a.required) then "(required)" else s"(optional, default: ${a.default.getOrElse("none")})"
                     s"  ${a.name}  $req — ${a.description}"
                 }.mkString("\n")
                 s"${s.fullName} — ${s.summary}\n\nArguments:\n$args\n\nExample:\n  ${s.example}"
@@ -150,7 +150,7 @@ class CommandRegistry
                 "type"       -> "object",
                 "properties" -> properties
             )
-            if requiredArgs.nonEmpty then parameters("required") = ujson.Arr.from(requiredArgs)
+            if (requiredArgs.nonEmpty) then parameters("required") = ujson.Arr.from(requiredArgs)
             ToolSpec(s.fullName, s.summary, parameters)
         }
         val helpSpec = ToolSpec(
@@ -186,7 +186,7 @@ class CommandRegistry
                 case Right(map) => map
             }
             val topic = args.get("topic").getOrElse("")
-            Right(Command("help", "index", if topic.isEmpty then Map.empty else Map("topic" -> topic)))
+            Right(Command("help", "index", if (topic.isEmpty) then Map.empty else Map("topic" -> topic)))
         }
         else
         {

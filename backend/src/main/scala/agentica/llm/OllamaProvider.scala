@@ -58,7 +58,7 @@ class OllamaProvider(
             "messages" -> toOllamaMessages(messages),
             "stream"   -> true
         )
-        if tools.nonEmpty then
+        if (tools.nonEmpty) then
         {
             body("tools") = ujson.Arr(tools.map { t =>
                 ujson.Obj(
@@ -86,11 +86,11 @@ class OllamaProvider(
         var line = reader.readLine()
         while line != null do
         {
-            if line.nonEmpty then
+            if (line.nonEmpty) then
             {
                 val json  = ujson.read(line)
                 val delta = json.obj.get("message").flatMap(_.obj.get("content")).map(_.str).getOrElse("")
-                if delta.nonEmpty then onToken(delta)
+                if (delta.nonEmpty) then onToken(delta)
 
                 // Native tool calls arrive on the final message chunk.
                 json.obj.get("message").flatMap(_.obj.get("tool_calls")).foreach { calls =>
@@ -99,7 +99,7 @@ class OllamaProvider(
                         {
                             name <- tc.obj.get("function").flatMap(_.obj.get("name")).map(_.str)
                             args <- tc.obj.get("function").flatMap(_.obj.get("arguments")).map(v =>
-                                if v.isInstanceOf[ujson.Str] then v.str else v.render())
+                                if (v.isInstanceOf[ujson.Str]) then v.str else v.render())
                         } do
                         {
                             val id = tc.obj.get("id").map(_.str).filter(_.nonEmpty)
@@ -109,7 +109,7 @@ class OllamaProvider(
                     }
                 }
 
-                if json.obj.get("done").exists(_.bool) then
+                if (json.obj.get("done").exists(_.bool)) then
                 {
                     promptTokens     = json.obj.get("prompt_eval_count").map(_.num.toInt).getOrElse(0)
                     completionTokens = json.obj.get("eval_count").map(_.num.toInt).getOrElse(0)
