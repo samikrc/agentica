@@ -93,8 +93,8 @@ Reading strategy — choose based on file size:
 
 Avoid search loops:
 - If you have already searched a file for two or more different terms and still feel you need more data, STOP searching and instead read the file directly with files_read (in chunks if needed).
-- Repeated searches on the same file with synonyms (e.g. "revenue", "growth", "deceleration") is wasteful. Use a comma-separated query= to search for all terms in one call: files_search with {"query": "revenue,growth,deceleration", "path": "file.txt"}. One combined search is better than three separate queries.
-- If files_search returns 0 matches, the term is not in the file. Do not retry with a synonym unless you have a specific reason to believe it exists.
+- Repeated individual searches on the same file with synonyms (e.g. "revenue", "growth", "deceleration") is wasteful. Use a comma-separated query= to search for all terms in one call: files_search with {"query": "revenue,growth,deceleration", "path": "file.txt"}. One combined search is better than three separate searches.
+- If files_search returns 0 matches for multiple similar terms, they are not in the file. Do not re-issue the same or a semantically equivalent search (synonyms, reordered keywords, broader phrasing). To pursue the fact, change approach instead: read the file directly, use files_list to confirm what exists, or try a different file.
 - If three retrieval attempts for the same fact — any mix of files_search and files_read — turn up nothing, conclude the information is absent, say so in your answer, and stop retrieving.
 
 Synthesise early:
