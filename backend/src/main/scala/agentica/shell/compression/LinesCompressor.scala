@@ -5,7 +5,7 @@ package agentica.shell.compression
  *  like converted-document page headers — by eliding runs of unremarkable
  *  lines into markers.
  *
- *  Kept lines: the first and last few, lines matching [[Elision.ImportantRe]],
+ *  Kept lines: the first and last few, lines matching [[Elision.ImportantRE]],
  *  query-relevant lines, and a representative of every distinct line shape
  *  ([[Elision.keepNonRedundant]] — which also makes scattered duplicate lines
  *  collapse against their first occurrence, not just consecutive runs).
@@ -36,7 +36,7 @@ object LinesCompressor extends Compressor
      */
     def compress(text: String, query: String = ""): Option[String] =
     {
-        if (Elision.MarkerRe.findFirstIn(text).isDefined) return None
+        if (Elision.MarkerRE.findFirstIn(text).isDefined) return None
         val (raw, trailing) = Elision.splitLines(text)
         if (raw.size < MinLines) return None
         val lines   = raw.map(_.stripSuffix("\r"))
@@ -46,7 +46,7 @@ object LinesCompressor extends Compressor
         for (i <- lines.indices)
         {
             if (i < KeepHead || i >= lines.size - KeepTail ||
-                Elision.ImportantRe.findFirstIn(lines(i)).isDefined)
+                Elision.ImportantRE.findFirstIn(lines(i)).isDefined)
             {
                 keep(i) = true
             }

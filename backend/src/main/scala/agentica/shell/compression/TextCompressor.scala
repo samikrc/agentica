@@ -5,7 +5,7 @@ import scala.util.matching.Regex
 /**
  *  Compresses long prose documents by eliding whole sections while retaining
  *  headings, the opening/closing context, paragraphs matching
- *  [[Elision.ImportantRe]], and a representative of every distinct section
+ *  [[Elision.ImportantRE]], and a representative of every distinct section
  *  kind ([[Elision.keepNonRedundant]]).
  *
  *  A section is a blank-line-separated block, a fenced code block (always one
@@ -27,7 +27,7 @@ object TextCompressor extends Compressor
     /** Sections a query-aware pass may additionally keep. */
     private val QueryLimit = 12
 
-    private val FenceRe: Regex = "^\\s{0,3}(`{3,}|~{3,})".r
+    private val FenceRE: Regex = "^\\s{0,3}(`{3,}|~{3,})".r
 
     /** Content type reported in result metadata. */
     def contentType: String = "text"
@@ -38,7 +38,7 @@ object TextCompressor extends Compressor
      */
     def compress(text: String, query: String = ""): Option[String] =
     {
-        if (Elision.MarkerRe.findFirstIn(text).isDefined) return None
+        if (Elision.MarkerRE.findFirstIn(text).isDefined) return None
         val sections = splitSections(text)
         if (sections.size <= KeepHead + KeepTail + 2) return None
 
@@ -47,7 +47,7 @@ object TextCompressor extends Compressor
         {
             if (i < KeepHead || i >= sections.size - KeepTail ||
                 isHeading(sections(i)) ||
-                Elision.ImportantRe.findFirstIn(sections(i)).isDefined)
+                Elision.ImportantRE.findFirstIn(sections(i)).isDefined)
             {
                 keep(i) = true
             }
@@ -115,7 +115,7 @@ object TextCompressor extends Compressor
         }
         for (line <- lines)
         {
-            val fence = FenceRe.findFirstIn(line).map(_.trim)
+            val fence = FenceRE.findFirstIn(line).map(_.trim)
             if (openFence.nonEmpty)
             {
                 buf += line

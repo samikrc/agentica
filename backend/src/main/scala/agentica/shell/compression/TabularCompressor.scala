@@ -7,7 +7,7 @@ import scala.util.matching.Regex
  *  rows that carry no distinctive signal.
  *
  *  Kept rows: the header, the first and last few data rows, rows matching
- *  [[Elision.ImportantRe]], rows holding a numeric column's extrema,
+ *  [[Elision.ImportantRE]], rows holding a numeric column's extrema,
  *  query-relevant rows, and a representative of every distinct row shape
  *  ([[Elision.keepNonRedundant]]). Dropped runs collapse into in-table marker
  *  rows carrying [[Elision.summarizeFields]] facts about exactly those rows,
@@ -29,7 +29,7 @@ object TabularCompressor extends Compressor
     /** Rows a query-aware pass may additionally keep. */
     private val QueryLimit = 24
 
-    private val SeparatorCellRe: Regex = ":?-{3,}:?".r
+    private val SeparatorCellRE: Regex = ":?-{3,}:?".r
 
     /** Tables nested inside prose compress with a lower row threshold. */
     private[compression] val EmbeddedMinRows = 6
@@ -67,7 +67,7 @@ object TabularCompressor extends Compressor
      */
     private def compressTable(text: String, query: String, minRows: Int): Option[String] =
     {
-        if (Elision.MarkerRe.findFirstIn(text).isDefined) return None
+        if (Elision.MarkerRE.findFirstIn(text).isDefined) return None
         parse(text) match
         {
             case None => None
@@ -79,7 +79,7 @@ object TabularCompressor extends Compressor
                 val keep = Array.fill(rows.size)(false)
                 for (i <- 0 until KeepFirst.min(rows.size)) keep(i) = true
                 for (i <- (rows.size - KeepLast) until rows.size) keep(i) = true
-                for (i <- rows.indices if Elision.ImportantRe.findFirstIn(docs(i)).isDefined) keep(i) = true
+                for (i <- rows.indices if Elision.ImportantRE.findFirstIn(docs(i)).isDefined) keep(i) = true
                 Elision.keepNumericExtrema(rows, keep)
                 Elision.keepQueryRelevant(keep, docs, query, QueryLimit)
                 Elision.keepNonRedundant(docs, keep)
@@ -213,7 +213,7 @@ object TabularCompressor extends Compressor
         if (parsed.exists(_.isEmpty)) return None
         val rows   = parsed.flatten
         if (rows.head.size < 2) return None
-        if (!rows(1).forall(c => SeparatorCellRe.matches(c))) return None
+        if (!rows(1).forall(c => SeparatorCellRE.matches(c))) return None
         if (rows.drop(2).exists(_.size != rows.head.size)) return None
         Some(Table(header = rows.head, rows = rows.drop(2),
             kind = Kind.Markdown, delimiter = '|', lineSep = lineSep))

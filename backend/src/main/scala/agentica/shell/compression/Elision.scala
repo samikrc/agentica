@@ -27,18 +27,18 @@ import scala.util.matching.Regex
 private[compression] object Elision
 {
     /** Signal words force-kept in any unit they appear in. */
-    val ImportantRe: Regex =
+    val ImportantRE: Regex =
         "\\b(?i:ERROR|FAIL|FAILED|FATAL|PANIC|EXCEPTION|WARNING|DENIED|REJECTED|CRITICAL|SECURITY)\\b".r
 
     /** Recognises elision markers emitted by [[shapedRuns]], so a second pass never re-compresses them. */
-    val MarkerRe: Regex = "…\\s*\\d+\\s+(?:lines|rows|sections|elements)\\s+elided".r
+    val MarkerRE: Regex = "…\\s*\\d+\\s+(?:lines|rows|sections|elements)\\s+elided".r
 
     /** Field names whose values must never appear in a marker summary. */
-    private val SecretFieldRe: Regex =
+    private val SecretFieldRE: Regex =
         "(?i)(secret|passw|token|api[_-]?key|authoriz|credential|cookie|session)".r
 
     /** Extracts `name=value` / `name: value` pairs from a free-text unit. */
-    private val FieldRe: Regex = "([A-Za-z_][A-Za-z0-9_.-]*)[=:]\\s*([^\\s,;|]+)".r
+    private val FieldRE: Regex = "([A-Za-z_][A-Za-z0-9_.-]*)[=:]\\s*([^\\s,;|]+)".r
 
     /** Smallest dropped run worth collapsing into a marker; smaller runs stay verbatim. */
     private val MinElideUnits = 3
@@ -47,10 +47,10 @@ private[compression] object Elision
     private val MaxPromotions = 128
 
     /** Kept units sampled to seed the resemblance-class list. */
-    private val MaxClasses = 64
+    private val MaxResemblanceClasses = 64
 
     /** Share of a dropped unit's vocabulary a kept unit must cover for the drop to count as represented. */
-    private val Containment = 0.9
+    private val ContainmentRatio = 0.9
 
     /** Vocabulary built per unit before the profile is considered unbounded. */
     private val MaxUnitTokens = 128
@@ -79,7 +79,7 @@ private[compression] object Elision
     /**
      *  Promotes dropped units so every distinct kind of content survives once.
      *
-     *  A dropped unit is kept when no already-kept unit covers [[Containment]]
+     *  A dropped unit is kept when no already-kept unit covers [[ContainmentRatio]]
      *  of its vocabulary. Digit runs mask to a single `#` so `replicas: 2` and
      *  `replicas: 3` recognise each other as the same line, while units too
      *  numeric to compare masked keep their digits — the numbers ARE the
@@ -94,9 +94,9 @@ private[compression] object Elision
         if (units.size != keep.size) return
         val keptIdx  = keep.indices.filter(keep(_))
         val classes  = mutable.ArrayBuffer.empty[Profile]
-        val step     = math.max(1, keptIdx.size / MaxClasses)
+        val step     = math.max(1, keptIdx.size / MaxResemblanceClasses)
         var n        = 0
-        while (n < keptIdx.size && classes.size < MaxClasses)
+        while (n < keptIdx.size && classes.size < MaxResemblanceClasses)
         {
             classes += vocabulary(units(keptIdx(n)))
             n += step
@@ -240,7 +240,7 @@ private[compression] object Elision
         if (units.size < 2 || units.exists(_.isEmpty)) return ""
         val budget = math.min(SummaryMaxBytes, math.max(SummaryMinBudget, elidedBytes / SummaryShareDenom))
         val names  = units.flatten.map(_._1).distinct
-            .filter(n => n.length <= MaxNameBytes && SecretFieldRe.findFirstIn(n).isEmpty)
+            .filter(n => n.length <= MaxNameBytes && SecretFieldRE.findFirstIn(n).isEmpty)
 
         val enums     = mutable.ArrayBuffer.empty[String]
         val constants = mutable.ArrayBuffer.empty[String]
@@ -306,7 +306,7 @@ private[compression] object Elision
      *  @return      Up to [[MaxFieldsPerUnit]] pairs in order of appearance.
      */
     def fieldsOfLine(unit: String): Vector[(String, String)] =
-        FieldRe.findAllMatchIn(unit).take(MaxFieldsPerUnit)
+        FieldRE.findAllMatchIn(unit).take(MaxFieldsPerUnit)
             .map(m => m.group(1) -> m.group(2)).toVector
 
     /**
@@ -417,7 +417,7 @@ private[compression] object Elision
     }
 
     /**
-     *  Whether a dropped unit's vocabulary is [[Containment]]-covered by any
+     *  Whether a dropped unit's vocabulary is [[ContainmentRatio]]-covered by any
      *  surviving resemblance class. Empty units carry nothing to lose.
      *  @param dropped  The dropped unit's profile.
      *  @param classes  Profiles of units already kept or promoted.
@@ -426,7 +426,7 @@ private[compression] object Elision
     private def representedBy(dropped: Profile, classes: Iterable[Profile]): Boolean =
     {
         if (dropped.vocab.isEmpty) return true
-        val need = math.ceil(Containment * dropped.vocab.size).toInt
+        val need = math.ceil(ContainmentRatio * dropped.vocab.size).toInt
         classes.exists { c =>
             c.masked == dropped.masked && dropped.vocab.count(c.vocab.contains) >= need
         }

@@ -41,11 +41,11 @@ object JSONCompressor extends Compressor
     private val InvariantsKey  = "__agentica_invariants__"
 
     /** Object keys whose subtrees are preserved verbatim. */
-    private val ErrorKeyRe: Regex =
+    private val ErrorKeyRE: Regex =
         "(?i)^(error|errors|message|msg|stack|stacktrace|stack_trace|trace|traceback|exception|reason|detail|details|warning|warnings)$".r
 
     /** Critical keywords inside an element force-keep that element. */
-    private val ErrorValueRe: Regex =
+    private val ErrorValueRE: Regex =
         "(?i)\\b(error|errors|exception|failed|failure|critical|fatal|crash|panic|abort|timeout|denied|rejected)\\b".r
 
     /** Content type reported in result metadata. */
@@ -70,7 +70,7 @@ object JSONCompressor extends Compressor
             {
                 case o: ujson.Obj =>
                     val out = ujson.Obj()
-                    for ((k, vv) <- o.obj) out.obj(k) = transform(vv, ErrorKeyRe.matches(k))
+                    for ((k, vv) <- o.obj) out.obj(k) = transform(vv, ErrorKeyRE.matches(k))
                     out
                 case a: ujson.Arr =>
                     if (containsMarker(a)) a
@@ -109,7 +109,7 @@ object JSONCompressor extends Compressor
         val keep = Array.fill(n)(false)
         for (i <- 0 until KeepFirst.min(n)) keep(i) = true
         for (i <- (n - KeepLast) until n) keep(i) = true
-        for (i <- docs.indices if ErrorValueRe.findFirstIn(docs(i)).isDefined) keep(i) = true
+        for (i <- docs.indices if ErrorValueRE.findFirstIn(docs(i)).isDefined) keep(i) = true
         keepExtrema(arr, keep)
         Elision.keepQueryRelevant(keep, docs, query, QueryLimit)
         Elision.keepNonRedundant(docs, keep)
