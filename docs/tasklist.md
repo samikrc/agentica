@@ -44,6 +44,7 @@ Goal: provide a working local app that runs as a JVM backend plus browser UI.
 - [ ] Generalize static asset serving beyond `/css/*` and `/js/*` if additional asset folders are added.
 - [ ] Decide whether launch scripts should auto-open the browser or only print the URL.
 - [ ] Add a basic smoke-test checklist for browser mode.
+- [ ] `tool_progress` SSE indicator is unreliable — debug end-to-end (tool emits `AgentEvent.ToolProgress` → `Routes` serialises `tool_progress` → `api.js` handler → `chat.js` chip render). Observed: progress updates frequently fail to appear or stall. Needed before relying on it for long operations; AG-31 emits progress opportunistically but does not depend on it.
 
 ---
 
@@ -411,9 +412,9 @@ Ordered by enables-most → cost-per-point → trigger-driven. Items 1–3 land 
 
 **Tier 2 — structural, bigger payoff:**
 
-- [ ] Hybrid retrieval over scratchpad + indexed documents (FTS5 BM25 + vector + RRF) — ticket: "Hybrid retrieval over scratchpad + indexed documents". Phase A: FTS5 index over scratchpad results, BM25-ranked search with cursor paging (pattern: https://github.com/mksglu/context-mode). Phase B: workspace indexing + embeddings fused via RRF (implements the Phase 6 indexing items; candidate embedders: nomic-embed-text vs EmbeddingGemma 2 — benchmark on doc-eval before choosing).
+- [ ] Hybrid lexical retrieval over workspace + stored content (FTS5 BM25 + grep, RRF) — ticket: AG-31 "Hybrid retrieval over scratchpad + indexed documents". Design locked in `docs/agent_loop_runtime.md` §7.5. One `files_search` tool with `scope=workspace|stored` and `ref=` drill-down (no separate `scratch_search`); incremental refresh-on-search (no build trigger); raw-doc text-layer indexing with VLM conversion on demand and a supersede rule; budget-driven paging (`Displaying: N of M`, `For more entries, use:`); true-LRU scratchpad eviction. Semantic/embedding retrieval (vector arm + RRF + separate tool) is a follow-up ticket; candidate embedders: nomic-embed-text vs EmbeddingGemma 2 — benchmark on doc-eval before choosing.
 - [ ] Dev-time OTLP trace export (Phoenix/Langfuse) — ticket: "Dev-time OTLP trace export for agent-run debugging". Optional `AGENTICA_OTLP`-gated spans over `AgentLoop`/provider/tool calls using `gen_ai.*` semantic conventions; `docker-compose.dev.yml` with Phoenix. Schedule before hybrid Phase B / micro-skills work, where trace-UI debugging pays most. Dev tooling only — production stays local-only, no export.
-- [ ] Cross-session transcript search (AG-39) — index `messages`/`agent_turns` from past sessions into the AG-31 hybrid-retrieval corpus so the agent can recall prior conversations ("what did we discuss last week"). Corpus addition, not a standalone index; pairs with AG-19 session summarization for compact retrieval units. Lands after AG-31 Phase A exists.
+- [ ] Cross-session transcript search (AG-39) — index `messages`/`agent_turns` from past sessions into the AG-31 retrieval corpus so the agent can recall prior conversations ("what did we discuss last week"). Corpus addition, not a standalone index; pairs with AG-19 session summarization for compact retrieval units. Lands after the AG-31 workspace/stored index exists.
 
 **Tier 3 — when the trigger arrives:**
 
