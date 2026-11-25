@@ -5,6 +5,7 @@ import agentica.llm.{LLMProvider, OllamaProvider, OpenAIProvider}
 import agentica.observability.{TokenAccounting, TraceLogger}
 import agentica.permissions.ScopeStoreImpl
 import agentica.platform.AppDirs
+import agentica.search.SearchIndexImpl
 import agentica.server.Routes
 import agentica.session.{AgentTurnStore, MemoryStoreImpl, MessageStore, RunStore, SessionStore}
 import agentica.settings.{AppSettings, SettingsStore}
@@ -64,6 +65,7 @@ object BackendServer extends cask.Main
     val settingsStore  = SettingsStore(AppDirs.settingsPath)
     val memoryStore    = MemoryStoreImpl(conn)
     val scopeStore     = ScopeStoreImpl(conn)
+    val searchIndex    = SearchIndexImpl(conn)
 
     sessionStore.init()
     messageStore.init()
@@ -71,6 +73,7 @@ object BackendServer extends cask.Main
     agentTurnStore.init()
     memoryStore.init()
     scopeStore.init()
+    searchIndex.init()
 
     // --- Document tool detection + font registration ---
     DocToolDetector.status   // eagerly trigger detection; result is cached
