@@ -1,7 +1,7 @@
 package agentica.search
 
 import agentica.observability.TraceLogger
-import java.sql.{Connection, PreparedStatement}
+import java.sql.{Connection, PreparedStatement, ResultSet}
 
 /**
  *  JDBC-backed [[SearchIndex]] over SQLite FTS5.
@@ -36,6 +36,7 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
                 """CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
                   |    text,
                   |    kind        UNINDEXED,
+                  |    root_id     UNINDEXED,
                   |    session_id  UNINDEXED,
                   |    run_id      UNINDEXED,
                   |    source_path UNINDEXED,
@@ -47,6 +48,7 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
             st.execute(
                 """CREATE TABLE IF NOT EXISTS chunk_meta (
                   |    kind          TEXT NOT NULL,
+                  |    root_id       TEXT NOT NULL DEFAULT '',
                   |    session_id    TEXT NOT NULL DEFAULT '',
                   |    run_id        TEXT NOT NULL DEFAULT '',
                   |    source_path   TEXT NOT NULL,
@@ -56,7 +58,7 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
                   |    chunk_count   INTEGER NOT NULL,
                   |    indexed_at    INTEGER NOT NULL,
                   |    replaced_by   TEXT,
-                  |    PRIMARY KEY (kind, session_id, run_id, source_path)
+                  |    PRIMARY KEY (kind, root_id, session_id, run_id, source_path)
                   |)""".stripMargin)
             st.execute(
                 "CREATE INDEX IF NOT EXISTS chunk_meta_indexed ON chunk_meta (kind, indexed_at)")
@@ -87,23 +89,18 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
 
     /**
      *  Looks up the metadata row for one source.
-     *  @param kind        Row kind.
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @param sourcePath  Workspace-relative path or scratch key.
-     *  @return            The metadata row, or `None` when not indexed.
+     *  @param key  Full address of the source.
+     *  @return     The metadata row, or `None` when not indexed.
      */
-    def meta(kind: String, sessionId: Option[String], runId: Option[String],
-             sourcePath: String): Option[SourceMeta] =
+    def meta(key: SourceKey): Option[SourceMeta] =
     {
         if (!available) return None
         val c = conn()
         try
         {
-            val ps = c.prepareStatement(
-                s"SELECT * FROM chunk_meta WHERE ${keyPredicate}")
-            bindKeys(ps, 1, kind, sessionId, runId, sourcePath)
-            val rs = ps.executeQuery()
+            val ps = c.prepareStatement(s"SELECT * FROM chunk_meta WHERE $keyPredicate")
+            bindKeys(ps, 1, key)
+            val rs     = ps.executeQuery()
             val result = if (rs.next()) Some(readMeta(rs)) else None
             rs.close()
             ps.close()
@@ -118,24 +115,20 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
     /**
      *  Reports whether the indexed copy of a source matches the given
      *  `(lastModified, sizeBytes)` pair.
-     *  @param kind          Row kind.
-     *  @param sessionId     Owning session for stored rows.
-     *  @param runId         Owning run for computed stored rows.
-     *  @param sourcePath    Workspace-relative path or scratch key.
+     *  @param key           Full address of the source.
      *  @param lastModified  Current source modification time (epoch ms).
      *  @param sizeBytes     Current source size.
      *  @return              `true` when the existing row is current.
      */
-    def isCurrent(kind: String, sessionId: Option[String], runId: Option[String],
-                  sourcePath: String, lastModified: Long, sizeBytes: Long): Boolean =
+    def isCurrent(key: SourceKey, lastModified: Long, sizeBytes: Long): Boolean =
     {
         if (!available) return false
         val c = conn()
         try
         {
             val ps = c.prepareStatement(
-                s"SELECT 1 FROM chunk_meta WHERE ${keyPredicate} AND last_modified = ? AND size_bytes = ?")
-            var i = bindKeys(ps, 1, kind, sessionId, runId, sourcePath)
+                s"SELECT 1 FROM chunk_meta WHERE $keyPredicate AND last_modified = ? AND size_bytes = ?")
+            val i = bindKeys(ps, 1, key)
             ps.setLong(i, lastModified)
             ps.setLong(i + 1, sizeBytes)
             val rs     = ps.executeQuery()
@@ -152,16 +145,12 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
 
     /**
      *  Replaces all chunks for one source and upserts its metadata row.
-     *  @param kind          Row kind.
-     *  @param sessionId     Owning session for stored rows.
-     *  @param runId         Owning run for computed stored rows.
-     *  @param sourcePath    Workspace-relative path or scratch key.
+     *  @param key           Full address of the source.
      *  @param text          Full source text to chunk and index.
      *  @param lastModified  Source modification time (epoch ms).
      *  @param sizeBytes     Source size.
      */
-    def index(kind: String, sessionId: Option[String], runId: Option[String],
-              sourcePath: String, text: String, lastModified: Long, sizeBytes: Long): Unit =
+    def index(key: SourceKey, text: String, lastModified: Long, sizeBytes: Long): Unit =
     {
         if (!available) return
         val chunks = Chunker.chunk(text)
@@ -171,46 +160,49 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
             c.setAutoCommit(false)
             try
             {
-                deleteChunks(c, kind, sessionId, runId, sourcePath)
+                deleteChunks(c, key)
 
                 val ps = c.prepareStatement(
                     """INSERT INTO chunk_fts
-                      |    (text, kind, session_id, run_id, source_path, chunk_index, start_line, end_line)
-                      |VALUES (?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin)
+                      |    (text, kind, root_id, session_id, run_id, source_path,
+                      |     chunk_index, start_line, end_line)
+                      |VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""".stripMargin)
                 for (ch <- chunks)
                 {
                     ps.setString(1, ch.text)
-                    ps.setString(2, kind)
-                    ps.setString(3, sessionId.getOrElse(""))
-                    ps.setString(4, runId.getOrElse(""))
-                    ps.setString(5, sourcePath)
-                    ps.setInt(6, ch.index)
-                    ps.setInt(7, ch.startLine)
-                    ps.setInt(8, ch.endLine)
+                    ps.setString(2, key.kind)
+                    ps.setString(3, key.rootId)
+                    ps.setString(4, key.sessionId.getOrElse(""))
+                    ps.setString(5, key.runId.getOrElse(""))
+                    ps.setString(6, key.sourcePath)
+                    ps.setInt(7, ch.index)
+                    ps.setInt(8, ch.startLine)
+                    ps.setInt(9, ch.endLine)
                     ps.executeUpdate()
                 }
                 ps.close()
 
                 val upsert = c.prepareStatement(
                     """INSERT INTO chunk_meta
-                      |    (kind, session_id, run_id, source_path, last_modified, size_bytes,
-                      |     line_count, chunk_count, indexed_at, replaced_by)
-                      |VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                      |ON CONFLICT(kind, session_id, run_id, source_path) DO UPDATE SET
+                      |    (kind, root_id, session_id, run_id, source_path, last_modified,
+                      |     size_bytes, line_count, chunk_count, indexed_at, replaced_by)
+                      |VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                      |ON CONFLICT(kind, root_id, session_id, run_id, source_path) DO UPDATE SET
                       |    last_modified = excluded.last_modified,
                       |    size_bytes    = excluded.size_bytes,
                       |    line_count    = excluded.line_count,
                       |    chunk_count   = excluded.chunk_count,
                       |    indexed_at    = excluded.indexed_at""".stripMargin)
-                upsert.setString(1, kind)
-                upsert.setString(2, sessionId.getOrElse(""))
-                upsert.setString(3, runId.getOrElse(""))
-                upsert.setString(4, sourcePath)
-                upsert.setLong(5, lastModified)
-                upsert.setLong(6, sizeBytes)
-                upsert.setInt(7, lineCount(text))
-                upsert.setInt(8, chunks.size)
-                upsert.setLong(9, System.currentTimeMillis())
+                upsert.setString(1, key.kind)
+                upsert.setString(2, key.rootId)
+                upsert.setString(3, key.sessionId.getOrElse(""))
+                upsert.setString(4, key.runId.getOrElse(""))
+                upsert.setString(5, key.sourcePath)
+                upsert.setLong(6, lastModified)
+                upsert.setLong(7, sizeBytes)
+                upsert.setInt(8, lineCount(text))
+                upsert.setInt(9, chunks.size)
+                upsert.setLong(10, System.currentTimeMillis())
                 upsert.executeUpdate()
                 upsert.close()
 
@@ -234,16 +226,13 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
     }
 
     /**
-     *  Runs one FTS5 `MATCH` query restricted to the given row scope.
-     *  @param kind        Row kind.
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @param matchExpr   FTS5 match expression, already sanitised by the caller.
-     *  @param limit       Maximum hits to return.
-     *  @return            Hits ordered best-first by BM25.
+     *  Runs one FTS5 `MATCH` query restricted to the given scope.
+     *  @param scope      Row scope to search.
+     *  @param matchExpr  FTS5 match expression, already sanitised by the caller.
+     *  @param limit      Maximum hits to return.
+     *  @return           Hits ordered best-first by BM25.
      */
-    def search(kind: String, sessionId: Option[String], runId: Option[String],
-               matchExpr: String, limit: Int): List[SearchHit] =
+    def search(scope: IndexScope, matchExpr: String, limit: Int): List[SearchHit] =
     {
         if (!available) return Nil
         val c = conn()
@@ -254,14 +243,13 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
                   |       snippet(chunk_fts, 0, '«', '»', '…', 12) AS snip,
                   |       bm25(chunk_fts) AS rank
                   |FROM chunk_fts
-                  |WHERE chunk_fts MATCH ? AND kind = ? AND session_id = ? AND run_id = ?
+                  |WHERE chunk_fts MATCH ?
+                  |  AND kind = ? AND root_id = ? AND session_id = ? AND run_id = ?
                   |ORDER BY rank
                   |LIMIT ?""".stripMargin)
             ps.setString(1, matchExpr)
-            ps.setString(2, kind)
-            ps.setString(3, sessionId.getOrElse(""))
-            ps.setString(4, runId.getOrElse(""))
-            ps.setInt(5, limit)
+            val i = bindScope(ps, 2, scope)
+            ps.setInt(i, limit)
             val rs  = ps.executeQuery()
             val buf = scala.collection.mutable.ListBuffer.empty[SearchHit]
             while rs.next() do
@@ -288,15 +276,12 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
     }
 
     /**
-     *  Counts matches for a sanitised FTS5 expression within the given row scope.
-     *  @param kind        Row kind.
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @param matchExpr   FTS5 match expression.
-     *  @return            Total number of matching chunks.
+     *  Counts matches for a sanitised FTS5 expression within the given scope.
+     *  @param scope      Row scope to count within.
+     *  @param matchExpr  FTS5 match expression.
+     *  @return           Total number of matching chunks.
      */
-    def countMatches(kind: String, sessionId: Option[String], runId: Option[String],
-                     matchExpr: String): Int =
+    def countMatches(scope: IndexScope, matchExpr: String): Int =
     {
         if (!available) return 0
         val c = conn()
@@ -304,11 +289,10 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
         {
             val ps = c.prepareStatement(
                 """SELECT count(*) FROM chunk_fts
-                  |WHERE chunk_fts MATCH ? AND kind = ? AND session_id = ? AND run_id = ?""".stripMargin)
+                  |WHERE chunk_fts MATCH ?
+                  |  AND kind = ? AND root_id = ? AND session_id = ? AND run_id = ?""".stripMargin)
             ps.setString(1, matchExpr)
-            ps.setString(2, kind)
-            ps.setString(3, sessionId.getOrElse(""))
-            ps.setString(4, runId.getOrElse(""))
+            bindScope(ps, 2, scope)
             val rs = ps.executeQuery()
             rs.next()
             val n = rs.getInt(1)
@@ -324,12 +308,10 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
 
     /**
      *  Lists metadata rows for one scope, ordered by `indexed_at` ascending.
-     *  @param kind        Row kind.
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @return            Metadata rows in stale-first order.
+     *  @param scope  Row scope to list.
+     *  @return       Metadata rows in stale-first order.
      */
-    def listSources(kind: String, sessionId: Option[String], runId: Option[String]): List[SourceMeta] =
+    def listSources(scope: IndexScope): List[SourceMeta] =
     {
         if (!available) return Nil
         val c = conn()
@@ -337,11 +319,9 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
         {
             val ps = c.prepareStatement(
                 """SELECT * FROM chunk_meta
-                  |WHERE kind = ? AND session_id = ? AND run_id = ?
+                  |WHERE kind = ? AND root_id = ? AND session_id = ? AND run_id = ?
                   |ORDER BY indexed_at ASC""".stripMargin)
-            ps.setString(1, kind)
-            ps.setString(2, sessionId.getOrElse(""))
-            ps.setString(3, runId.getOrElse(""))
+            bindScope(ps, 1, scope)
             val rs  = ps.executeQuery()
             val buf = scala.collection.mutable.ListBuffer.empty[SourceMeta]
             while rs.next() do buf += readMeta(rs)
@@ -357,23 +337,19 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
 
     /**
      *  Records the converted sibling that supersedes a source.
-     *  @param kind          Row kind.
-     *  @param sessionId     Owning session for stored rows.
-     *  @param runId         Owning run for computed stored rows.
-     *  @param sourcePath    Superseded source path.
-     *  @param replacement   Converted sibling path, or `None` to clear the alias.
+     *  @param key          Full address of the superseded source.
+     *  @param replacement  Converted sibling path, or `None` to clear the alias.
      */
-    def setReplacedBy(kind: String, sessionId: Option[String], runId: Option[String],
-                      sourcePath: String, replacement: Option[String]): Unit =
+    def setReplacedBy(key: SourceKey, replacement: Option[String]): Unit =
     {
         if (!available) return
         val c = conn()
         try
         {
             val ps = c.prepareStatement(
-                s"UPDATE chunk_meta SET replaced_by = ? WHERE ${keyPredicate}")
+                s"UPDATE chunk_meta SET replaced_by = ? WHERE $keyPredicate")
             ps.setString(1, replacement.orNull)
-            bindKeys(ps, 2, kind, sessionId, runId, sourcePath)
+            bindKeys(ps, 2, key)
             ps.executeUpdate()
             ps.close()
         }
@@ -385,25 +361,17 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
 
     /**
      *  Resolves a supersede alias (e.g. `q3.pdf` → `q3.md`).
-     *  @param kind        Row kind.
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @param sourcePath  Path that may have been superseded.
-     *  @return            The replacement path when an alias is recorded.
+     *  @param key  Address of the path that may have been superseded.
+     *  @return     The replacement path when an alias is recorded.
      */
-    def resolveAlias(kind: String, sessionId: Option[String], runId: Option[String],
-                     sourcePath: String): Option[String] =
-        meta(kind, sessionId, runId, sourcePath).flatMap(_.replacedBy)
+    def resolveAlias(key: SourceKey): Option[String] =
+        meta(key).flatMap(_.replacedBy)
 
     /**
      *  Deletes all chunks and the metadata row for one source.
-     *  @param kind        Row kind.
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @param sourcePath  Workspace-relative path or scratch key.
+     *  @param key  Full address of the source.
      */
-    def deleteSource(kind: String, sessionId: Option[String], runId: Option[String],
-                     sourcePath: String): Unit =
+    def deleteSource(key: SourceKey): Unit =
     {
         if (!available) return
         val c = conn()
@@ -412,10 +380,9 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
             c.setAutoCommit(false)
             try
             {
-                deleteChunks(c, kind, sessionId, runId, sourcePath)
-                val ps = c.prepareStatement(
-                    s"DELETE FROM chunk_meta WHERE ${keyPredicate}")
-                bindKeys(ps, 1, kind, sessionId, runId, sourcePath)
+                deleteChunks(c, key)
+                val ps = c.prepareStatement(s"DELETE FROM chunk_meta WHERE $keyPredicate")
+                bindKeys(ps, 1, key)
                 ps.executeUpdate()
                 ps.close()
                 c.commit()
@@ -442,47 +409,59 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
      *  @param sessionId  Session whose stored rows should be purged.
      */
     def deleteSession(sessionId: String): Unit =
-    {
-        if (!available) return
-        val c = conn()
-        try
-        {
-            c.setAutoCommit(false)
-            try
-            {
-                for (sql <- List(
-                    "DELETE FROM chunk_fts WHERE session_id = ?",
-                    "DELETE FROM chunk_meta WHERE session_id = ?"))
-                {
-                    val ps = c.prepareStatement(sql)
-                    ps.setString(1, sessionId)
-                    ps.executeUpdate()
-                    ps.close()
-                }
-                c.commit()
-            }
-            catch
-            {
-                case t: Throwable =>
-                    c.rollback()
-                    throw t
-            }
-            finally
-            {
-                c.setAutoCommit(true)
-            }
-        }
-        finally
-        {
-            c.close()
-        }
-    }
+        deleteWhere("session_id", sessionId)
 
     /**
      *  Deletes every stored row owned by a run (called at run end for computed keys).
      *  @param runId  Run whose computed rows should be purged.
      */
     def deleteRun(runId: String): Unit =
+        deleteWhere("run_id", runId)
+
+    /** WHERE clause addressing one row by its full key. */
+    private val keyPredicate: String =
+        "kind = ? AND root_id = ? AND session_id = ? AND run_id = ? AND source_path = ?"
+
+    /**
+     *  Binds a [[SourceKey]] starting at `index`.
+     *  @return The next free parameter index.
+     */
+    private def bindKeys(ps: PreparedStatement, index: Int, key: SourceKey): Int =
+    {
+        ps.setString(index, key.kind)
+        ps.setString(index + 1, key.rootId)
+        ps.setString(index + 2, key.sessionId.getOrElse(""))
+        ps.setString(index + 3, key.runId.getOrElse(""))
+        ps.setString(index + 4, key.sourcePath)
+        index + 5
+    }
+
+    /**
+     *  Binds an [[IndexScope]] starting at `index`.
+     *  @return The next free parameter index.
+     */
+    private def bindScope(ps: PreparedStatement, index: Int, scope: IndexScope): Int =
+    {
+        ps.setString(index, scope.kind)
+        ps.setString(index + 1, scope.rootId)
+        ps.setString(index + 2, scope.sessionId.getOrElse(""))
+        ps.setString(index + 3, scope.runId.getOrElse(""))
+        index + 4
+    }
+
+    /** Deletes chunk rows for one source without touching metadata. */
+    private def deleteChunks(c: Connection, key: SourceKey): Unit =
+    {
+        val ps = c.prepareStatement(
+            """DELETE FROM chunk_fts
+              |WHERE kind = ? AND root_id = ? AND session_id = ? AND run_id = ? AND source_path = ?""".stripMargin)
+        bindKeys(ps, 1, key)
+        ps.executeUpdate()
+        ps.close()
+    }
+
+    /** Deletes all rows where `column = value` from both tables. */
+    private def deleteWhere(column: String, value: String): Unit =
     {
         if (!available) return
         val c = conn()
@@ -492,11 +471,11 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
             try
             {
                 for (sql <- List(
-                    "DELETE FROM chunk_fts WHERE run_id = ?",
-                    "DELETE FROM chunk_meta WHERE run_id = ?"))
+                    s"DELETE FROM chunk_fts WHERE $column = ?",
+                    s"DELETE FROM chunk_meta WHERE $column = ?"))
                 {
                     val ps = c.prepareStatement(sql)
-                    ps.setString(1, runId)
+                    ps.setString(1, value)
                     ps.executeUpdate()
                     ps.close()
                 }
@@ -519,54 +498,23 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
         }
     }
 
-    /** WHERE clause addressing one row by its full key. */
-    private val keyPredicate: String =
-        "kind = ? AND session_id = ? AND run_id = ? AND source_path = ?"
-
-    /**
-     *  Binds the four key values starting at `index`.
-     *  @return The next free parameter index.
-     */
-    private def bindKeys(ps: PreparedStatement, index: Int, kind: String,
-                         sessionId: Option[String], runId: Option[String],
-                         sourcePath: String): Int =
-    {
-        ps.setString(index, kind)
-        ps.setString(index + 1, sessionId.getOrElse(""))
-        ps.setString(index + 2, runId.getOrElse(""))
-        ps.setString(index + 3, sourcePath)
-        index + 4
-    }
-
-    /** Deletes chunk rows for one source without touching metadata. */
-    private def deleteChunks(c: Connection, kind: String, sessionId: Option[String],
-                             runId: Option[String], sourcePath: String): Unit =
-    {
-        val ps = c.prepareStatement(
-            """DELETE FROM chunk_fts
-              |WHERE kind = ? AND session_id = ? AND run_id = ? AND source_path = ?""".stripMargin)
-        bindKeys(ps, 1, kind, sessionId, runId, sourcePath)
-        ps.executeUpdate()
-        ps.close()
-    }
-
     /** Reads one `chunk_meta` row from the current cursor position. */
-    private def readMeta(rs: java.sql.ResultSet): SourceMeta =
+    private def readMeta(rs: ResultSet): SourceMeta =
     {
-        val sessionId  = Option(rs.getString("session_id")).filter(_.nonEmpty)
-        val runId      = Option(rs.getString("run_id")).filter(_.nonEmpty)
-        val replacedBy = Option(rs.getString("replaced_by")).filter(_.nonEmpty)
         SourceMeta(
-            kind         = rs.getString("kind"),
-            sessionId    = sessionId,
-            runId        = runId,
-            sourcePath   = rs.getString("source_path"),
+            key = SourceKey(
+                kind       = rs.getString("kind"),
+                rootId     = rs.getString("root_id"),
+                sessionId  = Option(rs.getString("session_id")).filter(_.nonEmpty),
+                runId      = Option(rs.getString("run_id")).filter(_.nonEmpty),
+                sourcePath = rs.getString("source_path")
+            ),
             lastModified = rs.getLong("last_modified"),
             sizeBytes    = rs.getLong("size_bytes"),
             lineCount    = rs.getInt("line_count"),
             chunkCount   = rs.getInt("chunk_count"),
             indexedAt    = rs.getLong("indexed_at"),
-            replacedBy   = replacedBy
+            replacedBy   = Option(rs.getString("replaced_by")).filter(_.nonEmpty)
         )
     }
 

@@ -4,9 +4,10 @@ package agentica.search
  *  Kinds of rows held in the search index.
  *
  *  Workspace rows come from the refresh-on-search crawler and are shared by
- *  every session. Stored rows mirror `SessionScratchpad` entries and are
- *  session-scoped; computed entries (`__result_N__`) are additionally
- *  run-qualified because the scratchpad counter restarts each run.
+ *  every session rooted at the same workspace. Stored rows mirror
+ *  `SessionScratchpad` entries and are session-scoped; computed entries
+ *  (`__result_N__`) are additionally run-qualified because the scratchpad
+ *  counter restarts each run.
  */
 object IndexKind
 {
@@ -18,11 +19,38 @@ object IndexKind
 }
 
 /**
+ *  Full address of one indexed source.
+ *  @param kind        [[IndexKind.Workspace]] or [[IndexKind.Stored]].
+ *  @param rootId      Normalised workspace root for workspace rows; empty for stored rows.
+ *  @param sessionId   Owning session for stored rows; `None` for workspace rows.
+ *  @param runId       Owning run for computed stored rows; `None` otherwise.
+ *  @param sourcePath  Workspace-relative path or scratch key.
+ */
+case class SourceKey(
+    kind:       String,
+    rootId:     String              = "",
+    sessionId:  Option[String]      = None,
+    runId:      Option[String]      = None,
+    sourcePath: String
+)
+
+/**
+ *  Scope of a search: every row sharing these coordinates.
+ *  @param kind        [[IndexKind.Workspace]] or [[IndexKind.Stored]].
+ *  @param rootId      Workspace root for workspace rows; empty for stored rows.
+ *  @param sessionId   Owning session for stored rows.
+ *  @param runId       Owning run for computed stored rows.
+ */
+case class IndexScope(
+    kind:      String,
+    rootId:    String         = "",
+    sessionId: Option[String] = None,
+    runId:     Option[String] = None
+)
+
+/**
  *  Metadata for one indexed source (a workspace file or a stored entry).
- *  @param kind          [[IndexKind.Workspace]] or [[IndexKind.Stored]].
- *  @param sessionId     Owning session for stored rows; `None` for workspace rows.
- *  @param runId         Owning run for computed stored rows; `None` otherwise.
- *  @param sourcePath    Workspace-relative path or scratch key.
+ *  @param key           Full address of the source.
  *  @param lastModified  Source `lastModifiedTime` at index time (epoch ms).
  *  @param sizeBytes     Source size at index time.
  *  @param lineCount     Number of source lines.
@@ -31,10 +59,7 @@ object IndexKind
  *  @param replacedBy    Converted sibling that supersedes this source (e.g. `q3.pdf` → `q3.md`).
  */
 case class SourceMeta(
-    kind:         String,
-    sessionId:    Option[String],
-    runId:        Option[String],
-    sourcePath:   String,
+    key:          SourceKey,
     lastModified: Long,
     sizeBytes:    Long,
     lineCount:    Int,
@@ -65,9 +90,9 @@ case class SearchHit(
  *  Persistence contract for the FTS5 chunk index used by hybrid retrieval.
  *
  *  Backed by two SQLite tables: `chunk_fts` (FTS5 virtual table carrying chunk
- *  text) and `chunk_meta` (metadata only — no text). Rows are addressed by the
- *  tuple `(kind, sessionId, runId, sourcePath)`; absent session/run values are
- *  stored as empty strings so the primary key behaves consistently.
+ *  text) and `chunk_meta` (metadata only — no text). Rows are addressed by
+ *  [[SourceKey]]; absent root/session/run values are stored as empty strings so
+ *  the primary key behaves consistently.
  */
 trait SearchIndex
 {
@@ -85,105 +110,75 @@ trait SearchIndex
 
     /**
      *  Looks up the metadata row for one source.
-     *  @param kind        [[IndexKind.Workspace]] or [[IndexKind.Stored]].
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @param sourcePath  Workspace-relative path or scratch key.
-     *  @return            The metadata row, or `None` when the source is not indexed.
+     *  @param key  Full address of the source.
+     *  @return     The metadata row, or `None` when the source is not indexed.
      */
-    def meta(kind: String, sessionId: Option[String], runId: Option[String], sourcePath: String): Option[SourceMeta]
+    def meta(key: SourceKey): Option[SourceMeta]
 
     /**
      *  Reports whether the indexed copy of a source matches the given
      *  `(lastModified, sizeBytes)` pair, i.e. no re-indexing is needed.
-     *  @param kind          Row kind.
-     *  @param sessionId     Owning session for stored rows.
-     *  @param runId         Owning run for computed stored rows.
-     *  @param sourcePath    Workspace-relative path or scratch key.
+     *  @param key           Full address of the source.
      *  @param lastModified  Current source modification time (epoch ms).
      *  @param sizeBytes     Current source size.
      *  @return              `true` when the existing index row is current.
      */
-    def isCurrent(kind: String, sessionId: Option[String], runId: Option[String],
-                  sourcePath: String, lastModified: Long, sizeBytes: Long): Boolean
+    def isCurrent(key: SourceKey, lastModified: Long, sizeBytes: Long): Boolean
 
     /**
      *  Replaces all chunks for one source and upserts its metadata row.
      *  Chunking uses [[Chunker]]; the write is a single transaction.
-     *  @param kind          Row kind.
-     *  @param sessionId     Owning session for stored rows.
-     *  @param runId         Owning run for computed stored rows.
-     *  @param sourcePath    Workspace-relative path or scratch key.
+     *  @param key           Full address of the source.
      *  @param text          Full source text to chunk and index.
      *  @param lastModified  Source modification time (epoch ms).
      *  @param sizeBytes     Source size.
      */
-    def index(kind: String, sessionId: Option[String], runId: Option[String],
-              sourcePath: String, text: String, lastModified: Long, sizeBytes: Long): Unit
+    def index(key: SourceKey, text: String, lastModified: Long, sizeBytes: Long): Unit
 
     /**
-     *  Runs one FTS5 `MATCH` query restricted to the given row scope.
-     *  @param kind        Row kind.
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @param matchExpr   FTS5 match expression, already sanitised by the caller.
-     *  @param limit       Maximum hits to return.
-     *  @return            Hits ordered best-first by BM25.
+     *  Runs one FTS5 `MATCH` query restricted to the given scope.
+     *  @param scope      Row scope to search.
+     *  @param matchExpr  FTS5 match expression, already sanitised by the caller.
+     *  @param limit      Maximum hits to return.
+     *  @return           Hits ordered best-first by BM25.
      */
-    def search(kind: String, sessionId: Option[String], runId: Option[String],
-               matchExpr: String, limit: Int): List[SearchHit]
+    def search(scope: IndexScope, matchExpr: String, limit: Int): List[SearchHit]
 
     /**
-     *  Counts matches for a sanitised FTS5 expression within the given row scope.
-     *  @param kind        Row kind.
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @param matchExpr   FTS5 match expression.
-     *  @return            Total number of matching chunks.
+     *  Counts matches for a sanitised FTS5 expression within the given scope.
+     *  @param scope      Row scope to count within.
+     *  @param matchExpr  FTS5 match expression.
+     *  @return           Total number of matching chunks.
      */
-    def countMatches(kind: String, sessionId: Option[String], runId: Option[String],
-                     matchExpr: String): Int
+    def countMatches(scope: IndexScope, matchExpr: String): Int
 
     /**
      *  Lists metadata rows for one scope, ordered by `indexed_at` ascending so
      *  the refresh pass can prioritise never-indexed and stalest sources.
-     *  @param kind        Row kind.
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @return            Metadata rows in stale-first order.
+     *  @param scope  Row scope to list.
+     *  @return       Metadata rows in stale-first order.
      */
-    def listSources(kind: String, sessionId: Option[String], runId: Option[String]): List[SourceMeta]
+    def listSources(scope: IndexScope): List[SourceMeta]
 
     /**
      *  Records the converted sibling that supersedes a source.
-     *  @param kind          Row kind.
-     *  @param sessionId     Owning session for stored rows.
-     *  @param runId         Owning run for computed stored rows.
-     *  @param sourcePath    Superseded source path.
-     *  @param replacement   Converted sibling path, or `None` to clear the alias.
+     *  @param key          Full address of the superseded source.
+     *  @param replacement  Converted sibling path, or `None` to clear the alias.
      */
-    def setReplacedBy(kind: String, sessionId: Option[String], runId: Option[String],
-                      sourcePath: String, replacement: Option[String]): Unit
+    def setReplacedBy(key: SourceKey, replacement: Option[String]): Unit
 
     /**
      *  Resolves a supersede alias (e.g. `q3.pdf` → `q3.md`).
-     *  @param kind        Row kind.
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @param sourcePath  Path that may have been superseded.
-     *  @return            The replacement path when an alias is recorded.
+     *  @param key  Address of the path that may have been superseded.
+     *  @return     The replacement path when an alias is recorded.
      */
-    def resolveAlias(kind: String, sessionId: Option[String], runId: Option[String],
-                     sourcePath: String): Option[String]
+    def resolveAlias(key: SourceKey): Option[String]
 
     /**
      *  Deletes all chunks and the metadata row for one source.
-     *  @param kind        Row kind.
-     *  @param sessionId   Owning session for stored rows.
-     *  @param runId       Owning run for computed stored rows.
-     *  @param sourcePath  Workspace-relative path or scratch key.
+     *  @param key  Full address of the source.
      */
-    def deleteSource(kind: String, sessionId: Option[String], runId: Option[String], sourcePath: String): Unit
+    def deleteSource(key: SourceKey): Unit
 
     /**
      *  Deletes every stored row owned by a session (called on session delete).
