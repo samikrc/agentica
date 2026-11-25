@@ -357,7 +357,7 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                 case None    => ctx.scratchpad.entriesSnapshot
             }
 
-        if (entries.isEmpty) return buildOutput(input, Nil, None)
+        if (entries.isEmpty) return buildOutput(input, (Nil, false), None)
 
         val pattern    = buildPattern(input)
         val exactHits  = if (input.mode == "ranked") Nil
@@ -565,9 +565,9 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
      *  ranges within the same source.
      *  @param exactHits   Exact-arm hits in arm order.
      *  @param rankedHits  Ranked-arm hits in arm order.
-     *  @return            Fused `(hit, score)` pairs, best first, capped at [[MaxFusedHits]].
+     *  @return            Fused `(hit, score)` pairs best first capped at [[MaxFusedHits]], and whether the cap was exceeded.
      */
-    private def fuse(exactHits: List[RawHit], rankedHits: List[RawHit]): List[(RawHit, Double)] =
+    private def fuse(exactHits: List[RawHit], rankedHits: List[RawHit]): (List[(RawHit, Double)], Boolean) =
     {
         val exactRank  = exactHits.zipWithIndex.map { case (h, i) => h -> i }.toMap
         val rankedRank = rankedHits.zipWithIndex.map { case (h, i) => h -> i }.toMap
@@ -605,7 +605,8 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                 fused += merged -> g.map(contribution).sum
             }
         }
-        fused.sortBy { case (_, score) => -score }.take(MaxFusedHits).toList
+        val ordered = fused.sortBy { case (_, score) => -score }.toList
+        (ordered.take(MaxFusedHits), ordered.size > MaxFusedHits)
     }
 
     /**
@@ -615,12 +616,12 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
      *  @param indexNote  Refresh summary when the index pass was partial.
      *  @return           Paged output including the continuation command.
      */
-    private def buildOutput(input: FilesSearchInput, fused: List[(RawHit, Double)],
+    private def buildOutput(input: FilesSearchInput, fused: (List[(RawHit, Double)], Boolean),
                             indexNote: Option[String]): FilesSearchOutput =
     {
-        val total  = fused.size
-        val capped = total >= MaxFusedHits
-        val page   = fused.drop(input.cursor)
+        val (hits, capped) = fused
+        val total          = hits.size
+        val page   = hits.drop(input.cursor)
 
         // Select hits until the body budget is exhausted; always take at least one.
         val budget   = Presentation.BODY_BUDGET_CHARS - 200
@@ -768,6 +769,7 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
     {
         if (!Files.isRegularFile(path) || Files.isSymbolicLink(path)) return false
         if (path.getFileName.toString.startsWith(".")) return false
+        if (Files.size(path) > agentica.search.TextExtractor.MaxFileBytes) return false
         if (path.iterator().asScala.exists(seg => agentica.search.TextExtractor.isSkippedDir(seg.toString))) return false
         val ext = agentica.search.TextExtractor.extensionOf(path)
         agentica.search.TextExtractor.isSupported(path) && !agentica.search.TextExtractor.isDocument(path) && ext.nonEmpty

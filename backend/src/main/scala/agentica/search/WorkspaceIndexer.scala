@@ -74,7 +74,6 @@ class WorkspaceIndexer(index: SearchIndex)
 
         // 1. Walk the scope, collecting candidate files and the walked path set.
         val candidates = ListBuffer.empty[Path]
-        val walked     = scala.collection.mutable.Set.empty[String]
         var totalBytes = 0L
         val stream     = Files.walk(scopeAbs)
         try
@@ -89,7 +88,6 @@ class WorkspaceIndexer(index: SearchIndex)
                     if (size <= TextExtractor.MaxFileBytes)
                     {
                         candidates += path
-                        walked += relPath(rootAbs, path)
                         totalBytes += size
                     }
                 }

@@ -160,6 +160,7 @@ class AgentLoop(
                 // Hard cap: prevents runaway loops on models that keep requesting tools.
                 TraceLogger.warn(traceId, "max_iterations_exceeded",
                     Map("maxIterations" -> settings.maxIterations.toString))
+                searchIndex.deleteRun(traceId)
                 emitEvent(AgentEvent.AgentError("max_iterations_exceeded"))
                 running = false
             }
@@ -167,6 +168,7 @@ class AgentLoop(
             {
                 // The UI sent a cancel request (DELETE /runs/:runId sets this flag).
                 TraceLogger.info(traceId, "agent_cancelled", Map("iteration" -> iteration.toString))
+                searchIndex.deleteRun(traceId)
                 emitEvent(AgentEvent.Cancelled)
                 running = false
             }
@@ -223,6 +225,7 @@ class AgentLoop(
                     case ex: Exception =>
                         TraceLogger.error(traceId, "llm_stream_error",
                             Map("iteration" -> iteration.toString, "error" -> ex.getMessage))
+                        searchIndex.deleteRun(traceId)
                         emitEvent(AgentEvent.AgentError(ex.getMessage))
                         running = false
                         None
@@ -280,6 +283,7 @@ class AgentLoop(
                             "reasoningChars"   -> llmResponse.reasoningContent.fold(0)(_.length).toString,
                             "completionTokens" -> llmResponse.completionTokens.toString
                         ))
+                        searchIndex.deleteRun(traceId)
                         emitEvent(AgentEvent.AgentError(diagnostic))
                         running = false
                     }
@@ -346,6 +350,7 @@ class AgentLoop(
                                 // Check for cancellation between individual tool dispatches.
                                 TraceLogger.info(traceId, "agent_cancelled_in_tool",
                                     Map("iteration" -> iteration.toString))
+                                searchIndex.deleteRun(traceId)
                                 emitEvent(AgentEvent.Cancelled)
                                 cancelled = true
                                 running   = false
