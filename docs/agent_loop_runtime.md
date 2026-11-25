@@ -828,7 +828,7 @@ Embeddings over the same chunk corpus via a configurable OpenAI-compatible endpo
 
 - **Unit:** chunker (overlap, blank-line preference, short content); FTS5 probe; filters; refresh (skip-unchanged, replace-on-change, purge-missing); supersede rule + alias; true-LRU eviction; run-end/session-delete purges; ref hydration.
 - **Tool:** validation matrix; AND→OR fallback; fusion ordering (both arms > single arm); overlap merge; budget paging and `Displaying`/`For more entries` strings; `200+` ceiling; stored-scope session isolation; `ref=` drill-down; empty/evicted hints; degradation; `resolveRefs` guard.
-- **Benchmark (before locking the budget):** chunk+FTS throughput and PDFBox text-extraction throughput on the actual eval PDFs; record numbers here.
+- **Benchmark (recorded):** on this machine — FTS5 insert ~3–4 MB/s (6.8 MB / 1,700 chunks in ~1.6–2.2 s); a top-10 BM25 query over that corpus in 67–182 ms including a fresh SQLite connection (pooled in production); PDFBox text extraction ~150–200 ms/page (a 2-page fixture takes ~0.3–0.5 s warm, independent of `sortByPosition`). A 50-page PDF therefore costs ~8–10 s of extraction, so a PDF-heavy workspace converges over several searches rather than one pass. Mitigation shipped: the refresh orders cheap text files before raw documents (stale-first within each class) and reports `index: partial` so the model can narrow with `path=`. Reproduce with `agentica.misctests.SearchBenchmark`.
 - **Evaluation:** doc-eval before/after on the QAT Gemma retrieval config; compare tool-call counts and `llmUsage` (AG-42) per sweep; the success metric is fewer iterations and fewer futile retries, not just answer quality.
 
 ---

@@ -100,10 +100,12 @@ class WorkspaceIndexer(index: SearchIndex)
             stream.close()
         }
 
-        // 2. Order: never-indexed first, then stalest (listSources is already stale-first).
+        // 2. Order: cheap text files first, then raw documents (text extraction is
+        //    ~150-200 ms/page); within each class, never-indexed first then stalest.
         val sorted = candidates.toList.sortBy { p =>
-            val rel = relPath(rootAbs, p)
-            existing.get(rel).map(_.indexedAt).getOrElse(Long.MinValue)
+            val rel     = relPath(rootAbs, p)
+            val docRank = if (TextExtractor.isDocument(p)) 1 else 0
+            (docRank, existing.get(rel).map(_.indexedAt).getOrElse(Long.MinValue))
         }
 
         // 3. Index changed candidates until the budget elapses.
