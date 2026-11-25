@@ -5,6 +5,7 @@ import agentica.observability.TraceLogger
 import agentica.permissions.PermissionMiddleware
 import agentica.shell.compression.CompressionMiddleware
 import agentica.tools.{AgentResponse, ExecutionContext, ToolResult, ToolStatus}
+import java.nio.file.Files
 
 /**
  *  Entry point for all agent tool calls.
@@ -30,6 +31,9 @@ class VirtualShell(
     middleware: List[ToolMiddleware] = Nil
 )
 {
+    /** Maximum file size re-hydrated from disk when a scratch ref has expired. */
+    private val HydrationMaxBytes: Long = 10L * 1024 * 1024
+
     /**
      *  The dispatch chain: permission gating first, then result compression,
      *  then caller-supplied components. `after` hooks run in reverse order, so
@@ -80,7 +84,7 @@ class VirtualShell(
         val t0 = System.currentTimeMillis()
 
         // Substitution pass: resolve $scratch/<path> refs in all arg values
-        val resolvedArgs = resolveRefs(cmd.args, ctx)
+        val resolvedArgs = resolveRefs(cmd, ctx)
         val resolvedCmd  = cmd.copy(args = resolvedArgs)
 
         // Help command handled inline
@@ -168,21 +172,37 @@ class VirtualShell(
 
     /**
      *  Resolves scratchpad references in command argument values.
-     *  @param args  Command arguments before substitution.
-     *  @param ctx   Execution context containing the session scratchpad.
-     *  @return      Argument map with known scratch references replaced by their content.
+     *
+     *  `files_search`'s `ref` and `path` arguments are exempt: they consume the
+     *  reference itself rather than the referenced content. A file-backed ref
+     *  that is no longer in the pad (a later run) is re-hydrated by re-reading
+     *  the workspace file, so refs survive across runs.
+     *
+     *  @param cmd  Command whose arguments are being resolved.
+     *  @param ctx  Execution context containing the session scratchpad.
+     *  @return     Argument map with known scratch references replaced by their content.
      */
-    private def resolveRefs(args: Map[String, String], ctx: ExecutionContext): Map[String, String] =
+    private def resolveRefs(cmd: Command, ctx: ExecutionContext): Map[String, String] =
     {
-        args.map { case (k, v) =>
-            if (v.startsWith("$scratch/"))
+        val keepRef = cmd.fullName == "files_search"
+        cmd.args.map { case (k, v) =>
+            if (keepRef && (k == "ref" || k == "path"))
+            {
+                k -> v
+            }
+            else if (v.startsWith("$scratch/"))
             {
                 ctx.scratchpad.get(v) match
                 {
                     case Some(entry) => k -> entry.content
                     case None        =>
-                        TraceLogger.warn(ctx.traceId, "scratch_ref_not_found", Map("ref" -> v))
-                        k -> v   // pass through unresolved; the tool will produce a not_found error
+                        hydrateRef(v, ctx) match
+                        {
+                            case Some(entry) => k -> entry.content
+                            case None        =>
+                                TraceLogger.warn(ctx.traceId, "scratch_ref_not_found", Map("ref" -> v))
+                                k -> v   // pass through unresolved; the tool will produce a not_found error
+                        }
                 }
             }
             else
@@ -190,6 +210,44 @@ class VirtualShell(
                 k -> v
             }
         }
+    }
+
+    /**
+     *  Re-hydrates a file-backed scratch ref by re-reading the workspace file.
+     *  Computed keys (`__result_N__`) have no backing file and are not hydrated.
+     *  @param ref  Scratch ref, e.g. `$scratch/data/report.md`.
+     *  @param ctx  Execution context providing the workspace root and pad.
+     *  @return     The re-stored entry, or `None` when the file is unavailable.
+     */
+    private def hydrateRef(ref: String, ctx: ExecutionContext): Option[ScratchEntry] =
+    {
+        val key = ref.stripPrefix("$scratch/")
+        if (key.startsWith("__result_")) return None
+        val rootStr = ctx.session.rootPath.getOrElse("")
+        PathSandbox.resolve(rootStr, key).toOption
+            .filter(Files.isRegularFile(_))
+            .filter(p => Files.size(p) <= HydrationMaxBytes)
+            .flatMap { path =>
+                try
+                {
+                    val content = Files.readString(path)
+                    val now     = System.currentTimeMillis()
+                    val entry   = ScratchEntry(
+                        content      = content,
+                        sizeBytes    = Files.size(path),
+                        lineCount    = content.count(_ == '\n') + 1,
+                        sourcePath   = key,
+                        lastModified = Files.getLastModifiedTime(path).toMillis,
+                        storedAt     = now
+                    )
+                    ctx.scratchpad.store(key, entry)
+                    Some(entry)
+                }
+                catch
+                {
+                    case _: Throwable => None
+                }
+            }
     }
 
     // ── Help handler ──────────────────────────────────────────────────────────

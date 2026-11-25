@@ -138,6 +138,7 @@ case class PermissionTarget(grantKey: String, displayPath: Option[String])
  *  @param permissionCoordinator Coordinates one-shot permission prompts with the UI.
  *  @param debugMode        When true, page images sent to the VLM are saved to a `<stem>_debug/` dir.
  *  @param vlmParallelism   Number of concurrent VLM calls per batch when transcribing document pages.
+ *  @param searchIndex      FTS5 chunk index backing ranked retrieval; defaults to a disabled no-op.
  */
 case class ExecutionContext(
     session:          Session,
@@ -150,7 +151,8 @@ case class ExecutionContext(
     onEvent:          AgentEvent => Unit,
     permissionCoordinator: PermissionCoordinator,
     debugMode:        Boolean = false,
-    vlmParallelism:   Int     = 1
+    vlmParallelism:   Int     = 1,
+    searchIndex:      agentica.search.SearchIndex = agentica.search.SearchIndexDisabled
 )
 
 // ─── Tool trait ───────────────────────────────────────────────────────────────

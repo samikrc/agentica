@@ -4,6 +4,7 @@ import agentica.agent.AgentEvent
 import agentica.llm.{LLMProvider, LLMResponse, NativeToolCall}
 import agentica.observability.{TokenAccounting, TraceLogger}
 import agentica.permissions.{PermissionCoordinator, ScopeStore}
+import agentica.search.{SearchIndex, SearchIndexDisabled}
 import agentica.session.{AgentTurn, AgentTurnStep, AgentTurnStore, MemoryStore, Message, MessageRole, MessageStore, RunStatus, RunStore, Session, SessionStore, ToolRun}
 import agentica.settings.{APIMode, AppSettings}
 import agentica.shell.{SessionScratchpad, VirtualShell}
@@ -40,7 +41,8 @@ class AgentLoop(
     settings:           AppSettings,
     scopeStore:         ScopeStore,
     memoryStore:        MemoryStore,
-    sessionStore:       SessionStore
+    sessionStore:       SessionStore,
+    searchIndex:        SearchIndex = SearchIndexDisabled
 ) extends AgentEngine
 {
 
@@ -108,7 +110,7 @@ class AgentLoop(
         // Accumulates ordered trajectory steps for AgentTurn persistence.
         val turnSteps       = scala.collection.mutable.ListBuffer.empty[AgentTurnStep]
         // Shared context for all tool calls within this run
-        val sharedScratchpad = SessionScratchpad()
+        val sharedScratchpad = SessionScratchpad(Some(searchIndex), Some(session.id), Some(traceId))
         val sharedCtx = ExecutionContext(
             session         = session,
             traceId         = traceId,
@@ -120,7 +122,8 @@ class AgentLoop(
             onEvent         = emitEvent,
             permissionCoordinator = permissionCoordinator,
             debugMode       = settings.debugMode,
-            vlmParallelism  = settings.vlmParallelism
+            vlmParallelism  = settings.vlmParallelism,
+            searchIndex     = searchIndex
         )
         var iteration = 1
         // Tracks the last Responses API response ID across all iterations in this run.
@@ -310,6 +313,9 @@ class AgentLoop(
                                 None
                             }
                         emitEvent(AgentEvent.Final(assistantMsg.id, generatedTitle))
+                        // Computed scratch entries are run-scoped; drop their index
+                        // rows so a later run's __result_N__ keys cannot collide.
+                        searchIndex.deleteRun(traceId)
                         running = false
                     }
                     else

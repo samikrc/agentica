@@ -1,5 +1,6 @@
 package agentica.shell
 
+import agentica.search.{IndexKind, SearchIndex, SourceKey}
 import java.util.concurrent.atomic.AtomicInteger
 import scala.collection.mutable
 
@@ -37,8 +38,17 @@ case class ScratchEntry(
  *  files on the next turn.
  *
  *  Thread-safe: all mutations are `synchronized` on this instance.
+ *
+ *  @param index      Optional chunk index; when present every stored entry is
+ *                    indexed as a `stored` row and evictions purge its rows.
+ *  @param sessionId  Owning session for index rows.
+ *  @param runId      Owning run, applied to computed keys (`__result_N__`) only.
  */
-class SessionScratchpad
+class SessionScratchpad(
+    index:     Option[SearchIndex] = None,
+    sessionId: Option[String]     = None,
+    runId:     Option[String]     = None
+)
 {
     private val MAX_ENTRIES     = 20
     private val entries         = mutable.LinkedHashMap[String, ScratchEntry]()
@@ -46,7 +56,8 @@ class SessionScratchpad
 
     /**
      *  Stores a large content body and returns its stable `$scratch/<path>` ref.
-     *  If the scratchpad is at capacity, the oldest entry is evicted first (LRU).
+     *  If the scratchpad is at capacity, the least-recently-used entry is
+     *  evicted first. Re-storing an existing key refreshes its recency.
      *
      *  @param sourcePath    Relative source path used as the cache key.
      *  @param entry         Full entry to store.
@@ -55,12 +66,15 @@ class SessionScratchpad
     def store(sourcePath: String, entry: ScratchEntry): String =
         this.synchronized {
             evictOldestIfFull()
+            entries.remove(sourcePath)
             entries.put(sourcePath, entry)
+            indexEntry(sourcePath, entry)
             s"$$scratch/$sourcePath"
         }
 
     /**
-     *  Resolves a `$scratch/<path>` ref to its stored entry.
+     *  Resolves a `$scratch/<path>` ref to its stored entry and refreshes its
+     *  recency so an actively used entry is not evicted next.
      *
      *  @param ref  A ref string of the form `"$scratch/<sourcePath>"`.
      *  @return     `Some(entry)` if found, `None` otherwise.
@@ -68,7 +82,10 @@ class SessionScratchpad
     def get(ref: String): Option[ScratchEntry] =
         this.synchronized {
             val key = ref.stripPrefix("$scratch/")
-            entries.get(key)
+            entries.remove(key).map { entry =>
+                entries.put(key, entry)
+                entry
+            }
         }
 
     /**
@@ -103,7 +120,16 @@ class SessionScratchpad
     def size: Int = this.synchronized(entries.size)
 
     /**
-     *  Evicts the least-recently-used entry when the scratchpad reaches capacity.
+     *  Returns a snapshot of all stored entries, most-recently-used last.
+     *  Used by stored-scope search to enumerate the current corpus.
+     *  @return Pairs of `(scratchKey, entry)`.
+     */
+    def entriesSnapshot: List[(String, ScratchEntry)] =
+        this.synchronized(entries.toList)
+
+    /**
+     *  Evicts the least-recently-used entry when the scratchpad reaches capacity,
+     *  purging its index rows so search results never outlive their ref.
      *  Does nothing while the scratchpad remains below its configured limit.
      */
     private def evictOldestIfFull(): Unit =
@@ -112,6 +138,43 @@ class SessionScratchpad
         {
             val oldest = entries.head._1
             entries.remove(oldest)
+            removeIndex(oldest)
         }
+    }
+
+    /**
+     *  Mirrors one stored entry into the chunk index.
+     *  Computed keys (`__result_N__`) are run-qualified; file-backed keys are
+     *  session-scoped and durable.
+     *  @param key    Scratch key.
+     *  @param entry  Entry that was stored.
+     */
+    private def indexEntry(key: String, entry: ScratchEntry): Unit =
+    {
+        for (idx <- index; sid <- sessionId)
+            idx.index(
+                SourceKey(IndexKind.Stored, "", Some(sid), runFor(key), key),
+                entry.content, entry.lastModified, entry.sizeBytes)
+    }
+
+    /**
+     *  Purges the index rows for an evicted key.
+     *  @param key  Scratch key being removed.
+     */
+    private def removeIndex(key: String): Unit =
+    {
+        for (idx <- index; sid <- sessionId)
+            idx.deleteSource(SourceKey(IndexKind.Stored, "", Some(sid), runFor(key), key))
+    }
+
+    /**
+     *  Run qualifier for a scratch key: computed keys are run-scoped, file-backed
+     *  keys are not.
+     *  @param key  Scratch key.
+     *  @return     The owning run for `__result_N__` keys, otherwise `None`.
+     */
+    private def runFor(key: String): Option[String] =
+    {
+        if (key.startsWith("__result_")) runId else None
     }
 }

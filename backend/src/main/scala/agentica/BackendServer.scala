@@ -167,7 +167,8 @@ object BackendServer extends cask.Main
         settings,
         scopeStore,
         memoryStore,
-        sessionStore
+        sessionStore,
+        searchIndex
     )
 
     // UI root: AGENTICA_UI_ROOT env var, or ../ui relative to the working directory

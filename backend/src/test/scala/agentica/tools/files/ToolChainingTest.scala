@@ -119,7 +119,7 @@ class ToolChainingTest extends AnyFunSuite
 
     // ── 2. files_read then files_search: two separate refs coexist in the scratchpad ──
 
-    test("files_read and files_search produce independent scratchpad refs") {
+    test("files_read stores a path-keyed ref while a routine search page stays inline") {
         val tmpDir = Files.createTempDirectory("agentica-chain-independent")
         try
         {
@@ -134,22 +134,20 @@ class ToolChainingTest extends AnyFunSuite
             val readResp = shell.execute("files_read path=notes.txt", ctx)
             assert(readResp.text.contains("ok"))
 
-            // Search → counter-keyed ref
+            // Search → inline page, no persisted entry (only oversized pages overflow)
             val searchResp = shell.execute("files_search query=alpha", ctx)
             assert(searchResp.text.contains("ok"))
+            assert(searchResp.text.contains("For more entries") || searchResp.text.contains("lines"),
+                "search result must render unified hits")
 
-            // Both refs must be present and independent
-            assert(scratchpad.size == 2, s"expected 2 scratchpad entries, got ${scratchpad.size}")
+            assert(scratchpad.size == 1, s"expected only the read entry, got ${scratchpad.size}")
 
-            val readEntry   = scratchpad.get("$scratch/notes.txt")
-            val searchEntry = scratchpad.get("$scratch/__result_1__")
-            assert(readEntry.isDefined,   "path-keyed ref must exist for notes.txt")
-            assert(searchEntry.isDefined, "counter-keyed ref must exist for search result")
-
+            val readEntry = scratchpad.get("$scratch/notes.txt")
+            assert(readEntry.isDefined, "path-keyed ref must exist for notes.txt")
             assert(readEntry.get.content.contains("project: alpha"),
-                "file content must be stored in path-keyed entry")
-            assert(searchEntry.get.content.contains("alpha"),
-                "search match text must be stored in counter-keyed entry")
+                "file content must be stored in the path-keyed entry")
+            assert(scratchpad.get("$scratch/__result_1__").isEmpty,
+                "routine search pages must not create counter-keyed entries")
         }
         finally
         {
@@ -254,26 +252,28 @@ class ToolChainingTest extends AnyFunSuite
         }
         assert(scratchpad.size == 20, "scratchpad must be at capacity before eviction")
 
-        // The oldest entry is file1.txt — verify it is present before eviction
+        // Touching file1 refreshes its recency under true-LRU eviction.
         assert(scratchpad.get("$scratch/file1.txt").isDefined,
             "oldest entry must be present before the 21st store")
 
-        // Store the 21st entry — must trigger LRU eviction of file1.txt
+        // Store the 21st entry — the least-recently-used entry (file2) is evicted,
+        // not file1, because file1 was just touched.
         scratchpad.store("file21.txt", ScratchEntry("content 21", 10L, 1, "file21.txt", now, now))
 
         assert(scratchpad.size == 20, "size must remain at 20 after eviction")
-        assert(scratchpad.get("$scratch/file1.txt").isEmpty,
-            "oldest entry must be evicted when scratchpad exceeds capacity")
+        assert(scratchpad.get("$scratch/file1.txt").isDefined,
+            "a recently used entry must survive eviction")
+        assert(scratchpad.get("$scratch/file2.txt").isEmpty,
+            "the least-recently-used entry must be evicted")
         assert(scratchpad.get("$scratch/file21.txt").isDefined,
             "newly stored entry must be present after eviction")
-        // All middle entries must still be there
         assert(scratchpad.get("$scratch/file20.txt").isDefined,
-            "second-oldest entry must survive eviction")
+            "untouched entries must survive eviction")
     }
 
     // ── 6. Empty search results still produce a scratchpad entry ──
 
-    test("FilesSearch stores empty result set in scratchpad") {
+    test("FilesSearch reports an empty result set without persisting it") {
         val tmpDir = Files.createTempDirectory("agentica-chain-empty-search")
         try
         {
@@ -283,21 +283,26 @@ class ToolChainingTest extends AnyFunSuite
             val ctx        = mkCtx(tmpDir.toString, scratchpad)
 
             val input = FilesSearchInput(
-                rawPath = "", query = "XYZZY_NOMATCH", recursive = true,
-                ignoreCase = false, linesContext = 0, maxMatches = 50,
-                include = None, useRegex = false
+                query    = "XYZZY_NOMATCH",
+                rawPath  = None,
+                scope    = "workspace",
+                ref      = None,
+                limit    = 8,
+                cursor   = 0,
+                mode     = "hybrid",
+                useRegex = false
             )
             val output = FilesSearch.execute(input, ctx)
             val result = FilesSearch.render(output, ctx)
 
             assert(result.status == ToolStatus.Ok,
                 "zero-match search must still return Ok status")
-            assert(scratchpad.size == 1,
-                "even an empty search result must be stored in scratchpad")
-            assert(result.metadata.get("stored").exists(_.startsWith("$scratch/__result_")),
-                "empty search must still return a stored: ref so downstream tools can chain on it")
-            assert(result.metadata("matches") == "0",
-                "matches metadata must be 0")
+            assert(result.metadata.get("Displaying").contains("0 of 0"),
+                "zero-match search must report an empty page")
+            assert(!result.metadata.contains("stored"),
+                "routine pages carry no stored: ref")
+            assert(scratchpad.size == 0,
+                "routine pages are not persisted in the scratchpad")
         }
         finally
         {

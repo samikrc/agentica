@@ -140,14 +140,14 @@ class FilesToolSandboxTest extends AnyFunSuite
 
     test("files_search: traversal via ../ yields path_escaped error") {
         val input  = FilesSearchInput(
-            rawPath      = "../../etc",
-            query        = "password",
-            recursive    = true,
-            ignoreCase   = false,
-            linesContext = 0,
-            maxMatches   = 10,
-            include      = None,
-            useRegex     = false
+            query    = "password",
+            rawPath  = Some("../../etc"),
+            scope    = "workspace",
+            ref      = None,
+            limit    = 8,
+            cursor   = 0,
+            mode     = "hybrid",
+            useRegex = false
         )
         val output = FilesSearch.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))
@@ -155,14 +155,14 @@ class FilesToolSandboxTest extends AnyFunSuite
 
     test("files_search: absolute path outside root yields path_escaped error") {
         val input  = FilesSearchInput(
-            rawPath      = "/etc",
-            query        = "password",
-            recursive    = true,
-            ignoreCase   = false,
-            linesContext = 0,
-            maxMatches   = 100,
-            include      = None,
-            useRegex     = false
+            query    = "password",
+            rawPath  = Some("/etc"),
+            scope    = "workspace",
+            ref      = None,
+            limit    = 8,
+            cursor   = 0,
+            mode     = "hybrid",
+            useRegex = false
         )
         val output = FilesSearch.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))
