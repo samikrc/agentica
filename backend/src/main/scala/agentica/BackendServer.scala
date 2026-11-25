@@ -199,7 +199,8 @@ object BackendServer extends cask.Main
         commandRegistry = commandRegistry,
         agentEngine     = agentEngine,
         uiRoot          = uiRoot,
-        onSettingsSaved = s => agentEngine.updateProviders(buildLLMProvider(s), buildVLMProvider(s))
+        onSettingsSaved = s => agentEngine.updateProviders(buildLLMProvider(s), buildVLMProvider(s)),
+        searchIndex     = searchIndex
     ))
     TraceLogger.info("-", "http_server_start", Map("port" -> port.toString))
 }

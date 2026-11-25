@@ -41,7 +41,8 @@ class Routes(
     commandRegistry: CommandRegistry,
     agentEngine:     AgentEngine,
     uiRoot:          java.nio.file.Path,
-    onSettingsSaved: AppSettings => Unit = _ => ()
+    onSettingsSaved: AppSettings => Unit = _ => (),
+    searchIndex:     agentica.search.SearchIndex = agentica.search.SearchIndexDisabled
 ) extends MainRoutes
 {
 
@@ -309,6 +310,7 @@ class Routes(
     {
         withAuth(request) {
             messageStore.deleteForSession(id)
+            searchIndex.deleteSession(id)
             sessionStore.delete(id)
             Response("", statusCode = 204)
         }

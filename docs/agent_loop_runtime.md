@@ -743,6 +743,7 @@ Raw documents are indexed from their text layer so the corpus is searchable imme
 | `limit` | no | Hit cap per page (default 8) |
 | `cursor` | no | Paging offset (default 0) |
 | `mode` | no | `hybrid` (default) \| `exact` \| `ranked` — advanced escape hatch, visible to the model |
+| `regex` | no | Treat `query` as a raw regex for the exact arm (advanced) |
 
 Validation matrix:
 
@@ -763,21 +764,30 @@ Output — one shape for both arms; a grep hit is an exact-match snippet with sc
 ```
 $ files_search query="revenue growth slowing" path=reports/
 ok
-─ Displaying: 2 of 7 · cursor 0 · index: complete
+─ Displaying: 2 of 7
+─ cursor: 0
+─ scope: workspace
+─ mode: hybrid
 ─────
 [1] reports/q3-financials.md  lines 118-124  score 0.049  (exact+ranked)
     …APAC revenue growth slowing to 6%…
-[2] reports/q2-financials.md  lines 44-88   score 0.016  (ranked)
+[2] reports/q2-financials.md  lines 44-88  score 0.016  (ranked)
     …we expect the pace of expansion to moderate…
 For more entries, use: files_search query="revenue growth slowing" path=reports/ cursor=2
 ```
 
+An `index` metadata line appears when the refresh pass was budget-truncated
+(`index: partial · indexed: N · pending: M`).
+
 ```
 $ files_search query="APAC revenue" scope=stored
 ok
-─ Displaying: 1 of 2 · cursor 0 · scope: stored (this session)
+─ Displaying: 1 of 2
+─ cursor: 0
+─ scope: stored
+─ mode: hybrid
 ─────
-[1] $scratch/__result_3__  lines 88-110  score 1.12
+[1] $scratch/__result_3__  lines 88-110  score 0.032
     …APAC segment commentary: revenue mix shifted…
 For more entries, use: files_search query="APAC revenue" scope=stored cursor=1
 ```
