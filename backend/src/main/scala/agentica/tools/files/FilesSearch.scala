@@ -433,7 +433,10 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                 IndexScope(IndexKind.Stored, "", Some(ctx.session.id), Some(ctx.traceId)))
         }
 
-        scopes.flatMap(s => ctx.searchIndex.search(s, expr, MaxFusedHits))
+        // A drill-down constraint goes into the query itself so chunks from
+        // other entries cannot crowd out the drilled entry under the hit ceiling.
+        val drillKey = input.ref.map(_.stripPrefix("$scratch/"))
+        scopes.flatMap(s => ctx.searchIndex.search(s, expr, MaxFusedHits, drillKey))
             .filter(h => input.ref.forall(r => r == s"$$scratch/${h.sourcePath}"))
             .distinctBy(h => (h.sourcePath, h.chunkIndex))
             .map(h => RawHit(

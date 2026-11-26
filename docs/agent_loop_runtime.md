@@ -697,7 +697,7 @@ The pad's `__result_N__` counter restarts every run (§4.6), so computed rows ar
 
 There is no build phase. Each `scope=workspace` search performs an incremental refresh of its target scope first:
 
-1. **Enumerate** every candidate in the scope (`path=` subtree, or workspace root), skipping filtered entries (§7.5.8). Discovery is metadata-only — no content reads — so the walk is cheap even for large trees.
+1. **Enumerate** every candidate in the scope (`path=` subtree, or workspace root), skipping filtered entries (§7.5.8). Discovery is metadata-only for known extensions — unknown and extensionless files cost one bounded sniff of their leading bytes (§7.5.8), never a full read — so the walk is cheap even for large trees.
 2. **Classify** each candidate against the persisted metadata in memory. Currency includes the supersede state: a row is current only when `(mtime, size)` matches *and* its `replaced_by` alias matches reality, so deleting a converted `.md` re-indexes the raw document rather than leaving it permanently empty.
 3. **Index** the files that need work, ordered **never-indexed first, then stalest** (`indexed_at` ascending), under a soft time budget (~2–3 s; calibrated by benchmark, not guessed).
 4. **Purge** rows for paths no longer present in the walked set.

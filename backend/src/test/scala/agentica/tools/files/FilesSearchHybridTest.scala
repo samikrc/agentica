@@ -419,5 +419,31 @@ class FilesSearchHybridTest extends AnyFunSuite with BeforeAndAfterEach
         assert(out.moreCommand.get.contains("""path="my docs""""),
             s"path with spaces must be quoted, got: ${out.moreCommand.get}")
     }
+
+    test("ranked drill-down returns only the drilled entry's hits") {
+        val pad = indexedPad
+        val now = System.currentTimeMillis()
+        for ((key, text) <- List(
+                "data/target.md" -> "needle in the drilled entry",
+                "data/other.md"  -> "needle in the other entry"))
+        {
+            pad.store(key, agentica.shell.ScratchEntry(
+                content      = text,
+                sizeBytes    = text.length.toLong,
+                lineCount    = 1,
+                sourcePath   = key,
+                lastModified = now,
+                storedAt     = now
+            ))
+        }
+        val ctx = mkCtx(pad)
+
+        val out = FilesSearch.execute(input("query" -> "needle",
+            "ref" -> "$scratch/data/target.md", "mode" -> "ranked"), ctx)
+
+        assert(out.hits.nonEmpty, "the drilled entry must produce ranked hits")
+        assert(out.hits.forall(_.sourcePath == "$scratch/data/target.md"),
+            s"other entries must not leak into a drill-down, got ${out.hits.map(_.sourcePath)}")
+    }
 }
 
