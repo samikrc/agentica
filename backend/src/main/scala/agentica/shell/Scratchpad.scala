@@ -65,8 +65,10 @@ class SessionScratchpad(
      */
     def store(sourcePath: String, entry: ScratchEntry): String =
         this.synchronized {
-            evictOldestIfFull()
+            // Drop the existing key before measuring capacity: re-storing a
+            // present key must not evict an unrelated entry.
             entries.remove(sourcePath)
+            evictOldestIfFull()
             entries.put(sourcePath, entry)
             indexEntry(sourcePath, entry)
             s"$$scratch/$sourcePath"
@@ -144,17 +146,26 @@ class SessionScratchpad(
 
     /**
      *  Mirrors one stored entry into the chunk index.
+     *
      *  Computed keys (`__result_N__`) are run-qualified; file-backed keys are
-     *  session-scoped and durable.
+     *  session-scoped and durable. File-backed re-stores — cached reads,
+     *  hydration — skip the write when the persisted row already matches the
+     *  entry's `(lastModified, sizeBytes)`, so repeated stores of an unchanged
+     *  file do not rewrite its chunks.
+     *
      *  @param key    Scratch key.
      *  @param entry  Entry that was stored.
      */
     private def indexEntry(key: String, entry: ScratchEntry): Unit =
     {
         for (idx <- index; sid <- sessionId)
-            idx.index(
-                SourceKey(IndexKind.Stored, "", Some(sid), runFor(key), key),
-                entry.content, entry.lastModified, entry.sizeBytes)
+        {
+            val sourceKey = SourceKey(IndexKind.Stored, "", Some(sid), runFor(key), key)
+            val reusable  = runFor(key).isEmpty &&
+                idx.isCurrent(sourceKey, entry.lastModified, entry.sizeBytes)
+            if (!reusable)
+                idx.index(sourceKey, entry.content, entry.lastModified, entry.sizeBytes)
+        }
     }
 
     /**

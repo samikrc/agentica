@@ -129,7 +129,8 @@ trait SearchIndex
 
     /**
      *  Replaces all chunks for one source and upserts its metadata row.
-     *  Chunking uses [[Chunker]]; the write is a single transaction.
+     *  Chunking uses [[Chunker]]; the write is a single transaction and clears
+     *  any supersede alias — normal content always displaces a stale `replacedBy`.
      *  @param key           Full address of the source.
      *  @param text          Full source text to chunk and index.
      *  @param lastModified  Source modification time (epoch ms).
@@ -138,13 +139,32 @@ trait SearchIndex
     def index(key: SourceKey, text: String, lastModified: Long, sizeBytes: Long): Unit
 
     /**
-     *  Runs one FTS5 `MATCH` query restricted to the given scope.
-     *  @param scope      Row scope to search.
-     *  @param matchExpr  FTS5 match expression, already sanitised by the caller.
-     *  @param limit      Maximum hits to return.
-     *  @return           Hits ordered best-first by BM25.
+     *  Atomically records a source as superseded by a converted sibling.
+     *
+     *  Drops the source's chunks and writes its metadata row with the alias in
+     *  one transaction, so a crash cannot leave empty content without the alias
+     *  that explains it. A later plain [[index]] call clears the alias.
+     *
+     *  @param key           Full address of the superseded source.
+     *  @param lastModified  Source modification time (epoch ms).
+     *  @param sizeBytes     Source size.
+     *  @param replacement   Workspace-relative path of the converted sibling.
      */
-    def search(scope: IndexScope, matchExpr: String, limit: Int): List[SearchHit]
+    def supersede(key: SourceKey, lastModified: Long, sizeBytes: Long, replacement: String): Unit
+
+    /**
+     *  Runs one FTS5 `MATCH` query restricted to the given scope.
+     *  @param scope       Row scope to search.
+     *  @param matchExpr   FTS5 match expression, already sanitised by the caller.
+     *  @param limit       Maximum hits to return.
+     *  @param pathPrefix  Optional workspace-relative path constraint: a hit's
+     *                     `sourcePath` must equal it or sit under it as a path
+     *                     prefix. Pushed into the query so out-of-scope rows do
+     *                     not consume the hit budget.
+     *  @return            Hits ordered best-first by BM25.
+     */
+    def search(scope: IndexScope, matchExpr: String, limit: Int,
+               pathPrefix: Option[String] = None): List[SearchHit]
 
     /**
      *  Counts matches for a sanitised FTS5 expression within the given scope.

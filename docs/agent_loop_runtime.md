@@ -697,15 +697,19 @@ The pad's `__result_N__` counter restarts every run (§4.6), so computed rows ar
 
 There is no build phase. Each `scope=workspace` search performs an incremental refresh of its target scope first:
 
-1. **Stat-walk** the scope (`path=` subtree, or workspace root), skipping filtered entries (§7.5.8).
-2. **Select work** — files never indexed, or whose `(mtime, size)` differ from `chunk_meta`. Unchanged files are skipped with no work.
-3. **Index** selected files ordered **never-indexed first, then stalest** (`indexed_at` ascending), under a soft time budget (~2–3 s; calibrated by benchmark, not guessed).
+1. **Enumerate** every candidate in the scope (`path=` subtree, or workspace root), skipping filtered entries (§7.5.8). Discovery is metadata-only — no content reads — so the walk is cheap even for large trees.
+2. **Classify** each candidate against the persisted metadata in memory. Currency includes the supersede state: a row is current only when `(mtime, size)` matches *and* its `replaced_by` alias matches reality, so deleting a converted `.md` re-indexes the raw document rather than leaving it permanently empty.
+3. **Index** the files that need work, ordered **never-indexed first, then stalest** (`indexed_at` ascending), under a soft time budget (~2–3 s; calibrated by benchmark, not guessed).
 4. **Purge** rows for paths no longer present in the walked set.
 5. **Search** (grep arm over the scope; BM25 arm over the index).
+
+Discovery and indexing are separate phases deliberately: because current files cost only a map lookup, every pass considers the *whole* scope and never-indexed files are always prioritised. An early design truncated discovery at 5,000 files/50 MB mid-walk, which — filesystem walk order being stable — starved everything past the prefix permanently. `pending` counts only files that still need work (never-indexed or stale), not merely unexamined ones.
 
 Steady state for the target use case (10–20 files): the first search indexes everything; later searches do a stat-walk and find nothing changed. Cost is milliseconds.
 
 If the budget is exhausted, results are returned from the partial index with honest metadata — `index: partial · indexed: N · pending: M`. Stale-first ordering means the *next* search continues rather than restarting, so repeated searching converges. The agent is never blocked, and it can narrow with `path=` to prioritize.
+
+`mode=exact` skips the refresh entirely: it is the grep-only escape hatch and pays no indexing cost.
 
 Progress is reported opportunistically via `AgentEvent.ToolProgress` (§9.2) as `Indexing: N / M files`, but nothing depends on the progress channel; the budget bounds worst-case latency regardless. (The `tool_progress` indicator's reliability is a separate, known issue tracked in the tasklist.)
 
@@ -721,25 +725,27 @@ The indexer **never invokes the VLM**. Three distinct costs, only one of which i
 
 Raw documents are indexed from their text layer so the corpus is searchable immediately — including PDFs the agent has never opened, which is the discovery problem AG-31 exists to fix. Vision-only content (charts, scanned pages) is absent until conversion, which is the deliberate trade: convert only the files that matter.
 
-**Supersede rule.** When a converted sibling exists (`<stem>.md` next to `<stem>.pdf`, at least as new as the source), the raw document's rows are purged and only the `.md` is indexed — one authoritative source per document, no double-counting in BM25. The mapping is recorded in `chunk_meta.replaced_by` so `path=<stem>.pdf` resolves through the alias to the `.md`; otherwise the model would search a path with no rows. The same rule applies to DOCX/PPTX.
+**Supersede rule.** When a converted sibling exists (`<stem>.md` next to `<stem>.pdf`, at least as new as the source), the raw document's rows are purged and only the `.md` is indexed — one authoritative source per document, no double-counting in BM25. The purge and the `chunk_meta.replaced_by` alias are written atomically, so `path=<stem>.pdf` always resolves through the alias to the `.md`; otherwise the model would search a path with no rows. The same rule applies to DOCX/PPTX. Currency checks include the alias state: when the `.md` is deleted or goes stale, the document is re-indexed from its own text layer and the alias cleared (a plain content write always clears `replaced_by`). Direct `path=<doc>` redirection applies the same freshness rule, so a stale `.md` never shadows the document.
 
 #### 7.5.8 File filters
 
-- **Binary detection:** content sniff of the first 8 KB (NUL byte or invalid UTF-8 → skip). Extension lists are a fast prefilter at most, never the authority.
+- **Binary detection:** content sniff of the first 8 KB (NUL byte → skip). Known text extensions are a fast classification path only; unknown and extensionless files (`.rs`, `.toml`, `Dockerfile`, scripts) are sniffed rather than excluded, in both the indexer and the grep arm.
 - **Size cap:** 2 MB per file, plus a per-file chunk cap (~2,000 chunks).
 - **Skip directories:** `.git`, `node_modules`, `target`, `build`, `dist`, `.venv`, `venv`, `__pycache__`, `.idea`, `.gradle`, and Agentica's `*_debug/` image directories.
 - **Symlinks:** not followed. **Dotfiles:** skipped by default.
-- **Crawl budget:** 5,000 files or 50 MB per refresh, whichever first → `index: partial`.
+- **Walk safety cap:** 5,000 candidates per refresh. Extraction cost is governed by the time budget, not a byte cap — walking reads no content. Hitting the file cap marks the pass `index: partial`.
 
 #### 7.5.9 Read path
 
-1. **Query preparation.** Split terms; build a grep pattern (literal OR, or raw regex when `mode=exact` with `regex`); build an escaped FTS5 `MATCH` expression — terms quoted, operators stripped so `AND`, `-`, `"` can never produce a syntax error. Terms ≥ 4 chars also get prefix matching (`term*`) for cheap plural/suffix coverage.
+1. **Query preparation.** Split terms; build a grep pattern (literal OR, or raw regex when `regex=true`); build an escaped FTS5 `MATCH` expression — every term is emitted as a quoted phrase (`"term"`, or `"term"*` for prefix matching on terms ≥ 4 chars), so uppercase `AND`/`OR`/`NOT` in user input become literal tokens and can never produce a syntax error. The ranked arm is additionally failure-isolated: an index or expression error degrades to no ranked hits rather than discarding exact-arm results.
 2. **Semantics — AND first, OR fallback.** Run the AND query; if it yields fewer than `limit` hits, re-run with OR and merge, preferring AND hits. Quoted phrases become FTS5 phrase queries. Rationale: never return empty when something matches, without diluting the common case. (FTS5's default for space-separated terms is AND; the expression is built by us.)
 3. **Grep arm.** Bounded scan of the scope; exact matches score 1.0.
 4. **Fusion.** Reciprocal rank fusion, `1/(60 + rank)` per arm; a hit found by both arms wins. Overlapping ranges from the same source are merged, keeping the exact-match snippet.
 5. **Render.** Unified hit shape; budget-driven page; `Displaying` + `For more entries`.
 
-**Hit ceiling.** The fused list is capped at 200 hits; when the cap is reached the output shows `200+` and logs `scan_truncated`. The grep arm additionally has a scan budget (2,000 files / 20 MB) after which it stops and reports `scan: partial`.
+**Hit ceiling.** The fused list is capped at 200 hits; when the cap is reached the output shows `200+` and logs `scan_truncated`. The grep arm additionally has a scan budget (2,000 files / 50 MB) after which it stops and reports `scan: partial`.
+
+**Scope pushdown.** A `path=` constraint is pushed into the ranked query itself (`source_path` exact-or-prefix match in SQL), so out-of-scope rows neither appear in file-scoped searches nor consume the hit budget ahead of in-scope rows. `recursive`/`include` are applied to the fused set so both arms honour them identically. The continuation command quotes every argument value, so paths with spaces survive copy-through.
 
 #### 7.5.10 Tool contract — `files_search`
 
@@ -824,7 +830,7 @@ For more entries, use: files_search query="APAC revenue" scope=stored cursor=1
 | Condition | Behavior |
 |---|---|
 | Index unavailable / FTS5 probe failed | Grep-only, same output shape, `mode: exact` in metadata |
-| File unindexable (binary, over cap, read error) | Skipped; `skipped: N` in metadata |
+| File unindexable (binary, over cap, read error) | Zero-chunk marker row keyed by `(mtime, size)`; skipped cheaply on later passes instead of retried forever |
 | Budget exhausted | `index: partial · indexed: N · pending: M`; stale-first ordering converges |
 | `scope=stored`, empty corpus | `Displaying: 0 of 0` + hint |
 | Legacy `mode=exact` output shape | Not retained — one renderer only; a regression is reverted in git rather than carried as a second contract |

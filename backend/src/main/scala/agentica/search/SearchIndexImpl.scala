@@ -192,7 +192,8 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
                       |    size_bytes    = excluded.size_bytes,
                       |    line_count    = excluded.line_count,
                       |    chunk_count   = excluded.chunk_count,
-                      |    indexed_at    = excluded.indexed_at""".stripMargin)
+                      |    indexed_at    = excluded.indexed_at,
+                      |    replaced_by   = NULL""".stripMargin)
                 upsert.setString(1, key.kind.value)
                 upsert.setString(2, key.rootId)
                 upsert.setString(3, key.sessionId.getOrElse(""))
@@ -226,29 +227,101 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
     }
 
     /**
-     *  Runs one FTS5 `MATCH` query restricted to the given scope.
-     *  @param scope      Row scope to search.
-     *  @param matchExpr  FTS5 match expression, already sanitised by the caller.
-     *  @param limit      Maximum hits to return.
-     *  @return           Hits ordered best-first by BM25.
+     *  Atomically records a source as superseded by a converted sibling.
+     *  @param key           Full address of the superseded source.
+     *  @param lastModified  Source modification time (epoch ms).
+     *  @param sizeBytes     Source size.
+     *  @param replacement   Workspace-relative path of the converted sibling.
      */
-    def search(scope: IndexScope, matchExpr: String, limit: Int): List[SearchHit] =
+    def supersede(key: SourceKey, lastModified: Long, sizeBytes: Long, replacement: String): Unit =
+    {
+        if (!available) return
+        val c = conn()
+        try
+        {
+            c.setAutoCommit(false)
+            try
+            {
+                deleteChunks(c, key)
+                val upsert = c.prepareStatement(
+                    """INSERT INTO chunk_meta
+                      |    (kind, root_id, session_id, run_id, source_path, last_modified,
+                      |     size_bytes, line_count, chunk_count, indexed_at, replaced_by)
+                      |VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+                      |ON CONFLICT(kind, root_id, session_id, run_id, source_path) DO UPDATE SET
+                      |    last_modified = excluded.last_modified,
+                      |    size_bytes    = excluded.size_bytes,
+                      |    line_count    = 0,
+                      |    chunk_count   = 0,
+                      |    indexed_at    = excluded.indexed_at,
+                      |    replaced_by   = excluded.replaced_by""".stripMargin)
+                upsert.setString(1, key.kind.value)
+                upsert.setString(2, key.rootId)
+                upsert.setString(3, key.sessionId.getOrElse(""))
+                upsert.setString(4, key.runId.getOrElse(""))
+                upsert.setString(5, key.sourcePath)
+                upsert.setLong(6, lastModified)
+                upsert.setLong(7, sizeBytes)
+                upsert.setLong(8, System.currentTimeMillis())
+                upsert.setString(9, replacement)
+                upsert.executeUpdate()
+                upsert.close()
+                c.commit()
+            }
+            catch
+            {
+                case t: Throwable =>
+                    c.rollback()
+                    throw t
+            }
+            finally
+            {
+                c.setAutoCommit(true)
+            }
+        }
+        finally
+        {
+            c.close()
+        }
+    }
+
+    /**
+     *  Runs one FTS5 `MATCH` query restricted to the given scope.
+     *  @param scope       Row scope to search.
+     *  @param matchExpr   FTS5 match expression, already sanitised by the caller.
+     *  @param limit       Maximum hits to return.
+     *  @param pathPrefix  Optional workspace-relative path constraint pushed into the query.
+     *  @return            Hits ordered best-first by BM25.
+     */
+    def search(scope: IndexScope, matchExpr: String, limit: Int,
+               pathPrefix: Option[String] = None): List[SearchHit] =
     {
         if (!available) return Nil
         val c = conn()
         try
         {
+            // Exact match covers file scopes; the prefix comparison covers
+            // directory scopes. substr() equality avoids LIKE wildcard escaping.
+            val pathClause = pathPrefix.map(_ =>
+                " AND (source_path = ? OR substr(source_path, 1, ?) = ?)").getOrElse("")
             val ps = c.prepareStatement(
-                """SELECT source_path, chunk_index, start_line, end_line,
-                  |       snippet(chunk_fts, 0, '«', '»', '…', 12) AS snip,
-                  |       bm25(chunk_fts) AS rank
-                  |FROM chunk_fts
-                  |WHERE chunk_fts MATCH ?
-                  |  AND kind = ? AND root_id = ? AND session_id = ? AND run_id = ?
-                  |ORDER BY rank
-                  |LIMIT ?""".stripMargin)
+                s"""SELECT source_path, chunk_index, start_line, end_line,
+                   |       snippet(chunk_fts, 0, '«', '»', '…', 12) AS snip,
+                   |       bm25(chunk_fts) AS rank
+                   |FROM chunk_fts
+                   |WHERE chunk_fts MATCH ?
+                   |  AND kind = ? AND root_id = ? AND session_id = ? AND run_id = ?$pathClause
+                   |ORDER BY rank
+                   |LIMIT ?""".stripMargin)
             ps.setString(1, matchExpr)
-            val i = bindScope(ps, 2, scope)
+            var i = bindScope(ps, 2, scope)
+            for (prefix <- pathPrefix)
+            {
+                ps.setString(i, prefix)
+                ps.setInt(i + 1, prefix.length + 1)
+                ps.setString(i + 2, prefix + "/")
+                i += 3
+            }
             ps.setInt(i, limit)
             val rs  = ps.executeQuery()
             val buf = scala.collection.mutable.ListBuffer.empty[SearchHit]

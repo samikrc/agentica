@@ -57,14 +57,36 @@ object TextExtractor
     }
 
     /**
-     *  Whether a file's extension is handled by this extractor.
+     *  Whether a file's extension is a known text or document format.
+     *
+     *  Fast classification only — never the authority on whether a file
+     *  contains text. Unknown and extensionless files are still indexable when
+     *  they sniff as UTF-8; see [[mayContainText]].
+     *
      *  @param path  File path.
-     *  @return      `true` for text files and supported office documents.
+     *  @return      `true` for whitelisted text files and supported office documents.
      */
     def isSupported(path: Path): Boolean =
     {
         val ext = extensionOf(path)
         TextExtensions.contains(ext) || DocumentExtensions.contains(ext)
+    }
+
+    /**
+     *  Whether a file may contain indexable text.
+     *
+     *  Known text extensions and office documents pass outright. Any other
+     *  file — unknown extension or none, e.g. `.rs`, `.toml`, `Dockerfile` —
+     *  is decided by content sniffing: NUL bytes in the leading window mark it
+     *  binary. The extension list is a fast path, never an exclusion mechanism.
+     *
+     *  @param path  File path.
+     *  @return      `true` when the file should be read as text.
+     */
+    def mayContainText(path: Path): Boolean =
+    {
+        if (isSupported(path)) true
+        else !looksBinary(path)
     }
 
     /**
@@ -114,20 +136,21 @@ object TextExtractor
     }
 
     /**
-     *  Extracts indexable text from a supported file.
+     *  Extracts indexable text from a file.
      *
-     *  Text files are read as UTF-8 (after a binary sniff); PDF/DOCX/PPTX are
-     *  read from their text layer. Extraction failures yield `None` so the
+     *  PDF/DOCX/PPTX are read from their text layer; every other file is read
+     *  as UTF-8 after a binary sniff, regardless of extension — unknown and
+     *  extensionless files (`.rs`, `Dockerfile`, …) are included. Extraction
+     *  failures, malformed UTF-8, and binary content yield `None` so the
      *  caller can count the file as skipped.
      *
      *  @param path  File path inside the workspace.
-     *  @return      Extracted text, or `None` when the file is unsupported, binary, or unreadable.
+     *  @return      Extracted text, or `None` when the file is binary or unreadable.
      */
     def extract(path: Path): Option[String] =
     {
         try
         {
-            if (!isSupported(path)) return None
             if (Files.size(path) > MaxFileBytes) return None
             val text =
                 if (isDocument(path)) extractDocument(path)

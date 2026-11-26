@@ -288,4 +288,136 @@ class FilesSearchHybridTest extends AnyFunSuite with BeforeAndAfterEach
         assert(entry.isDefined, "expired file-backed ref must be re-hydrated from disk")
         assert(entry.get.content.contains("hydrated content"))
     }
+
+    // ── Review regression tests ──────────────────────────────────────────────
+
+    test("file-scoped search excludes sibling files from ranked hits") {
+        write("target.md", "needle inside the target file")
+        write("sibling.md", "needle inside the sibling file")
+        val ctx = mkCtx(SessionScratchpad())
+
+        val out = FilesSearch.execute(input("query" -> "needle", "path" -> "target.md"), ctx)
+
+        assert(out.hits.nonEmpty, "the target file must produce hits")
+        assert(out.hits.forall(_.sourcePath == "target.md"),
+            s"sibling hits must not appear in a file-scoped search, got ${out.hits.map(_.sourcePath)}")
+    }
+
+    test("directory-scoped search excludes out-of-tree ranked hits") {
+        write("reports/a.md", "needle in reports")
+        write("other/b.md", "needle in other")
+        val ctx = mkCtx(SessionScratchpad())
+
+        val out = FilesSearch.execute(input("query" -> "needle", "path" -> "reports", "mode" -> "ranked"), ctx)
+
+        assert(out.hits.nonEmpty)
+        assert(out.hits.forall(_.sourcePath.startsWith("reports/")),
+            s"ranked hits outside the scope must be excluded, got ${out.hits.map(_.sourcePath)}")
+    }
+
+    test("uppercase FTS operators in the query do not break the search") {
+        write("a.md", "alpha and omega")
+        val ctx = mkCtx(SessionScratchpad())
+
+        val out = FilesSearch.execute(input("query" -> "alpha AND"), ctx)
+
+        assert(out.error.isEmpty, s"operator input must not error the search: ${out.error}")
+        assert(out.hits.nonEmpty, "the literal AND token must still match documents containing 'and'")
+
+        val onlyOps = FilesSearch.execute(input("query" -> "AND OR NOT"), ctx)
+        assert(onlyOps.error.isEmpty, s"operator-only input must not error the search: ${onlyOps.error}")
+    }
+
+    test("unknown and extensionless text files are searched by both arms") {
+        write("build.rs", "fn main() { println!(\"needle rust\"); }")
+        write("Dockerfile", "RUN echo needle docker")
+        val ctx = mkCtx(SessionScratchpad())
+
+        val exact  = FilesSearch.execute(input("query" -> "needle", "mode" -> "exact"), ctx)
+        val ranked = FilesSearch.execute(input("query" -> "needle", "mode" -> "ranked"), ctx)
+
+        assert(exact.hits.exists(_.sourcePath == "build.rs"),
+            s"exact arm must scan .rs files, got ${exact.hits.map(_.sourcePath)}")
+        assert(exact.hits.exists(_.sourcePath == "Dockerfile"),
+            s"exact arm must scan extensionless files, got ${exact.hits.map(_.sourcePath)}")
+        assert(ranked.hits.exists(_.sourcePath == "build.rs"),
+            s"ranked arm must index .rs files, got ${ranked.hits.map(_.sourcePath)}")
+        assert(ranked.hits.exists(_.sourcePath == "Dockerfile"),
+            s"ranked arm must index extensionless files, got ${ranked.hits.map(_.sourcePath)}")
+    }
+
+    test("persisted stored rows are searchable with an empty pad") {
+        val now = System.currentTimeMillis()
+        val pad1 = indexedPad
+        pad1.store("data/report.md", agentica.shell.ScratchEntry(
+            content      = "persisted revenue commentary",
+            sizeBytes    = 28L,
+            lineCount    = 1,
+            sourcePath   = "data/report.md",
+            lastModified = now,
+            storedAt     = now
+        ))
+
+        // A later run starts with a fresh, empty pad; the indexed rows persist.
+        val ctx = mkCtx(SessionScratchpad())
+        val out = FilesSearch.execute(input("query" -> "persisted", "scope" -> "stored"), ctx)
+
+        assert(out.hits.nonEmpty,
+            "ranked arm must find persisted stored rows even when the pad is empty")
+        assert(out.hits.head.sourcePath == "$scratch/data/report.md")
+    }
+
+    test("ref drill-down re-hydrates a file-backed entry missing from the pad") {
+        write("doc.md", "hydratable drill-down content")
+        val now = System.currentTimeMillis()
+        val pad1 = indexedPad
+        pad1.store("doc.md", agentica.shell.ScratchEntry(
+            content      = "hydratable drill-down content",
+            sizeBytes    = 29L,
+            lineCount    = 1,
+            sourcePath   = "doc.md",
+            lastModified = now,
+            storedAt     = now
+        ))
+
+        val pad2 = SessionScratchpad()
+        val ctx  = mkCtx(pad2)
+        val out  = FilesSearch.execute(input("query" -> "hydratable",
+            "ref" -> "$scratch/doc.md", "mode" -> "exact"), ctx)
+
+        assert(out.hits.nonEmpty,
+            "exact drill-down must re-hydrate file-backed refs missing from the pad")
+        assert(pad2.get("$scratch/doc.md").isDefined,
+            "hydration must re-store the entry in the pad")
+    }
+
+    test("mode=exact does not pay the indexing cost") {
+        write("a.md", "alpha beta")
+        val ctx = mkCtx(SessionScratchpad())
+
+        FilesSearch.execute(input("query" -> "alpha", "mode" -> "exact"), ctx)
+
+        val scope = agentica.search.IndexScope(agentica.search.IndexKind.Workspace,
+            ws.toAbsolutePath.normalize().toString, None, None)
+        assert(index.listSources(scope).isEmpty,
+            "exact mode must not trigger an indexing pass")
+
+        FilesSearch.execute(input("query" -> "alpha", "mode" -> "hybrid"), ctx)
+        assert(index.listSources(scope).nonEmpty,
+            "hybrid mode must refresh the index (control)")
+    }
+
+    test("continuation command quotes arguments containing spaces") {
+        write("my docs/a.md", "needle in first file")
+        write("my docs/b.md", "needle in second file")
+        val ctx = mkCtx(SessionScratchpad())
+
+        val out = FilesSearch.execute(input("query" -> "needle",
+            "path" -> "my docs", "limit" -> "1"), ctx)
+
+        assert(out.moreCommand.isDefined, "multiple hits must produce a continuation")
+        assert(out.moreCommand.get.contains("""path="my docs""""),
+            s"path with spaces must be quoted, got: ${out.moreCommand.get}")
+    }
 }
+

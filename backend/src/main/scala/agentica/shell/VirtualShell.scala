@@ -5,7 +5,6 @@ import agentica.observability.TraceLogger
 import agentica.permissions.PermissionMiddleware
 import agentica.shell.compression.CompressionMiddleware
 import agentica.tools.{AgentResponse, ExecutionContext, ToolResult, ToolStatus}
-import java.nio.file.Files
 
 /**
  *  Entry point for all agent tool calls.
@@ -31,9 +30,6 @@ class VirtualShell(
     middleware: List[ToolMiddleware] = Nil
 )
 {
-    /** Maximum file size re-hydrated from disk when a scratch ref has expired. */
-    private val HydrationMaxBytes: Long = 10L * 1024 * 1024
-
     /**
      *  The dispatch chain: permission gating first, then result compression,
      *  then caller-supplied components. `after` hooks run in reverse order, so
@@ -224,45 +220,14 @@ class VirtualShell(
     /**
      *  Re-hydrates a file-backed scratch ref by re-reading the workspace file.
      *
-     *  Refs persist in conversation history, but the pad is per-run and in-memory, so a
-     *  later turn can reference an entry that no longer exists. Without this the literal
-     *  ref would reach the tool as content; the workspace file is the source of truth, so
-     *  re-reading it is exact. Computed keys (`__result_N__`) have no file and are not hydrated.
+     *  Delegates to [[ScratchHydration]]; see there for the rationale.
      *
      *  @param ref  Scratch ref, e.g. `$scratch/data/report.md`.
      *  @param ctx  Execution context providing the workspace root and pad.
      *  @return     The re-stored entry, or `None` when the file is unavailable.
      */
     private def hydrateRef(ref: String, ctx: ExecutionContext): Option[ScratchEntry] =
-    {
-        val key = ref.stripPrefix("$scratch/")
-        if (key.startsWith("__result_")) return None
-        val rootStr = ctx.session.rootPath.getOrElse("")
-        PathSandbox.resolve(rootStr, key).toOption
-            .filter(Files.isRegularFile(_))
-            .filter(p => Files.size(p) <= HydrationMaxBytes)
-            .flatMap { path =>
-                try
-                {
-                    val content = Files.readString(path)
-                    val now     = System.currentTimeMillis()
-                    val entry   = ScratchEntry(
-                        content      = content,
-                        sizeBytes    = Files.size(path),
-                        lineCount    = content.count(_ == '\n') + 1,
-                        sourcePath   = key,
-                        lastModified = Files.getLastModifiedTime(path).toMillis,
-                        storedAt     = now
-                    )
-                    ctx.scratchpad.store(key, entry)
-                    Some(entry)
-                }
-                catch
-                {
-                    case _: Throwable => None
-                }
-            }
-    }
+        ScratchHydration.hydrate(ref, ctx.scratchpad, ctx.session.rootPath.getOrElse(""))
 
     // ── Help handler ──────────────────────────────────────────────────────────
 

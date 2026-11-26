@@ -311,8 +311,16 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                 val rootId    = rootAbs.toString
                 val scope     = IndexScope(IndexKind.Workspace, rootId, None, None)
 
+                // Result scope pushed into the ranked query: exact match covers a
+                // file path, prefix match covers a directory subtree. `None` when
+                // the search spans the whole workspace root.
+                val startRel     = rootAbs.relativize(startPath).toString.replace('\\', '/')
+                val pathConstraint =
+                    if (startRel.isEmpty || startRel == ".") None else Some(startRel)
+
                 // Incremental refresh before searching; progress is advisory.
-                val refreshStats = if (ctx.searchIndex.isAvailable)
+                // mode=exact is the grep-only escape hatch and pays no indexing cost.
+                val refreshStats = if (ctx.searchIndex.isAvailable && input.mode != "exact")
                     Some(new WorkspaceIndexer(ctx.searchIndex).refresh(rootAbs, Some(scopeAbs),
                         onProgress = (done, total) =>
                             ctx.onEvent(AgentEvent.ToolProgress(name,
@@ -324,7 +332,7 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                 val exactHits =
                     if (input.mode == "ranked") Nil
                     else exactArm(input, rootAbs, startPath, None)
-                val rankedHits = rankedArm(input, ctx, scope, None)
+                val rankedHits = rankedArm(input, ctx, scope, None, pathConstraint)
 
                 // Apply depth and filename filters to the fused set so both arms
                 // honour them identically.
@@ -337,10 +345,12 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
     }
 
     /**
-     *  Redirects a raw document path to its converted Markdown sibling when one
-     *  exists, matching the pre-existing search behaviour.
+     *  Redirects a raw document path to its converted Markdown sibling when the
+     *  sibling exists and is at least as new as the document — the same
+     *  freshness rule the indexer applies for superseding, so a stale `.md`
+     *  left behind by an older conversion does not shadow the document.
      *  @param path  Resolved start path.
-     *  @return      The `.md` sibling when present, otherwise the original path.
+     *  @return      The `.md` sibling when present and fresh, otherwise the original path.
      */
     private def redirectedMarkdown(path: Path): Path =
     {
@@ -351,13 +361,24 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
         val name = path.getFileName.toString
         val md   = name.substring(0, name.lastIndexOf('.')) + ".md"
         val mdPath = path.getParent.resolve(md)
-        if (Files.exists(mdPath)) mdPath else path
+        val fresh = Files.exists(mdPath) &&
+            Files.getLastModifiedTime(mdPath).toMillis >= Files.getLastModifiedTime(path).toMillis
+        if (fresh) mdPath else path
     }
 
     // ── Stored scope ─────────────────────────────────────────────────────────
 
     /**
-     *  Searches this run's scratchpad entries and their indexed rows.
+     *  Searches scratch content: the exact arm covers entries currently in the
+     *  pad, the ranked arm covers persisted rows — including file-backed rows
+     *  from earlier runs whose pad entries are gone.
+     *
+     *  The two corpora differ deliberately: pad contents are per-run and exact,
+     *  indexed rows are session-durable but only searchable through BM25. A
+     *  `ref=` drill-down into a missing pad entry re-hydrates file-backed refs
+     *  from disk so the exact arm still applies; computed keys have no backing
+     *  file and rely on the ranked arm.
+     *
      *  @param input  Validated input.
      *  @param ctx    Runtime execution context.
      *  @return       Paged search output.
@@ -367,16 +388,27 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
         val entries: List[(String, ScratchEntry)] =
             input.ref match
             {
-                case Some(r) => ctx.scratchpad.get(r).map(e => r.stripPrefix("$scratch/") -> e).toList
+                case Some(r) =>
+                    ctx.scratchpad.get(r).orElse(
+                        agentica.shell.ScratchHydration.hydrate(r, ctx.scratchpad,
+                            ctx.session.rootPath.getOrElse(""))
+                    ).map(e => r.stripPrefix("$scratch/") -> e).toList
                 case None    => ctx.scratchpad.entriesSnapshot
             }
-
-        if (entries.isEmpty) return buildOutput(input, (Nil, false), None)
 
         val pattern    = buildPattern(input)
         val exactHits  = if (input.mode == "ranked") Nil
                          else entries.flatMap { case (key, e) => exactHitsInText(key, e.content, pattern) }
-        val rankedHits = if (input.mode == "exact") Nil else storedRanked(input, ctx)
+        val rankedHits = if (input.mode == "exact") Nil
+                         else
+                             try storedRanked(input, ctx)
+                             catch
+                             {
+                                 case ex: Exception =>
+                                     agentica.observability.TraceLogger.warn(ctx.traceId,
+                                         "stored_ranked_failed", Map("error" -> String.valueOf(ex.getMessage)))
+                                     Nil
+                             }
         buildOutput(input, fuse(exactHits, rankedHits), None)
     }
 
@@ -532,25 +564,41 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
 
     /**
      *  Ranked arm: BM25 over the chunk index, with AND-first and OR fallback.
-     *  @param input   Validated input.
-     *  @param ctx     Runtime execution context.
-     *  @param scope   Index scope to search.
-     *  @param prefix  Optional display prefix for hits.
-     *  @return        Raw ranked hits.
+     *
+     *  Failures degrade to no ranked hits rather than failing the whole search:
+     *  the exact arm's results must survive a malformed-expression or index
+     *  error in this arm.
+     *
+     *  @param input         Validated input.
+     *  @param ctx           Runtime execution context.
+     *  @param scope         Index scope to search.
+     *  @param prefix        Optional display prefix for hits.
+     *  @param pathConstraint Optional workspace-relative path constraint pushed into the query.
+     *  @return              Raw ranked hits.
      */
     private def rankedArm(input: FilesSearchInput, ctx: ExecutionContext, scope: IndexScope,
-                          prefix: Option[String]): List[RawHit] =
+                          prefix: Option[String], pathConstraint: Option[String] = None): List[RawHit] =
     {
         if (!ctx.searchIndex.isAvailable || input.mode == "exact") return Nil
         val andExpr = ftsExpr(input)
         if (andExpr.isEmpty) return Nil
         val orExpr  = ftsExpr(input, "OR")
 
-        val andHits = ctx.searchIndex.search(scope, andExpr, MaxFusedHits)
         val hits =
-            if (andHits.size >= input.limit || andExpr == orExpr) andHits
-            else (andHits ++ ctx.searchIndex.search(scope, orExpr, MaxFusedHits))
-                .distinctBy(h => (h.sourcePath, h.chunkIndex))
+            try
+            {
+                val andHits = ctx.searchIndex.search(scope, andExpr, MaxFusedHits, pathConstraint)
+                if (andHits.size >= input.limit || andExpr == orExpr) andHits
+                else (andHits ++ ctx.searchIndex.search(scope, orExpr, MaxFusedHits, pathConstraint))
+                    .distinctBy(h => (h.sourcePath, h.chunkIndex))
+            }
+            catch
+            {
+                case ex: Exception =>
+                    agentica.observability.TraceLogger.warn(ctx.traceId, "ranked_arm_failed",
+                        Map("error" -> String.valueOf(ex.getMessage)))
+                    Nil
+            }
 
         hits.map(h => RawHit(
             sourcePath = prefix.map(p => s"$p${h.sourcePath}").getOrElse(h.sourcePath),
@@ -703,16 +751,22 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
      */
     private def nextCommand(input: FilesSearchInput, cursor: Int): String =
     {
-        val escaped = input.query.replace("\"", "\\\"")
-        val parts   = ListBuffer(s"""query="$escaped"""")
-        input.rawPath.foreach(p => parts += s"path=$p")
+        /**
+         *  Quotes one argument value for the continuation command.
+         *  @param v  Raw argument value.
+         *  @return   Double-quoted value with embedded quotes escaped.
+         */
+        def quoted(v: String): String = "\"" + v.replace("\"", "\\\"") + "\""
+
+        val parts   = ListBuffer(s"query=${quoted(input.query)}")
+        input.rawPath.foreach(p => parts += s"path=${quoted(p)}")
         if (input.scope == "stored") parts += "scope=stored"
-        input.ref.foreach(r => parts += s"ref=$r")
+        input.ref.foreach(r => parts += s"ref=${quoted(r)}")
         if (input.mode != "hybrid") parts += s"mode=${input.mode}"
         if (input.limit != 8) parts += s"limit=${input.limit}"
         if (input.useRegex) parts += "regex=true"
         if (!input.recursive) parts += "recursive=false"
-        input.include.foreach(g => parts += s"include=$g")
+        input.include.foreach(g => parts += s"include=${quoted(g)}")
         parts += s"cursor=$cursor"
         s"$name ${parts.mkString(" ")}"
     }
@@ -748,6 +802,13 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
 
     /**
      *  Builds the FTS5 match expression for the ranked arm.
+     *
+     *  Every term is emitted as a quoted phrase — `"term"` or `"term"*` for
+     *  prefix matching — so user input can never produce FTS5 operators:
+     *  uppercase `AND`/`OR`/`NOT` in the query become literal tokens rather
+     *  than syntax. Terms are pre-stripped to letters, digits, and underscore,
+     *  so no embedded-quote escape is possible.
+     *
      *  @param input  Validated input.
      *  @param op     `AND` for the precise pass, `OR` for the relaxed fallback.
      *  @return       Sanitised match expression; empty when nothing usable remains.
@@ -760,8 +821,8 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
             terms.map { t =>
                 val cleaned = t.replaceAll("[^\\p{L}\\p{N}_]", "")
                 if (cleaned.isEmpty) ""
-                else if (cleaned.length >= 4) s"$cleaned*"
-                else cleaned
+                else if (cleaned.length >= 4) s""""$cleaned"*"""
+                else s""""$cleaned""""
             }
         parts.filter(_.nonEmpty).distinct match
         {
@@ -821,6 +882,13 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
 
     /**
      *  Whether a walked path should be scanned by the exact arm.
+     *
+     *  Textual eligibility is content-based, matching the indexer: known
+     *  extensions are a fast path, unknown and extensionless files pass when
+     *  they sniff as non-binary, so `.rs`, `Makefile` and scripts are greppable.
+     *  Office documents are excluded — their binary containers are meaningless
+     *  to line grep; the ranked arm serves them from the extracted text layer.
+     *
      *  @param path  Walked path.
      *  @return      `true` for regular, non-symlinked text files.
      */
@@ -830,8 +898,7 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
         if (path.getFileName.toString.startsWith(".")) return false
         if (Files.size(path) > agentica.search.TextExtractor.MaxFileBytes) return false
         if (path.iterator().asScala.exists(seg => agentica.search.TextExtractor.isSkippedDir(seg.toString))) return false
-        val ext = agentica.search.TextExtractor.extensionOf(path)
-        agentica.search.TextExtractor.isSupported(path) && !agentica.search.TextExtractor.isDocument(path) && ext.nonEmpty
+        agentica.search.TextExtractor.mayContainText(path) && !agentica.search.TextExtractor.isDocument(path)
     }
 
     /**

@@ -56,19 +56,39 @@ class TextExtractorTest extends AnyFunSuite
         }
     }
 
-    test("text files are read as UTF-8; binary and unsupported files yield None") {
+    test("text files are read as UTF-8; binary files yield None") {
         withTempDir { dir =>
             val text = dir.resolve("notes.md")
             Files.writeString(text, "# Notes\nRevenue grew.", StandardCharsets.UTF_8)
             assert(TextExtractor.extract(text).contains("# Notes\nRevenue grew."))
 
+            // NUL bytes in the sniff window mark the file binary.
             val bin = dir.resolve("blob.md")
             Files.write(bin, Array[Byte](0, 1, 2))
             assert(TextExtractor.extract(bin).isEmpty)
 
-            val png = dir.resolve("image.png")
-            Files.write(png, Array[Byte](1, 2, 3))
-            assert(TextExtractor.extract(png).isEmpty)
+            // JPEG-like content: invalid UTF-8 even without NUL bytes, rejected at decode.
+            val jpg = dir.resolve("image.jpg")
+            Files.write(jpg, Array[Byte](0xFF.toByte, 0xD8.toByte, 0xFF.toByte, 0xE0.toByte,
+                0xC0.toByte, 0xFE.toByte, 0x80.toByte, 0x90.toByte))
+            assert(TextExtractor.extract(jpg).isEmpty)
+        }
+    }
+
+    test("unknown and extensionless files are extracted when they sniff as text") {
+        withTempDir { dir =>
+            val rs = dir.resolve("build.rs")
+            Files.writeString(rs, "fn main() {}", StandardCharsets.UTF_8)
+            assert(TextExtractor.extract(rs).contains("fn main() {}"))
+
+            val docker = dir.resolve("Dockerfile")
+            Files.writeString(docker, "FROM scratch", StandardCharsets.UTF_8)
+            assert(TextExtractor.extract(docker).contains("FROM scratch"))
+
+            // Unknown extension with binary content is still excluded by the sniff.
+            val dat = dir.resolve("blob.dat")
+            Files.write(dat, Array[Byte](1, 0, 2, 0))
+            assert(TextExtractor.extract(dat).isEmpty)
         }
     }
 

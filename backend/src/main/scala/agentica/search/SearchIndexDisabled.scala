@@ -46,13 +46,24 @@ object SearchIndexDisabled extends SearchIndex
     def index(key: SourceKey, text: String, lastModified: Long, sizeBytes: Long): Unit = ()
 
     /**
-     *  Always empty.
-     *  @param scope      Row scope to search.
-     *  @param matchExpr  FTS5 match expression.
-     *  @param limit      Maximum hits.
-     *  @return           `Nil`.
+     *  No-op supersede.
+     *  @param key           Full address of the superseded source.
+     *  @param lastModified  Source modification time (epoch ms).
+     *  @param sizeBytes     Source size.
+     *  @param replacement   Workspace-relative path of the converted sibling.
      */
-    def search(scope: IndexScope, matchExpr: String, limit: Int): List[SearchHit] = Nil
+    def supersede(key: SourceKey, lastModified: Long, sizeBytes: Long, replacement: String): Unit = ()
+
+    /**
+     *  Always empty.
+     *  @param scope       Row scope to search.
+     *  @param matchExpr   FTS5 match expression.
+     *  @param limit       Maximum hits.
+     *  @param pathPrefix  Optional path constraint.
+     *  @return            `Nil`.
+     */
+    def search(scope: IndexScope, matchExpr: String, limit: Int,
+               pathPrefix: Option[String] = None): List[SearchHit] = Nil
 
     /**
      *  Always zero.

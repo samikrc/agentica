@@ -167,4 +167,69 @@ class WorkspaceIndexerTest extends AnyFunSuite with BeforeAndAfterEach
         assert(stats.deleted == 0, "rows outside the scope must not be purged")
         assert(index.countMatches(scope, "beta") == 1)
     }
+
+    // ── Review regression tests ──────────────────────────────────────────────
+
+    test("deleting the converted sibling re-indexes the raw document and clears the alias") {
+        val pdfSrc = Paths.get(getClass.getResource("/files/IT Support Analyst - India.pdf").toURI)
+        Files.copy(pdfSrc, ws.resolve("doc.pdf"))
+        write("doc.md", "converted commentary")
+        indexer.refresh(ws, None)
+
+        val rootId = ws.toAbsolutePath.normalize().toString
+        val pdfKey = SourceKey(IndexKind.Workspace, rootId, None, None, "doc.pdf")
+        assert(index.resolveAlias(pdfKey).contains("doc.md"), "control: alias recorded")
+
+        Files.delete(ws.resolve("doc.md"))
+        indexer.refresh(ws, None)
+
+        val meta = index.meta(pdfKey)
+        assert(meta.exists(_.replacedBy.isEmpty),
+            "the stale alias must be cleared once the sibling is gone")
+        assert(meta.exists(_.chunkCount > 0),
+            "the PDF text layer must be re-indexed once the sibling is gone")
+    }
+
+    test("unindexable files are marked once and not retried") {
+        val target = ws.resolve("bad.md")
+        Files.write(target, Array[Byte](0, 1, 2, 0, 3))
+
+        val first = indexer.refresh(ws, None)
+        val rootId = ws.toAbsolutePath.normalize().toString
+        val key    = SourceKey(IndexKind.Workspace, rootId, None, None, "bad.md")
+        val marked = index.meta(key)
+
+        assert(marked.exists(_.chunkCount == 0),
+            "unindexable files must receive a zero-chunk marker row")
+        val indexedAt = marked.get.indexedAt
+
+        val second = indexer.refresh(ws, None)
+        assert(index.meta(key).get.indexedAt == indexedAt,
+            "an unchanged unindexable file must not be re-extracted on later passes")
+        assert(second.pending == 0 && !second.partial,
+            "marker rows must count as completed work, not pending")
+    }
+
+    test("unknown and extensionless text files are indexed") {
+        write("build.rs", "fn main() { println!(\"needle rust\"); }")
+        write("Dockerfile", "RUN echo needle docker")
+
+        indexer.refresh(ws, None)
+
+        assert(index.countMatches(scope, "needle") == 2,
+            "unknown-extension and extensionless text files must be indexed")
+    }
+
+    test("pending counts only files that still need work") {
+        write("a.md", "alpha")
+        write("b.md", "beta")
+        indexer.refresh(ws, None)
+        write("c.md", "gamma")
+
+        val stats = indexer.refresh(ws, None, budgetMs = -1L)
+
+        assert(stats.pending == 1,
+            s"only the never-indexed file may count as pending, got ${stats.pending}")
+    }
 }
+
