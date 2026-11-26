@@ -86,16 +86,16 @@ Goal: replace the Phase 1 single-call loop with a safe plan→act→observe agen
 - [x] Implement `CommandRegistry`: `dispatch()`, `helpIndex()`, `helpFor()`, `allSchemas()`; register all tools here at startup.
 - [x] Add `help` command (handled directly in `CommandRegistry`, not a `Tool[I,O]`): `help` / `help <family>` / `help <family_verb>`; output in `AgentResponse` envelope.
 - [x] Implement `VirtualShell`: `execute(rawCommand, ctx)` → `Tokenizer` → `CommandRegistry.dispatch` → `Presentation.render`.
-- [x] Implement `Presentation` layer: `BODY_BUDGET_CHARS = 8000` constant; route oversized bodies to `SessionScratchpad`; emit `try` suggestions with scratchpad ref; binary content → `<binary N KB mime/type>` placeholder.
+- [x] Implement `Presentation` layer: `BODY_BUDGET_CHARS` constant (8000 at the time; raised to 15,000 in Oct 2026 — see `agent_loop_runtime.md` §4.5); route oversized bodies to `SessionScratchpad`; emit `try` suggestions with scratchpad ref; binary content → `<binary N KB mime/type>` placeholder.
 - [x] Add substitution pass in `VirtualShell` (before dispatch): resolve `$scratch/<path>` refs in any arg value to full `String` content from `SessionScratchpad`.
 - [x] Unit tests: tokenizer (all valid forms, all error cases, embedded newlines, multi-word quoted values), `PathSandbox` escape detection.
 
 ### Step 2 — `files.*` Tool Implementations
 
-- [x] `files.read`: optional `lines=start-end` range arg; route to scratchpad if body > 8000 chars; check staleness before re-reading.
+- [x] `files.read`: optional `lines=start-end` range arg; route to scratchpad if body exceeds the body budget (8000 at the time; 15,000 since Oct 2026); check staleness before re-reading.
 - [x] `files.write`: permission scope check (see Step 3); confirm bytes written.
 - [x] `files.list`: ls-style; args: `path`, `recursive` (default false), `all` (dotfiles, default false), `depth` (default 3), `pattern` glob; indented tree output with size and date.
-- [x] `files.search`: grep-style; args: `query`, `path`, `recursive` (default true), `ignore_case` (default false), `lines_context` (default 2), `max_matches` (default 50), `include` glob, `regex` flag; skip binary files; `>` prefix on matching line.
+- [x] `files.search`: grep-style; args: `query`, `path`, `recursive` (default true), `ignore_case` (default false), `lines_context` (default 2), `max_matches` (default 50), `include` glob, `regex` flag; skip binary files; `>` prefix on matching line. *(Superseded by the AG-31 hybrid contract — see `agent_loop_runtime.md` §7.5: `query, path, scope, ref, limit, cursor, mode, regex, recursive, include`.)*
 - [x] `files.search` table-aware context expansion: a match window touching a `|` row grows to the enclosing contiguous Markdown table (cap 60 extra lines); overlapping/adjacent match windows merge into single non-duplicated regions.
 - [x] `files.read` large-file guidance: results for bodies over the inline budget carry an actionable hint directing the model to `files.search` + `lines=` ranges; tool schema text documents the search-then-range workflow.
 - [x] `files.stat`: file size, modified time, type.
@@ -108,7 +108,7 @@ Goal: replace the Phase 1 single-call loop with a safe plan→act→observe agen
 
 - [x] Add `computedResultCounter: AtomicInteger` and `nextComputedKey(): String` to `SessionScratchpad`; key format is `"__result_N__"` where `N` increments per call (already stubbed in §4.6 class block).
 - [x] Update `Tool.render()` signature to `render(output: O, ctx: ExecutionContext): ToolResult`; update all existing `Tool` implementations to match.
-- [x] Update `FilesRead.render()`: always call `ctx.scratchpad.store(sourcePath, entry)`; for bodies ≤ 8000 chars return `ToolBody.Inline` with a `stored:` metadata entry; for large bodies return `ToolBody.ScratchRef` as before.
+- [x] Update `FilesRead.render()`: always call `ctx.scratchpad.store(sourcePath, entry)`; for bodies within the body budget (8000 at the time; 15,000 since Oct 2026) return `ToolBody.Inline` with a `stored:` metadata entry; for large bodies return `ToolBody.ScratchRef` as before.
 - [x] Update `FilesSearch.render()`: call `ctx.scratchpad.store(ctx.scratchpad.nextComputedKey(), entry)`; for small results return inline body plus counter-keyed `stored:` ref; for large results return `ScratchRef` only.
 - [x] Update `[SCRATCHPAD]` section in `system_prompt.txt` to explain that all results include a `stored:` ref usable in subsequent tool arguments; remove `[CHAINING]` section (no longer needed — `store=true` arg eliminated).
 - [x] Update unit tests: `FilesRead` on a small file → `Inline` body with a `stored:` metadata entry and path-keyed ref in scratchpad; `FilesRead` on a large file → `ScratchRef` only; `FilesSearch` on a small result → inline body with a counter-keyed `stored:` ref; counter increments correctly across multiple calls.

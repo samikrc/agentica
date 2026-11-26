@@ -1,6 +1,7 @@
 # Project Notes
 
 - Backend build and tests run from `backend/` with `mvn test`.
+- Comment-only or Scaladoc-only changes need no compile or test run. Run the targeted suite for a localized code change and the full suite at checkpoints; do not burn a build on documentation edits.
 - Maven Surefire reports zero ScalaTest tests first; the ScalaTest Maven plugin runs the actual suite later in the same command. Verify the final ScalaTest summary rather than the Surefire count.
 - Standalone test-source mains such as `agentica.misctests.VLMCompareTest` use `mvn test-compile exec:exec -Dexec.classpathScope=test` with `-Dexec.args` specifying JVM flags, `-classpath %classpath`, the main class, and its arguments. `exec:java` conflicts with the existing plugin's `<classpath/>` argument configuration.
 - Tools use one canonical `family_verb` identifier across provider schemas, registry dispatch, help, events, persistence, and evaluation output. Native calls use JSON arguments; the text `run(command=...)` protocol is not a production fallback.

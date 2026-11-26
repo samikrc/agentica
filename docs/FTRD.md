@@ -372,7 +372,7 @@ Rationale: piping between tools forces a common intermediate representation (tex
 
 **Output-capture variables (`$last`, `$1`, `$2`, ...) remain deferred beyond Phase 2.** Phase 2 implemented a more focused solution for the primary use case — large-output handling — via the **`$scratch/<path>` ref system** (`SessionScratchpad`):
 
-- When a tool output exceeds the 8000-char body budget, the full content is stored in an in-memory session-scoped cache keyed by source path, and the presentation layer returns a `$scratch/<path>` reference instead of the content.
+- When a tool output exceeds the 15,000-char body budget, the full content is stored in an in-memory session-scoped cache keyed by source path, and the presentation layer returns a `$scratch/<path>` reference instead of the content.
 - The executor performs a **substitution pass** between tokenising and dispatching: any arg value containing a `$scratch/<path>` ref is resolved to the full content before the tool executes. The agent emits the literal ref token; the file contents never travel through the conversation.
 - Entries are path-keyed and stable within a session. Staleness is checked via `lastModifiedTime` comparison; the LRU cache holds up to 20 entries.
 - Token savings are automatic — the agent does not need to learn any new syntax beyond referencing the `$scratch/` path it received in a prior tool result.
@@ -840,7 +840,7 @@ Rationale: the references (§20) repeatedly note that long-horizon completion �
 ### Phase 2 *(Complete)*
 - Full plan→act→observe agent loop with native `tool_calls` dispatch (`ToolCallParser` from the initial text protocol has since been removed), cancellation, and `maxIterations` cap — see `agent_loop_runtime.md` §3
 - Context management: token-budget-aware sliding window, newest-first truncation, system prompt with `{{TOOL_INDEX}}` / `{{ROOT_PATH}}` / `{{TODAY}}` substitution
-- Virtual shell runtime: `Tokenizer`, `CommandRegistry`, `VirtualShell`, `Presentation` layer (8000-char body budget, `$scratch/<path>` scratchpad for overflow)
+- Virtual shell runtime: `Tokenizer`, `CommandRegistry`, `VirtualShell`, `Presentation` layer (15,000-char body budget, `$scratch/<path>` scratchpad for overflow)
 - Action families implemented: `files_*` (`read`, `write`, `list`, `search`, `stat`), `memory_*` (`get`, `set`, `list`). `llm_*` (`summarize`, `extract`, `classify`) remain stubs — Phase 2 Step 5 incomplete
 - Scoped permission model (`Once`/`ForSession`/`Always`) + UI modal for `files_write`
 - Debug log viewer: `GET /log/stream` WebSocket endpoint + `log-viewer.html` + "Debug log" button

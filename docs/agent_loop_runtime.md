@@ -283,6 +283,15 @@ Rules:
 
 **Decision (Q-6):** Body budget is a **fixed constant of 15000 characters** (~4K tokens), sufficient for any local model with ≥4K context window. This is a named constant in `Presentation.scala` (`BODY_BUDGET_CHARS = 15000`), not a user-configurable setting. When the body exceeds this limit, the presentation layer routes the full content to the `SessionScratchpad` (§4.7) instead of truncating.
 
+**Why 15000 (history).** Raised from 8000 on 2026-10-13 for eval quality: the doc-eval
+document was 9,981 chars — 25% over the 8K budget — so every model's first `files_read`
+returned only metadata plus a `$scratch/` ref, and answers were built entirely from
+`files_search` snippets. Candidate models advertise ≥100K context and 15K chars is ~3.75K
+tokens, so the inline limit was raised rather than working around it; bodies over 15K still
+take the `ScratchRef` path. The cost to watch: `AgentLoop` accumulates every tool result of
+a run in `toolResultTurns`, outside the history budget, so larger inline bodies multiply
+across iterations — see `docs/serving_optimization.md` for the context-sizing implication.
+
 Overflow response shape:
 
 ```
@@ -744,6 +753,8 @@ Raw documents are indexed from their text layer so the corpus is searchable imme
 | `cursor` | no | Paging offset (default 0) |
 | `mode` | no | `hybrid` (default) \| `exact` \| `ranked` — advanced escape hatch, visible to the model |
 | `regex` | no | Treat `query` as a raw regex for the exact arm (advanced) |
+| `recursive` | no | Descend into subdirectories of `path` (default `true`) |
+| `include` | no | Glob matched against file names, e.g. `*.md` (default: none) |
 
 Validation matrix:
 
@@ -1195,8 +1206,8 @@ enum AgentEvent:
 | ~~**Q-2**~~ | ~~Is `maxIterations` hardcoded, global setting, or per-session?~~ | **Decided**: global `AppSettings` field, default 20, exposed in Settings UI |
 | ~~**Q-3/Q-4/Q-13**~~ | ~~Tool result injection and tool call format~~ | **Decided**: plain `assistant`/`user` turns; inline `run(command="...")` text; `ToolCallParser` extracts and logs all calls |
 | ~~**Q-5**~~ | ~~Final answer: absence of `run()` sufficient, or require explicit marker?~~ | **Decided**: explicit `<done>` marker required; soft fallback (accept without marker, log warning) if absent |
-| ~~**Q-6**~~ | ~~Token budget for a single tool result body?~~ | **Decided**: fixed 8000 char constant in `Presentation.scala`; overflow → `SessionScratchpad` with path-keyed stable refs + staleness check + LRU eviction (max 20 entries) |
-| ~~**Q-7**~~ | ~~`files_search`: grep-based or index-based?~~ | **Decided**: grep-based (`java.nio.file`, no subprocess); Unix-aligned args for both `files_search` (grep-style) and `files_list` (ls-style); index-based search deferred to Phase 5 |
+| ~~**Q-6**~~ | ~~Token budget for a single tool result body?~~ | **Decided**: fixed constant in `Presentation.scala` — 8000 originally, **15,000 since Oct 2026** (§4.5); overflow → `SessionScratchpad` with path-keyed stable refs + staleness check + LRU eviction (max 20 entries, true LRU since AG-31) |
+| ~~**Q-7**~~ | ~~`files_search`: grep-based or index-based?~~ | **Decided**: grep-based (`java.nio.file`, no subprocess); Unix-aligned args for both `files_search` (grep-style) and `files_list` (ls-style); index-based search deferred to Phase 5. **Superseded**: hybrid grep + FTS5 BM25 with RRF landed in Phase 6 (AG-31, §7.5) |
 | ~~**Q-8**~~ | ~~`memory_*`: session-scoped only or global cross-session in Phase 2?~~ | **Decided**: session-scoped only; `MemoryStore` trait with `Option[sessionId]` ready for Phase 6 global upgrade |
 | ~~**Q-9**~~ | ~~`llm_*` tools: same provider or configurable separate model?~~ | **Decided**: same `LLMProvider`; fresh isolated message list per tool call, no session context shared; `callType="tool_llm"` in token accounting |
 | ~~**Q-10**~~ | ~~Permission prompts: SSE-based run suspension or natural language relay + re-submit?~~ | **Decided**: Option A — `PermissionRequired` SSE event; run suspends through `PermissionCoordinator` on a per-request `CompletableFuture`; UI modal with Allow once/session/always/Deny; `POST /permissions/:runId` with `requestId`; 60s timeout → graceful `permission_denied` |
