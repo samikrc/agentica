@@ -24,3 +24,6 @@ dev.conf
 eval-config.json
 # Machine-local test config (see local.conf.example)
 backend/src/test/resources/local.conf
+
+# Machine-local editor workspace (multi-root paths differ per machine)
+*.code-workspace
