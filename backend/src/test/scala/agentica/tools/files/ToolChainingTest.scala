@@ -290,7 +290,9 @@ class ToolChainingTest extends AnyFunSuite
                 limit    = 8,
                 cursor   = 0,
                 mode     = "hybrid",
-                useRegex = false
+                useRegex = false,
+                recursive = true,
+                include = None
             )
             val output = FilesSearch.execute(input, ctx)
             val result = FilesSearch.render(output, ctx)

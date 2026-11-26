@@ -92,7 +92,7 @@ How to read it:
 
 Search tips:
 - Use quoted phrases for exact wording: query="revenue growth".
-- Use path= to narrow to a directory or file; use mode="exact" to force literal matching (numbers, IDs), or mode="ranked" to force passage ranking.
+- Use path= to narrow to a directory or file, recursive="false" for the immediate directory only, and include="*.md" to filter by file name. Use mode="exact" to force literal matching (numbers, IDs), or mode="ranked" to force passage ranking.
 - To query content you already read this session without re-reading it, use scope="stored":
   files_search query="APAC" scope="stored"
   To drill into one stored entry: files_search query="APAC" ref="$scratch/__result_1__".

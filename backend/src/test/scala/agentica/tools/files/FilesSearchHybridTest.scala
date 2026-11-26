@@ -188,6 +188,30 @@ class FilesSearchHybridTest extends AnyFunSuite with BeforeAndAfterEach
         assert(body.contains("For more entries, use: files_search"))
     }
 
+    test("recursive=false restricts hits to the immediate directory") {
+        write("top.md", "needle in top")
+        write("sub/nested.md", "needle in nested")
+        val ctx = mkCtx(SessionScratchpad())
+
+        val out = FilesSearch.execute(input("query" -> "needle", "recursive" -> "false"), ctx)
+
+        assert(out.hits.nonEmpty)
+        assert(out.hits.forall(h => !h.sourcePath.contains("/")),
+            s"nested hits must be filtered, got ${out.hits.map(_.sourcePath)}")
+    }
+
+    test("include filters hits by file name glob") {
+        write("a.md", "needle in markdown")
+        write("b.txt", "needle in text")
+        val ctx = mkCtx(SessionScratchpad())
+
+        val out = FilesSearch.execute(input("query" -> "needle", "include" -> "*.md"), ctx)
+
+        assert(out.hits.nonEmpty)
+        assert(out.hits.forall(_.sourcePath.endsWith(".md")),
+            s"non-matching files must be filtered, got ${out.hits.map(_.sourcePath)}")
+    }
+
     // ── Stored scope ─────────────────────────────────────────────────────────
 
     test("stored scope searches this run's scratch entries and supports ref drill-down") {

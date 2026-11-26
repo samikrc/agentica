@@ -168,7 +168,9 @@ class FilesReadScratchpadTest extends AnyFunSuite
             limit    = limit,
             cursor   = 0,
             mode     = mode,
-            useRegex = false
+            useRegex = false,
+            recursive = true,
+            include = None
         )
 
     test("FilesSearch expands a caption match to the enclosing table") {

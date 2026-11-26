@@ -19,18 +19,22 @@ import scala.util.matching.Regex
  *  @param ref      Stored entry to search, e.g. `$scratch/__result_1__`; implies `stored` scope.
  *  @param limit    Maximum hits rendered per page (safety cap; the body budget usually binds first).
  *  @param cursor   Paging offset into the fused result list.
- *  @param mode     `hybrid` (default), `exact` (grep arm only), or `ranked` (BM25 arm only).
- *  @param useRegex Treat `query` as a raw regex for the exact arm.
+ *  @param mode      `hybrid` (default), `exact` (grep arm only), or `ranked` (BM25 arm only).
+ *  @param useRegex  Treat `query` as a raw regex for the exact arm.
+ *  @param recursive Descend into subdirectories of `path` (default true).
+ *  @param include   Glob pattern matched against file names (default: no filter).
  */
 case class FilesSearchInput(
-    query:    String,
-    rawPath:  Option[String],
-    scope:    String,
-    ref:      Option[String],
-    limit:    Int,
-    cursor:   Int,
-    mode:     String,
-    useRegex: Boolean
+    query:     String,
+    rawPath:   Option[String],
+    scope:     String,
+    ref:       Option[String],
+    limit:     Int,
+    cursor:    Int,
+    mode:      String,
+    useRegex:  Boolean,
+    recursive: Boolean,
+    include:   Option[String]
 )
 
 /**
@@ -123,8 +127,10 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
             ArgSpec("ref",    "Stored entry to search, e.g. $scratch/__result_1__; implies scope=stored", required = false),
             ArgSpec("limit",  "Maximum hits per page (default 8)",                             required = false),
             ArgSpec("cursor", "Paging offset into the result list (default 0)",                required = false),
-            ArgSpec("mode",   "hybrid (default), exact, or ranked",                            required = false),
-            ArgSpec("regex",  "Treat query as a raw regex for the exact arm",                  required = false)
+            ArgSpec("mode",      "hybrid (default), exact, or ranked",                         required = false),
+            ArgSpec("regex",     "Treat query as a raw regex for the exact arm",               required = false),
+            ArgSpec("recursive", "Descend into subdirectories (default: true)",                required = false),
+            ArgSpec("include",   "Glob pattern matched against file names (default: none)",    required = false)
         ),
         example  = """files_search query="revenue growth" path=reports/"""
     )
@@ -179,8 +185,10 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                 ref      = ref,
                 limit    = limit,
                 cursor   = cursor,
-                mode     = mode,
-                useRegex = args.getOrElse("regex", "false").toLowerCase == "true"
+                mode      = mode,
+                useRegex  = args.getOrElse("regex", "false").toLowerCase == "true",
+                recursive = args.getOrElse("recursive", "true").toLowerCase != "false",
+                include   = args.get("include").map(_.trim).filter(_.nonEmpty)
             ))
         }
     }
@@ -235,7 +243,7 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
             case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case Some(error) =>
-                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File search failed: ${error.toErrorCode}"))
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File search failed: ${error.toErrorCode.value}"))
             case None =>
                 val bodyText = buildBody(output)
                 val metadata = ListMap(
@@ -318,7 +326,13 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                     else exactArm(input, rootAbs, startPath, None)
                 val rankedHits = rankedArm(input, ctx, scope, None)
 
-                buildOutput(input, fuse(exactHits, rankedHits), indexNote)
+                // Apply depth and filename filters to the fused set so both arms
+                // honour them identically.
+                val (fused, capped) = fuse(exactHits, rankedHits)
+                val filtered        = fused.filter { case (h, _) =>
+                    passesFilters(h, rootAbs, scopeAbs, input)
+                }
+                buildOutput(input, (filtered, capped), indexNote)
         }
     }
 
@@ -419,7 +433,8 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
         val out     = ListBuffer.empty[RawHit]
         var files   = 0
         var bytes   = 0L
-        val stream  = Files.walk(startPath)
+        val maxDepth = if (input.recursive) Int.MaxValue else 1
+        val stream   = Files.walk(startPath, maxDepth)
         try
         {
             val it = stream.iterator().asScala
@@ -573,6 +588,11 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
         val exactRank  = exactHits.zipWithIndex.map { case (h, i) => h -> i }.toMap
         val rankedRank = rankedHits.zipWithIndex.map { case (h, i) => h -> i }.toMap
 
+        /**
+         *  Reciprocal-rank contribution of one raw hit across both arms.
+         *  @param h  Hit to score.
+         *  @return   Sum of the hit's RRF weights; 0 when it came from neither arm.
+         */
         def contribution(h: RawHit): Double =
         {
             val e = exactRank.get(h).map(i => 1.0 / (RrfK + i + 1)).getOrElse(0.0)
@@ -691,6 +711,8 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
         if (input.mode != "hybrid") parts += s"mode=${input.mode}"
         if (input.limit != 8) parts += s"limit=${input.limit}"
         if (input.useRegex) parts += "regex=true"
+        if (!input.recursive) parts += "recursive=false"
+        input.include.foreach(g => parts += s"include=$g")
         parts += s"cursor=$cursor"
         s"$name ${parts.mkString(" ")}"
     }
@@ -761,6 +783,40 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
         val rest    = phraseR.replaceAllIn(query, " ")
         val terms   = rest.split("[,\\s|]+").map(_.trim).filter(_.nonEmpty).distinct.toList
         (phrases, terms)
+    }
+
+    /**
+     *  Applies the depth and filename filters to one fused hit.
+     *
+     *  Runs after fusion so the exact and ranked arms are filtered identically:
+     *  `recursive=false` drops hits in subdirectories of the search scope, and
+     *  `include` keeps only hits whose file name matches the glob.
+     *
+     *  @param h        Fused hit.
+     *  @param rootAbs  Absolute workspace root.
+     *  @param scopeAbs Absolute search scope (directory or file).
+     *  @param input    Validated input carrying the filters.
+     *  @return         `true` when the hit should be kept.
+     */
+    private def passesFilters(h: RawHit, rootAbs: Path, scopeAbs: Path, input: FilesSearchInput): Boolean =
+    {
+        if (h.sourcePath.startsWith("$scratch/")) return true
+        val scopeRel = rootAbs.relativize(scopeAbs).toString.replace('\\', '/')
+        val underScope =
+            if (scopeRel.isEmpty || scopeRel == ".") h.sourcePath
+            else if (h.sourcePath == scopeRel) Path.of(scopeRel).getFileName.toString
+            else if (h.sourcePath.startsWith(scopeRel + "/")) h.sourcePath.drop(scopeRel.length + 1)
+            else return false
+
+        if (!input.recursive && underScope.contains("/")) return false
+        input.include match
+        {
+            case Some(glob) =>
+                java.nio.file.FileSystems.getDefault
+                    .getPathMatcher(s"glob:$glob")
+                    .matches(Path.of(underScope).getFileName)
+            case None => true
+        }
     }
 
     /**
