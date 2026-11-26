@@ -8,14 +8,16 @@ package agentica.search
  *  `SessionScratchpad` entries and are session-scoped; computed entries
  *  (`__result_N__`) are additionally run-qualified because the scratchpad
  *  counter restarts each run.
+ *
+ *  @param value  Persisted form written to and read from the `kind` column.
  */
-object IndexKind
+enum IndexKind(val value: String)
 {
     /** Crawled workspace file; `sessionId` and `runId` are empty. */
-    val Workspace: String = "workspace"
+    case Workspace extends IndexKind("workspace")
 
     /** SessionScratchpad entry; `sessionId` is set, `runId` only for computed keys. */
-    val Stored: String = "stored"
+    case Stored extends IndexKind("stored")
 }
 
 /**
@@ -27,7 +29,7 @@ object IndexKind
  *  @param sourcePath  Workspace-relative path or scratch key.
  */
 case class SourceKey(
-    kind:       String,
+    kind:       IndexKind,
     rootId:     String              = "",
     sessionId:  Option[String]      = None,
     runId:      Option[String]      = None,
@@ -42,7 +44,7 @@ case class SourceKey(
  *  @param runId       Owning run for computed stored rows.
  */
 case class IndexScope(
-    kind:      String,
+    kind:      IndexKind,
     rootId:    String         = "",
     sessionId: Option[String] = None,
     runId:     Option[String] = None

@@ -160,7 +160,8 @@ class AgentLoop(
                 // Hard cap: prevents runaway loops on models that keep requesting tools.
                 TraceLogger.warn(traceId, "max_iterations_exceeded",
                     Map("maxIterations" -> settings.maxIterations.toString))
-                searchIndex.deleteRun(traceId)
+                // Terminal path (runaway loop): drop this run's computed rows.
+                purgeRunIndex(traceId)
                 emitEvent(AgentEvent.AgentError("max_iterations_exceeded"))
                 running = false
             }
@@ -168,7 +169,8 @@ class AgentLoop(
             {
                 // The UI sent a cancel request (DELETE /runs/:runId sets this flag).
                 TraceLogger.info(traceId, "agent_cancelled", Map("iteration" -> iteration.toString))
-                searchIndex.deleteRun(traceId)
+                // Terminal path (cancelled before the next LLM call): drop this run's computed rows.
+                purgeRunIndex(traceId)
                 emitEvent(AgentEvent.Cancelled)
                 running = false
             }
@@ -225,7 +227,8 @@ class AgentLoop(
                     case ex: Exception =>
                         TraceLogger.error(traceId, "llm_stream_error",
                             Map("iteration" -> iteration.toString, "error" -> ex.getMessage))
-                        searchIndex.deleteRun(traceId)
+                        // Terminal path (provider failure): drop this run's computed rows.
+                        purgeRunIndex(traceId)
                         emitEvent(AgentEvent.AgentError(ex.getMessage))
                         running = false
                         None
@@ -283,7 +286,8 @@ class AgentLoop(
                             "reasoningChars"   -> llmResponse.reasoningContent.fold(0)(_.length).toString,
                             "completionTokens" -> llmResponse.completionTokens.toString
                         ))
-                        searchIndex.deleteRun(traceId)
+                        // Terminal path (empty/unusable model response): drop this run's computed rows.
+                        purgeRunIndex(traceId)
                         emitEvent(AgentEvent.AgentError(diagnostic))
                         running = false
                     }
@@ -317,9 +321,8 @@ class AgentLoop(
                                 None
                             }
                         emitEvent(AgentEvent.Final(assistantMsg.id, generatedTitle))
-                        // Computed scratch entries are run-scoped; drop their index
-                        // rows so a later run's __result_N__ keys cannot collide.
-                        searchIndex.deleteRun(traceId)
+                        // Terminal path (successful final answer): drop this run's computed rows.
+                        purgeRunIndex(traceId)
                         running = false
                     }
                     else
@@ -350,7 +353,8 @@ class AgentLoop(
                                 // Check for cancellation between individual tool dispatches.
                                 TraceLogger.info(traceId, "agent_cancelled_in_tool",
                                     Map("iteration" -> iteration.toString))
-                                searchIndex.deleteRun(traceId)
+                                // Terminal path (cancelled between tool dispatches): drop this run's computed rows.
+                                purgeRunIndex(traceId)
                                 emitEvent(AgentEvent.Cancelled)
                                 cancelled = true
                                 running   = false
@@ -432,8 +436,23 @@ class AgentLoop(
     }
 
     /**
+     *  Drops the chunk-index rows produced by this run's computed scratch entries.
+     *
+     *  `SessionScratchpad` computed keys (`__result_N__`) restart their counter every
+     *  run, and stored rows are run-qualified, so rows left behind by a finished run
+     *  can never be read again — they would only accumulate. Every terminal path
+     *  (final answer, cancellation, max iterations, provider failure) therefore purges
+     *  them; file-backed stored rows are session-scoped and deliberately kept.
+     *
+     *  @param traceId  Trace identifier doubling as the run id for index rows.
+     */
+    private def purgeRunIndex(traceId: String): Unit = searchIndex.deleteRun(traceId)
+
+    /**
      *  Serialises native tool calls into the OpenAI `tool_calls` wire shape, stored on
      *  the assistant message so it can be echoed verbatim to providers on resend.
+     *  @param calls  Tool calls requested by the model in one response.
+     *  @return       JSON array string in the provider's `tool_calls` shape.
      */
     private def nativeCallsJSON(calls: List[NativeToolCall]): String =
     {

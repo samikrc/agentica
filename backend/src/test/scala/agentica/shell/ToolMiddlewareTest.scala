@@ -4,7 +4,7 @@ import agentica.agent.AgentEvent
 import agentica.llm.{LLMProvider, LLMResponse, ToolSpec}
 import agentica.permissions.{GrantDecision, PermissionCoordinator, ScopeStore}
 import agentica.session.{MemoryStore, Message, Session}
-import agentica.tools.{ArgError, ArgSpec, CommandSchema, ExecutionContext, Tool, ToolResult, ToolStatus}
+import agentica.tools.{ArgError, ArgSpec, CommandSchema, ErrorCode, ExecutionContext, Tool, ToolResult, ToolStatus}
 import org.scalatest.funsuite.AnyFunSuite
 import scala.collection.mutable.ListBuffer
 
@@ -122,7 +122,7 @@ class ToolMiddlewareTest extends AnyFunSuite
 
     test("a before short-circuit skips dispatch, later before hooks, and all after hooks") {
         val log = ListBuffer.empty[String]
-        val denied = ToolResult(ToolStatus.Err(code = "blocked", message = "blocked by middleware"))
+        val denied = ToolResult(ToolStatus.Err(code = ErrorCode.PermissionDenied, message = "blocked by middleware"))
         val (shell, tool) = shellWith(List(
             new Recorder("a", log, Some(denied)),
             new Recorder("b", log)))
@@ -131,7 +131,7 @@ class ToolMiddlewareTest extends AnyFunSuite
 
         assert(log.toList == List("before:a"), s"unexpected hooks: ${log.toList}")
         assert(tool.executeCalls == 0, "dispatch must not run after a short-circuit")
-        assert(resp.text.contains("error: blocked"), s"expected blocked result, got: ${resp.text}")
+        assert(resp.text.contains("error: permission_denied"), s"expected blocked result, got: ${resp.text}")
     }
 
     test("extra per-call middleware appends after the base chain") {
@@ -147,13 +147,13 @@ class ToolMiddlewareTest extends AnyFunSuite
 
     test("text execute path uses the same chain as executeNative") {
         val log = ListBuffer.empty[String]
-        val denied = ToolResult(ToolStatus.Err(code = "blocked", message = "blocked"))
+        val denied = ToolResult(ToolStatus.Err(code = ErrorCode.PermissionDenied, message = "blocked"))
         val (shell, tool) = shellWith(List(new Recorder("a", log, Some(denied))))
 
         val resp = shell.execute("test_echo x=1", ctx())
 
         assert(log.toList == List("before:a"), s"unexpected hooks: ${log.toList}")
         assert(tool.executeCalls == 0)
-        assert(resp.text.contains("error: blocked"), s"expected blocked result, got: ${resp.text}")
+        assert(resp.text.contains("error: permission_denied"), s"expected blocked result, got: ${resp.text}")
     }
 }

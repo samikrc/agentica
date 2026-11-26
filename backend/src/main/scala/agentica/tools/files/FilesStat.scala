@@ -132,7 +132,7 @@ object FilesStat extends Tool[FilesStatInput, FilesStatOutput]
             case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case Some(error) =>
-                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File stat failed: ${error.toErrorCode}"))
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File stat failed: ${error.toErrorCode.value}"))
             case None =>
                 ToolResult(
                     status   = ToolStatus.Ok,

@@ -170,7 +170,7 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
                 for (ch <- chunks)
                 {
                     ps.setString(1, ch.text)
-                    ps.setString(2, key.kind)
+                    ps.setString(2, key.kind.value)
                     ps.setString(3, key.rootId)
                     ps.setString(4, key.sessionId.getOrElse(""))
                     ps.setString(5, key.runId.getOrElse(""))
@@ -193,7 +193,7 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
                       |    line_count    = excluded.line_count,
                       |    chunk_count   = excluded.chunk_count,
                       |    indexed_at    = excluded.indexed_at""".stripMargin)
-                upsert.setString(1, key.kind)
+                upsert.setString(1, key.kind.value)
                 upsert.setString(2, key.rootId)
                 upsert.setString(3, key.sessionId.getOrElse(""))
                 upsert.setString(4, key.runId.getOrElse(""))
@@ -424,11 +424,14 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
 
     /**
      *  Binds a [[SourceKey]] starting at `index`.
-     *  @return The next free parameter index.
+     *  @param ps     Prepared statement receiving the key values.
+     *  @param index  First parameter position to bind (1-based).
+     *  @param key    Row address to bind.
+     *  @return       The next free parameter index.
      */
     private def bindKeys(ps: PreparedStatement, index: Int, key: SourceKey): Int =
     {
-        ps.setString(index, key.kind)
+        ps.setString(index, key.kind.value)
         ps.setString(index + 1, key.rootId)
         ps.setString(index + 2, key.sessionId.getOrElse(""))
         ps.setString(index + 3, key.runId.getOrElse(""))
@@ -438,18 +441,25 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
 
     /**
      *  Binds an [[IndexScope]] starting at `index`.
-     *  @return The next free parameter index.
+     *  @param ps     Prepared statement receiving the scope values.
+     *  @param index  First parameter position to bind (1-based).
+     *  @param scope  Row scope to bind.
+     *  @return       The next free parameter index.
      */
     private def bindScope(ps: PreparedStatement, index: Int, scope: IndexScope): Int =
     {
-        ps.setString(index, scope.kind)
+        ps.setString(index, scope.kind.value)
         ps.setString(index + 1, scope.rootId)
         ps.setString(index + 2, scope.sessionId.getOrElse(""))
         ps.setString(index + 3, scope.runId.getOrElse(""))
         index + 4
     }
 
-    /** Deletes chunk rows for one source without touching metadata. */
+    /**
+     *  Deletes chunk rows for one source without touching metadata.
+     *  @param c    Connection participating in the caller's transaction.
+     *  @param key  Row address whose chunks should be removed.
+     */
     private def deleteChunks(c: Connection, key: SourceKey): Unit =
     {
         val ps = c.prepareStatement(
@@ -460,7 +470,11 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
         ps.close()
     }
 
-    /** Deletes all rows where `column = value` from both tables. */
+    /**
+     *  Deletes all rows where `column = value` from both tables.
+     *  @param column  Column to match (`session_id` or `run_id`).
+     *  @param value   Value to match.
+     */
     private def deleteWhere(column: String, value: String): Unit =
     {
         if (!available) return
@@ -498,12 +512,18 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
         }
     }
 
-    /** Reads one `chunk_meta` row from the current cursor position. */
+    /**
+     *  Reads one `chunk_meta` row from the current cursor position.
+     *  @param rs  Result set positioned on the row to read.
+     *  @return    Parsed metadata row.
+     */
     private def readMeta(rs: ResultSet): SourceMeta =
     {
         SourceMeta(
             key = SourceKey(
-                kind       = rs.getString("kind"),
+                kind       = IndexKind.values
+                    .find(_.value == rs.getString("kind"))
+                    .getOrElse(IndexKind.Workspace),
                 rootId     = rs.getString("root_id"),
                 sessionId  = Option(rs.getString("session_id")).filter(_.nonEmpty),
                 runId      = Option(rs.getString("run_id")).filter(_.nonEmpty),
@@ -518,7 +538,11 @@ class SearchIndexImpl(conn: () => Connection) extends SearchIndex
         )
     }
 
-    /** Number of lines in `text` (0 for empty input). */
+    /**
+     *  Counts lines in a text block.
+     *  @param text  Text to measure.
+     *  @return      Number of lines; 0 for empty input.
+     */
     private def lineCount(text: String): Int =
     {
         if (text.isEmpty) 0 else text.count(_ == '\n') + 1

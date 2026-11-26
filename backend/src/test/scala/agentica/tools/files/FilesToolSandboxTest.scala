@@ -70,7 +70,7 @@ class FilesToolSandboxTest extends AnyFunSuite
         val result = FilesStat.render(output, ctx(root))
         assert(result.status.isInstanceOf[ToolStatus.Err])
         val err = result.status.asInstanceOf[ToolStatus.Err]
-        assert(err.code == "path_escaped")
+        assert(err.code == agentica.tools.ErrorCode.PathEscaped)
     }
 
     test("files_stat: sibling workspace directory is rejected") {
@@ -119,7 +119,7 @@ class FilesToolSandboxTest extends AnyFunSuite
         val result = FilesWrite.render(output, ctx(root))
         assert(result.status.isInstanceOf[ToolStatus.Err])
         val err = result.status.asInstanceOf[ToolStatus.Err]
-        assert(err.code == "path_escaped")
+        assert(err.code == agentica.tools.ErrorCode.PathEscaped)
     }
 
     // ── files_list ────────────────────────────────────────────────────────────
@@ -147,7 +147,9 @@ class FilesToolSandboxTest extends AnyFunSuite
             limit    = 8,
             cursor   = 0,
             mode     = "hybrid",
-            useRegex = false
+            useRegex = false,
+            recursive = true,
+            include = None
         )
         val output = FilesSearch.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))
@@ -162,7 +164,9 @@ class FilesToolSandboxTest extends AnyFunSuite
             limit    = 8,
             cursor   = 0,
             mode     = "hybrid",
-            useRegex = false
+            useRegex = false,
+            recursive = true,
+            include = None
         )
         val output = FilesSearch.execute(input, ctx(root))
         assert(output.error.contains(FilesError.PathEscaped))

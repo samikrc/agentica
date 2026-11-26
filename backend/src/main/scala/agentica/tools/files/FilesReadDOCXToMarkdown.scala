@@ -313,7 +313,7 @@ object FilesReadDOCXToMarkdown extends Tool[FilesReadDOCXToMarkdownInput, FilesR
                     )
                 ))
             case Some(error) =>
-                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"DOCX conversion failed: ${error.toErrorCode}"))
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"DOCX conversion failed: ${error.toErrorCode.value}"))
             case None =>
                 val cacheStatus = if (output.wasRegenerated) "generated" else "cached"
                 ToolResult(

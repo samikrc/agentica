@@ -162,7 +162,7 @@ class CompressionMiddlewareTest extends AnyFunSuite
 
     test("Err results are untouched") {
         val c      = ctx()
-        val result = ToolResult(ToolStatus.Err(code = "internal_error", message = "boom"),
+        val result = ToolResult(ToolStatus.Err(code = agentica.tools.ErrorCode.InternalError, message = "boom"),
             body = Some(ToolBody.Inline(bigLines)))
         assert(new CompressionMiddleware().after(call(c), result) eq result)
     }

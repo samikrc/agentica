@@ -119,7 +119,12 @@ class VirtualShell(
      */
     def toolSchemas: List[ToolSpec] = registry.nativeToolSchemas
 
-    /** Returns the canonical display form of a native call without executing it. */
+    /**
+     *  Returns the canonical display form of a native call without executing it.
+     *  @param name           Wire function name, e.g. `files_read`.
+     *  @param argumentsJson  Raw JSON object string of call arguments.
+     *  @return               `family_verb arg=val` string used in events and logs.
+     */
     def describeNative(name: String, argumentsJson: String): String =
     {
         registry.commandFromNative(name, argumentsJson).map(displayCommand)
@@ -158,7 +163,11 @@ class VirtualShell(
         }
     }
 
-    /** Canonical `family_verb key="value"` display string for a command. */
+    /**
+     *  Canonical `family_verb key="value"` display string for a command.
+     *  @param cmd  Parsed command.
+     *  @return     Display string used in events, logging, and persistence.
+     */
     private def displayCommand(cmd: Command): String =
     {
         val argStr = cmd.args.map { case (k, v) =>
@@ -214,7 +223,12 @@ class VirtualShell(
 
     /**
      *  Re-hydrates a file-backed scratch ref by re-reading the workspace file.
-     *  Computed keys (`__result_N__`) have no backing file and are not hydrated.
+     *
+     *  Refs persist in conversation history, but the pad is per-run and in-memory, so a
+     *  later turn can reference an entry that no longer exists. Without this the literal
+     *  ref would reach the tool as content; the workspace file is the source of truth, so
+     *  re-reading it is exact. Computed keys (`__result_N__`) have no file and are not hydrated.
+     *
      *  @param ref  Scratch ref, e.g. `$scratch/data/report.md`.
      *  @param ctx  Execution context providing the workspace root and pad.
      *  @return     The re-stored entry, or `None` when the file is unavailable.

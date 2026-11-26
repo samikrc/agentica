@@ -314,7 +314,7 @@ object FilesReadPDFToMarkdown extends Tool[FilesReadPDFToMarkdownInput, FilesRea
                     hints   = List("For PDF conversion, ensure the file is a valid PDF and a Vision LLM is configured.")
                 ))
             case Some(error) =>
-                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"PDF conversion failed: ${error.toErrorCode}"))
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"PDF conversion failed: ${error.toErrorCode.value}"))
             case None =>
                 val cacheStatus = if (output.wasRegenerated) "generated" else "cached"
                 ToolResult(

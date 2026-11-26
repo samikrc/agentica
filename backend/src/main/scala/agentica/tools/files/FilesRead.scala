@@ -240,7 +240,7 @@ object FilesRead extends Tool[FilesReadInput, FilesReadOutput]
             case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case Some(error) =>
-                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File read failed: ${error.toErrorCode}"))
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File read failed: ${error.toErrorCode.value}"))
             case None =>
                 val rangeNote = if (output.truncated) " · partial" else ""
                 if (!output.truncated)

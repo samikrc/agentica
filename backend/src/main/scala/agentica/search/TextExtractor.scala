@@ -144,7 +144,11 @@ object TextExtractor
         }
     }
 
-    /** Dispatches to the format-specific extractor. */
+    /**
+     *  Dispatches to the format-specific extractor.
+     *  @param path  Supported document path.
+     *  @return      Extracted text, empty for an unrecognised extension.
+     */
     private def extractDocument(path: Path): String =
         extensionOf(path) match
         {
@@ -154,7 +158,11 @@ object TextExtractor
             case _      => ""
         }
 
-    /** Extracts the PDF text layer, one line per layout-sorted text fragment. */
+    /**
+     *  Extracts the PDF text layer, one line per layout-sorted text fragment.
+     *  @param path  PDF file path.
+     *  @return      Extracted text with page breaks flattened to newlines.
+     */
     private def extractPDF(path: Path): String =
     {
         val doc = Loader.loadPDF(path.toFile)
@@ -170,7 +178,12 @@ object TextExtractor
         }
     }
 
-    /** Extracts DOCX paragraph and table text in body order. */
+    /**
+     *  Extracts DOCX paragraph and table text in body order, with table cells
+     *  joined by ` | ` so rows stay readable as single lines.
+     *  @param path  DOCX file path.
+     *  @return      Extracted text.
+     */
     private def extractDOCX(path: Path): String =
     {
         val in  = Files.newInputStream(path)
@@ -198,7 +211,11 @@ object TextExtractor
         }
     }
 
-    /** Extracts PPTX slide text with a slide header per slide. */
+    /**
+     *  Extracts PPTX slide text with a slide header per slide.
+     *  @param path  PPTX file path.
+     *  @return      Extracted text with `--- slide N ---` headers.
+     */
     private def extractPPTX(path: Path): String =
     {
         val in        = Files.newInputStream(path)

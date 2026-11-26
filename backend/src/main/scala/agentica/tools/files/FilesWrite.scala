@@ -166,7 +166,7 @@ object FilesWrite extends Tool[FilesWriteInput, FilesWriteOutput]
             case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case Some(error) =>
-                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File write failed: ${error.toErrorCode}"))
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"File write failed: ${error.toErrorCode.value}"))
             case None =>
                 ToolResult(
                     status   = ToolStatus.Ok,

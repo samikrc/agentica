@@ -192,7 +192,7 @@ object FilesList extends Tool[FilesListInput, FilesListOutput]
             case Some(FilesError.IoError(msg)) =>
                 ToolResult(status = ToolStatus.Err(code = ErrorCode.InternalError, message = msg))
             case Some(error) =>
-                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"Directory listing failed: ${error.toErrorCode}"))
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"Directory listing failed: ${error.toErrorCode.value}"))
             case None =>
                 val text     = output.lines.mkString("\n")
                 val metadata = ListMap(
