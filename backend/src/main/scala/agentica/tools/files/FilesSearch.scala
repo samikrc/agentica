@@ -428,8 +428,9 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
                 val file = it.next()
                 if (isScannable(file))
                 {
+                    val size = try Files.size(file) catch { case _: Throwable => 0L }
                     files += 1
-                    bytes += Files.size(file)
+                    bytes += size
                     val rel = rootAbs.relativize(file).toString.replace('\\', '/')
                     val display = displayPrefix.map(p => s"$p$rel").getOrElse(rel)
                     val lines =
@@ -688,6 +689,8 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
         if (input.scope == "stored") parts += "scope=stored"
         input.ref.foreach(r => parts += s"ref=$r")
         if (input.mode != "hybrid") parts += s"mode=${input.mode}"
+        if (input.limit != 8) parts += s"limit=${input.limit}"
+        if (input.useRegex) parts += "regex=true"
         parts += s"cursor=$cursor"
         s"$name ${parts.mkString(" ")}"
     }

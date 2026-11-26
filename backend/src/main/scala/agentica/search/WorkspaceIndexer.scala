@@ -132,11 +132,20 @@ class WorkspaceIndexer(index: SearchIndex)
                 {
                     case Some(mdPath) if Files.exists(mdPath) &&
                             Files.getLastModifiedTime(mdPath).toMillis >= mtime =>
-                        // Converted sibling supersedes the raw document.
-                        index.deleteSource(key)
-                        index.index(key, "", mtime, size)
-                        index.setReplacedBy(key, Some(relPath(rootAbs, mdPath)))
-                        skipped += 1
+                        // Converted sibling supersedes the raw document. Skip the
+                        // write when the alias is already recorded and current.
+                        val mdRel = relPath(rootAbs, mdPath)
+                        if (index.isCurrent(key, mtime, size) &&
+                            index.resolveAlias(key).contains(mdRel))
+                        {
+                            skipped += 1
+                        }
+                        else
+                        {
+                            index.index(key, "", mtime, size)
+                            index.setReplacedBy(key, Some(mdRel))
+                            skipped += 1
+                        }
                     case _ =>
                         if (index.isCurrent(key, mtime, size))
                         {

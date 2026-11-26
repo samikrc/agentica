@@ -40,7 +40,7 @@ Or on error:
 Error codes: not_found, permission_denied, invalid_args, path_escaped, cancelled, internal_error.
 
 [SCRATCHPAD]
-Every tool result is stored automatically in the scratchpad. Small results include their content inline and also a stored: ref you can use later:
+File reads are stored automatically in the scratchpad. Small results include their content inline and also a stored: ref you can use later:
 
   $ files_read path=src/config.py
   ok
