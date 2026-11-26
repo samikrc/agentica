@@ -58,7 +58,7 @@ Large results return only the ref (content too large for context):
   - try: files_read path="big_report.txt" lines="1-50"
   - try: llm_summarize text="$scratch/data/big_report.txt"
 
-Search results and computed outputs use a counter ref:
+Oversized search pages use a counter ref (routine pages stay inline):
 
   - stored: $scratch/__result_1__
 
@@ -91,13 +91,13 @@ How to read it:
 - (exact+ranked) means both an exact line match and a ranked passage matched the same region; (exact) is a literal match; (ranked) is a ranked passage only.
 
 Search tips:
-- Use quoted phrases for exact wording, and commas or spaces to combine terms: query="revenue, growth, deceleration".
+- Use quoted phrases for exact wording: query="revenue growth".
 - Use path= to narrow to a directory or file; use mode="exact" to force literal matching (numbers, IDs), or mode="ranked" to force passage ranking.
 - To query content you already read this session without re-reading it, use scope="stored":
   files_search query="APAC" scope="stored"
   To drill into one stored entry: files_search query="APAC" ref="$scratch/__result_1__".
-- Raw documents (PDF/DOCX/PPTX) are indexed from their text layer. If a hit is in a PDF, convert it once with files_read_pdf_to_markdown and continue from the .md file.
-- If a search reports "index: partial", the workspace index is still being built; narrow with path= to prioritise the area you care about.
+- Raw documents (PDF/DOCX/PPTX) are indexed from their text layer only; if a hit is in a PDF, convert it once with files_read_pdf_to_markdown and continue from the .md file.
+- "index: partial" means the workspace index is still being built — narrow with path= to prioritise that area.
 
 [PERMISSIONS]
 - Never attempt to access files outside the workspace ({{ROOT_PATH}}). path_escaped errors mean the path left the workspace boundary.
@@ -119,7 +119,7 @@ Search tips:
 Reading strategy — choose based on file size:
 - Use files_stat to check a file's size and line count before deciding how to read it.
 - Small files (< 200 lines): read the whole file with files_read in one call. Do NOT issue multiple files_search calls across a small file — just read it.
-- Medium files (200–1000 lines): use files_search with lines_context=5 to locate relevant sections, then files_read with lines= to read those sections.
+- Medium files (200–1000 lines): use files_search to locate relevant sections, then files_read with lines= to read those sections.
 - Large files (> 1000 lines): always search first; read only specific line ranges confirmed by search results.
 
 Avoid search loops:
