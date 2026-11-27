@@ -309,8 +309,10 @@ class FilesReadScratchpadTest extends AnyFunSuite
             assert(output.moreCommand.exists(_.contains("cursor=2")),
                 "continuation command must point at the next cursor")
             val text = result.body.get.asInstanceOf[ToolBody.Inline].text
-            assert(text.contains("For more entries, use: files_search"),
-                "page body must end with the exact next call")
+            assert(text.startsWith("3 more lower-relevance matches") && text.contains("cursor=2"),
+                "page body must lead with the continuation note carrying the exact next call")
+            assert(!text.contains("For more entries"),
+                "the verbatim footer invitation must be gone")
             assert(result.metadata.get("Displaying").contains("2 of 5"),
                 "metadata must report the page size against the total")
         }

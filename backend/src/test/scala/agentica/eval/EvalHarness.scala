@@ -12,6 +12,7 @@ import agentica.settings.AppSettings
 import agentica.shell.{CommandRegistry, SessionScratchpad, VirtualShell}
 import agentica.testutil.LMStudioClient
 import agentica.tools.{AgentResponse, ExecutionContext, ToolBody}
+import agentica.search.{SearchIndex, SearchIndexImpl, WorkspaceIndexer}
 import agentica.tools.files.{FilesList, FilesRead, FilesReadDOCXToMarkdown, FilesReadDOCXToMarkdownInput, FilesReadPDFToMarkdown, FilesReadPDFToMarkdownInput, FilesReadPPTXToMarkdown, FilesReadPPTXToMarkdownInput, FilesSearch, FilesStat, FilesWrite}
 import agentica.tools.memory.{MemoryGet, MemoryList, MemorySet}
 import ujson.*
@@ -723,7 +724,7 @@ object EvalHarness
         }
     }
 
-    private case class EvalAgent(loop: AgentLoop, runStore: CapturingRunStore, accounting: CapturingTokenAccounting)
+    private case class EvalAgent(loop: AgentLoop, runStore: CapturingRunStore, accounting: CapturingTokenAccounting, searchIndex: SearchIndex)
 
     /** Per-call metrics for one primary-LLM invocation (judge calls excluded). */
     private case class LLMCallMetrics(model: String, promptTokens: Int, completionTokens: Int, latencyMs: Long)
@@ -878,6 +879,7 @@ object EvalHarness
         ensureToolIndexApplied()
         val runStore   = new CapturingRunStore()
         val accounting = new CapturingTokenAccounting()
+        val searchIndex = makeSearchIndex()
         val loop = new AgentLoop(
             initialLLMProvider = llm,
             initialVLMProvider = vlm,
@@ -889,9 +891,51 @@ object EvalHarness
             settings           = settings,
             scopeStore         = new AutoGrantScopeStore(),
             memoryStore        = new StubMemoryStore(),
-            sessionStore       = new StubSessionStore()
+            sessionStore       = new StubSessionStore(),
+            searchIndex        = searchIndex
         )
-        EvalAgent(loop, runStore, accounting)
+        EvalAgent(loop, runStore, accounting, searchIndex)
+    }
+
+    /**
+     *  Builds a file-backed search index for one provider run.
+     *  @return  Initialised [[SearchIndexImpl]] over a temporary SQLite file.
+     */
+    private def makeSearchIndex(): SearchIndex =
+    {
+        val tmp = Files.createTempFile("eval-search-index", ".sqlite")
+        tmp.toFile.deleteOnExit()
+        // One connection per call: the index closes each connection after use.
+        val url = s"jdbc:sqlite:${tmp.toAbsolutePath}"
+        val idx = SearchIndexImpl(() => java.sql.DriverManager.getConnection(url))
+        idx.init()
+        idx
+    }
+
+    /**
+     *  Indexes one workspace outside any agent run so the first question's
+     *  searches start against converged rows. Workspace rows are keyed by root
+     *  with empty session/run ids, so they survive the per-run computed-row
+     *  purge and warm every question and session type rooted at the same
+     *  directory. A throwaway `files_search` cannot substitute here: the run
+     *  executing it would purge only its own computed rows, but the workspace
+     *  rows it lazily creates are keyed identically either way — indexing
+     *  directly is simply the explicit, budget-controlled form.
+     *  @param index  Provider run's shared index.
+     *  @param root   Workspace root to index (the sweep directory).
+     */
+    private def warmWorkspaceIndex(index: SearchIndex, root: Path): Unit =
+    {
+        if (!index.isAvailable) return
+        val indexer = new WorkspaceIndexer(index)
+        var stats   = indexer.refresh(root, None, budgetMs = 30000)
+        var passes  = 1
+        while (stats.partial && passes < 5)
+        {
+            stats = indexer.refresh(root, None, budgetMs = 30000)
+            passes += 1
+        }
+        log(s"Index warm-up: indexed=${stats.indexed} pending=${stats.pending} partial=${stats.partial} passes=$passes")
     }
 
     /**
@@ -1829,6 +1873,7 @@ object EvalHarness
                     val mdSavePath = sweepDir.resolve(s"$fileStem.md")
                     Files.writeString(mdSavePath, markdown)
 
+                    warmWorkspaceIndex(agent.searchIndex, sweepDir)
                     log(s"Generating answers (${sessionType.label} session) for ${questions.length} questions...")
                     val callsBefore = agent.accounting.snapshot
                     val qaPairs = generateAnswers(questions, mdRelPath, agent, sweepDir, sessionType, questionTimeoutMs, retryDelayMs)

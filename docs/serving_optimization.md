@@ -120,9 +120,13 @@ pays the indexing cost and can return `index: partial`. Doc-eval creates a fresh
 per sweep, so question 1 runs against a colder index than question 8 — a source of
 run-to-run and ordering variance on top of the temperature-0.1 work above.
 
-- **Warm the index before generating answers**: one throwaway `files_search` on a document
-  keyword (or an explicit indexer call in the harness) so every question sees a complete
-  index.
+- **Warm the index before generating answers**: an explicit indexer call in the harness
+  (`WorkspaceIndexer.refresh` over the sweep workspace, outside any agent run) so every
+  question sees a complete index. A throwaway `files_search` also leaves workspace rows
+  behind — they are keyed by workspace root, not run — but it indexes only within the
+  search-time budget and so can stop short of convergence; the direct call is the
+  budget-controlled form. Note the harness must wire a real `SearchIndex` into the agent
+  loop first — without one the ranked arm is inert and there is nothing to warm.
 - **Record index state** (`complete` vs `partial`, pending count) in `summary.json`
   alongside `llmUsage`.
 - **PDF-heavy workspaces need several searches to converge**: PDFBox text extraction

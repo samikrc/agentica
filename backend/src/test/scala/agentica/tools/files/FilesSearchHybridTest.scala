@@ -185,7 +185,36 @@ class FilesSearchHybridTest extends AnyFunSuite with BeforeAndAfterEach
         assert(result.metadata.get("Displaying").contains("2 of 5"))
         assert(out.moreCommand.exists(_.contains("cursor=2")))
         val body = result.body.get.asInstanceOf[ToolBody.Inline].text
-        assert(body.contains("For more entries, use: files_search"))
+        assert(body.startsWith("3 more lower-relevance matches — page further only if the hits above are insufficient: files_search"),
+            s"hybrid continuation must lead the body with qualified wording, got: ${body.take(120)}")
+        assert(!body.contains("For more entries"), "the verbatim footer invitation must be gone")
+    }
+
+    test("exact-mode continuation uses the plain wording") {
+        for (i <- 1 to 5) write(s"ex$i.md", s"needle in file $i")
+        val ctx = mkCtx(SessionScratchpad())
+
+        val out    = FilesSearch.execute(input("query" -> "needle", "limit" -> "2", "mode" -> "exact"), ctx)
+        val result = FilesSearch.render(out, ctx)
+
+        val body = result.body.get.asInstanceOf[ToolBody.Inline].text
+        assert(body.startsWith("3 more matches — for more entries, use: files_search"),
+            s"exact mode must keep the plain continuation wording, got: ${body.take(120)}")
+    }
+
+    test("body ends on the last hit with nothing after it") {
+        for (i <- 1 to 5) write(s"end$i.md", s"needle in file $i")
+        val ctx = mkCtx(SessionScratchpad())
+
+        val out    = FilesSearch.execute(input("query" -> "needle", "limit" -> "2"), ctx)
+        val result = FilesSearch.render(out, ctx)
+
+        val body  = result.body.get.asInstanceOf[ToolBody.Inline].text
+        val lines = body.split("\n")
+        assert(!lines.last.contains("files_search"),
+            s"the body must end on hit content, not a command; last line: ${lines.last}")
+        assert(lines.last.startsWith("    ") || lines.last.trim.nonEmpty,
+            "the trailing content must be hit evidence")
     }
 
     test("recursive=false restricts hits to the immediate directory") {

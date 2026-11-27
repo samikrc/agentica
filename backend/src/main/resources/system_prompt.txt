@@ -78,15 +78,16 @@ files_search is hybrid: it returns exact line matches and ranked passages togeth
   - scope: workspace
   - mode: hybrid
   -----
+  5 more lower-relevance matches — page further only if the hits above are insufficient: files_search query="revenue growth" path=reports/ cursor=2
+
   [1] reports/q3-financials.md  lines 118-124  score 0.049  (exact+ranked)
       ...APAC revenue growth slowing to 6%...
   [2] reports/q2-financials.md  lines 44-88  score 0.016  (ranked)
       ...we expect the pace of expansion to moderate...
-  For more entries, use: files_search query="revenue growth" path=reports/ cursor=2
 
 How to read it:
 - "Displaying: N of M" means this page shows N of the M hits found; M followed by "+" means the list was capped.
-- "For more entries, use:" is the exact next call — copy it verbatim when you need the following page.
+- A continuation line may appear before the hits. Hits are best-first, so further pages are strictly less relevant: prefer reading the file region around the best hit over paging. Page further only when the hits shown are genuinely insufficient.
 - Scores order hits inside one result set only. Never compare scores across different searches or scopes.
 - (exact+ranked) means both an exact line match and a ranked passage matched the same region; (exact) is a literal match; (ranked) is a ranked passage only.
 

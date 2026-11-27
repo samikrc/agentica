@@ -87,7 +87,10 @@ case class FilesSearchOutput(
  *  BM25 arm over the FTS5 chunk index. `scope=workspace` refreshes the index
  *  incrementally before searching; `scope=stored` searches this run's
  *  scratchpad entries and their indexed rows. Results share one hit shape and
- *  page by character budget with a `For more entries, use:` continuation line.
+ *  page by character budget. When more hits remain, a one-line continuation
+ *  note precedes the hits — qualified as lower-relevance for the ranked arms —
+ *  and the body ends on the last hit, so the trailing content is evidence
+ *  rather than an invitation to keep paging.
  */
 object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
 {
@@ -775,7 +778,12 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
     }
 
     /**
-     *  Renders the body text for one page, including the continuation line.
+     *  Renders the body text for one page. When more hits remain, a compact
+     *  one-line continuation note precedes the hits — phrased as
+     *  lower-relevance for the ranked arms, since hit quality decays down the
+     *  ordering and the productive next step is usually reading around the
+     *  best hit rather than paging. The body always ends on the last hit so
+     *  the trailing content is evidence, not an invitation to page.
      *  @param output  Paged output.
      *  @return        Body text.
      */
@@ -784,7 +792,19 @@ object FilesSearch extends Tool[FilesSearchInput, FilesSearchOutput]
         if (output.hits.isEmpty) return "No matches."
         val blocks = output.hits.zipWithIndex.map { case (v, i) => renderHit(output.cursor + i + 1, v) }
         val body   = blocks.mkString("\n")
-        output.moreCommand.map(m => s"$body\nFor more entries, use: $m").getOrElse(body)
+        output.moreCommand match
+        {
+            case None => body
+            case Some(cmd) =>
+                val remaining = output.total - output.cursor - output.hits.size
+                val count     = if (output.totalCapped) s"$remaining+" else remaining.toString
+                val header    =
+                    if (output.mode == "exact")
+                        s"$count more matches — for more entries, use: $cmd"
+                    else
+                        s"$count more lower-relevance matches — page further only if the hits above are insufficient: $cmd"
+                s"$header\n\n$body"
+        }
     }
 
     // ── Query preparation ────────────────────────────────────────────────────

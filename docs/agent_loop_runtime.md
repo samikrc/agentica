@@ -664,7 +664,7 @@ Agents compensate by looping: 15–20 iterations of read/search/read, often on d
 1. **Split by lexical vs semantic, not grep vs FTS.** Grep (exact substring: numbers, IDs, table cells) and BM25 (tokenized ranked: prose) are two *arms of one lexical capability*; the tool fuses them. Semantic retrieval is a separate capability (§7.5.13).
 2. **One lexical search tool.** `files_search` gains a ranked arm and a `scope` dimension; there is **no** separate `scratch_search` tool.
 3. **No duplicate full text in the database.** The FTS5 table stores chunk text as its own content (required for `snippet()`); everything else is metadata.
-4. **Budget-driven paging.** Page size = the number of hits that fit the character budget, capped by `limit`. Output reports `Displaying: N of M` and ends with `For more entries, use: <exact next call>`.
+4. **Budget-driven paging.** Page size = the number of hits that fit the character budget, capped by `limit`. Output reports `Displaying: N of M`; when more hits remain, a one-line continuation note carrying the exact next call precedes the hits — phrased as lower-relevance for the ranked arms — and the body ends on the last hit, so the trailing content is evidence rather than an invitation to keep paging.
 5. **Indexing is incremental refresh-on-search** — no build trigger, no background indexer, no startup crawl.
 6. **Fast text-layer indexing first, VLM conversion on demand** — see §7.5.6 and §7.5.7.
 7. **Re-indexing is gated by `(mtime, size)`** — unchanged files cost one metadata lookup.
@@ -741,7 +741,7 @@ Raw documents are indexed from their text layer so the corpus is searchable imme
 2. **Semantics — AND first, OR fallback.** Run the AND query; if it yields fewer than `limit` hits, re-run with OR and merge, preferring AND hits. Quoted phrases become FTS5 phrase queries. Rationale: never return empty when something matches, without diluting the common case. (FTS5's default for space-separated terms is AND; the expression is built by us.)
 3. **Grep arm.** Bounded scan of the scope; exact matches score 1.0.
 4. **Fusion.** Reciprocal rank fusion, `1/(60 + rank)` per arm; a hit found by both arms wins. Overlapping ranges from the same source are merged, keeping the exact-match snippet.
-5. **Render.** Unified hit shape; budget-driven page; `Displaying` + `For more entries`.
+5. **Render.** Unified hit shape; budget-driven page; `Displaying` metadata plus a leading continuation note when more hits remain.
 
 **Hit ceiling.** The fused list is capped at 200 hits; when the cap is reached the output shows `200+` and logs `scan_truncated`. The grep arm additionally has a scan budget (2,000 files / 50 MB) after which it stops and reports `scan: partial`.
 
@@ -786,12 +786,19 @@ ok
 ─ scope: workspace
 ─ mode: hybrid
 ─────
+5 more lower-relevance matches — page further only if the hits above are insufficient: files_search query="revenue growth slowing" path=reports/ cursor=2
+
 [1] reports/q3-financials.md  lines 118-124  score 0.049  (exact+ranked)
     …APAC revenue growth slowing to 6%…
 [2] reports/q2-financials.md  lines 44-88  score 0.016  (ranked)
     …we expect the pace of expansion to moderate…
-For more entries, use: files_search query="revenue growth slowing" path=reports/ cursor=2
 ```
+
+Hits are best-first, so further pages are strictly less relevant in the ranked
+arms; the continuation note says so because the productive next step is usually
+reading the file region around the best hit rather than paging. In `mode=exact`
+the ordering is positional rather than ranked, so the note keeps the plainer
+`N more matches — for more entries, use:` form and paging is legitimate.
 
 An `index` metadata line appears when the refresh pass was budget-truncated
 (`index: partial · indexed: N · pending: M`).
@@ -804,9 +811,10 @@ ok
 ─ scope: stored
 ─ mode: hybrid
 ─────
+1 more lower-relevance matches — page further only if the hits above are insufficient: files_search query="APAC revenue" scope=stored cursor=1
+
 [1] $scratch/__result_3__  lines 88-110  score 0.032
     …APAC segment commentary: revenue mix shifted…
-For more entries, use: files_search query="APAC revenue" scope=stored cursor=1
 ```
 
 - `Displaying: N of M` — N = hits actually rendered, M = fused list size (capped, `200+` when truncated).
@@ -844,7 +852,7 @@ Embeddings over the same chunk corpus via a configurable OpenAI-compatible endpo
 #### 7.5.14 Tests and evaluation
 
 - **Unit:** chunker (overlap, blank-line preference, short content); FTS5 probe; filters; refresh (skip-unchanged, replace-on-change, purge-missing); supersede rule + alias; true-LRU eviction; run-end/session-delete purges; ref hydration.
-- **Tool:** validation matrix; AND→OR fallback; fusion ordering (both arms > single arm); overlap merge; budget paging and `Displaying`/`For more entries` strings; `200+` ceiling; stored-scope session isolation; `ref=` drill-down; empty/evicted hints; degradation; `resolveRefs` guard.
+- **Tool:** validation matrix; AND→OR fallback; fusion ordering (both arms > single arm); overlap merge; budget paging, `Displaying` metadata, and the leading continuation note (qualified in ranked modes, plain in exact); `200+` ceiling; stored-scope session isolation; `ref=` drill-down; empty/evicted hints; degradation; `resolveRefs` guard.
 - **Benchmark (recorded):** on this machine — FTS5 insert ~3–4 MB/s (6.8 MB / 1,700 chunks in ~1.6–2.2 s); a top-10 BM25 query over that corpus in 67–182 ms including a fresh SQLite connection (pooled in production); PDFBox text extraction ~150–200 ms/page (a 2-page fixture takes ~0.3–0.5 s warm, independent of `sortByPosition`). A 50-page PDF therefore costs ~8–10 s of extraction, so a PDF-heavy workspace converges over several searches rather than one pass. Mitigation shipped: the refresh orders cheap text files before raw documents (stale-first within each class) and reports `index: partial` so the model can narrow with `path=`. Reproduce with `agentica.misctests.SearchBenchmark`.
 - **Evaluation:** doc-eval before/after on the QAT Gemma retrieval config; compare tool-call counts and `llmUsage` (AG-42) per sweep; the success metric is fewer iterations and fewer futile retries, not just answer quality.
 
