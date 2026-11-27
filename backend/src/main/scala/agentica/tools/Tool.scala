@@ -66,14 +66,14 @@ enum ToolStatus
 
     /**
      *  The tool failed with a structured error.
-     *  @param code            Short machine-readable code: `not_found`, `permission_denied`,
-     *                         `invalid_args`, `path_escaped`, `cancelled`, `internal_error`.
+     *  @param code            Machine-readable [[ErrorCode]]: `not_found`, `permission_denied`,
+     *                         `invalid_args`, `path_escaped`, `internal_error`.
      *  @param message         Human-readable error description.
      *  @param hints           Contextual hints to surface in the presentation layer.
      *  @param trySuggestions  Suggested native tool invocations the agent can try.
      */
     case Err(
-        code:            String,
+        code:            ErrorCode,
         message:         String,
         hints:           List[String] = Nil,
         trySuggestions:  List[String] = Nil
@@ -138,6 +138,7 @@ case class PermissionTarget(grantKey: String, displayPath: Option[String])
  *  @param permissionCoordinator Coordinates one-shot permission prompts with the UI.
  *  @param debugMode        When true, page images sent to the VLM are saved to a `<stem>_debug/` dir.
  *  @param vlmParallelism   Number of concurrent VLM calls per batch when transcribing document pages.
+ *  @param searchIndex      FTS5 chunk index backing ranked retrieval; defaults to a disabled no-op.
  */
 case class ExecutionContext(
     session:          Session,
@@ -150,7 +151,8 @@ case class ExecutionContext(
     onEvent:          AgentEvent => Unit,
     permissionCoordinator: PermissionCoordinator,
     debugMode:        Boolean = false,
-    vlmParallelism:   Int     = 1
+    vlmParallelism:   Int     = 1,
+    searchIndex:      agentica.search.SearchIndex = agentica.search.SearchIndexDisabled
 )
 
 // ─── Tool trait ───────────────────────────────────────────────────────────────
@@ -219,20 +221,26 @@ trait Tool[I, O]
 
 /**
  *  Universal machine-readable error codes used in [[ToolStatus.Err]] across all tools.
- *  Centralised here so callers never hardcode string literals.
+ *  Closed set; callers never hardcode string literals.
+ *
+ *  @param value  Persisted and rendered form of the code.
  */
-object ErrorCode
+enum ErrorCode(val value: String)
 {
     /** Generic catch-all for unexpected I/O or runtime exceptions. */
-    val InternalError: String  = "internal_error"
+    case InternalError extends ErrorCode("internal_error")
+
     /** The requested resource does not exist. */
-    val NotFound: String       = "not_found"
+    case NotFound extends ErrorCode("not_found")
+
     /** The supplied arguments fail validation. */
-    val InvalidArgs: String    = "invalid_args"
+    case InvalidArgs extends ErrorCode("invalid_args")
+
     /** The resolved path escapes the workspace sandbox. */
-    val PathEscaped: String    = "path_escaped"
+    case PathEscaped extends ErrorCode("path_escaped")
+
     /** The user explicitly denied a permission request. */
-    val PermissionDenied: String = "permission_denied"
+    case PermissionDenied extends ErrorCode("permission_denied")
 }
 
 // ─── Common Error Types ─────────────────────────────────────────────────────────
@@ -262,7 +270,7 @@ enum FilesError
      *  Converts the enum case to snake_case error code string.
      *  @return Error code in snake_case format.
      */
-    def toErrorCode: String =
+    def toErrorCode: ErrorCode =
     {
         this match
         {

@@ -157,6 +157,22 @@ class FilesReadScratchpadTest extends AnyFunSuite
         }
     }
 
+    /** Builds validated search input with defaults for these tests. */
+    private def searchInput(query: String, path: Option[String] = None,
+                            limit: Int = 8, mode: String = "hybrid"): FilesSearchInput =
+        FilesSearchInput(
+            query    = query,
+            rawPath  = path,
+            scope    = "workspace",
+            ref      = None,
+            limit    = limit,
+            cursor   = 0,
+            mode     = mode,
+            useRegex = false,
+            recursive = true,
+            include = None
+        )
+
     test("FilesSearch expands a caption match to the enclosing table") {
         val tmpDir = Files.createTempDirectory("agentica-search-table-expand")
         try
@@ -178,16 +194,11 @@ class FilesReadScratchpadTest extends AnyFunSuite
             val scratchpad = SessionScratchpad()
             val ctx        = mkCtx(tmpDir.toString, scratchpad)
 
-            val input = FilesSearchInput(
-                rawPath = "doc.md", query = "Exhibit 15", recursive = true,
-                ignoreCase = true, linesContext = 2, maxMatches = 50,
-                include = None, useRegex = false
-            )
-            val output = FilesSearch.execute(input, ctx)
+            val output = FilesSearch.execute(searchInput("Exhibit 15", Some("doc.md")), ctx)
 
-            assert(output.blocks.exists(_.contains("6,796")),
+            assert(output.hits.exists(_.snippet.contains("6,796")),
                 "a match next to a table must surface the table's data rows")
-            assert(output.blocks.exists(_.contains("Q | Value")),
+            assert(output.hits.exists(_.snippet.contains("Q | Value")),
                 "expansion must include the table header")
         }
         finally
@@ -210,16 +221,10 @@ class FilesReadScratchpadTest extends AnyFunSuite
             val scratchpad = SessionScratchpad()
             val ctx        = mkCtx(tmpDir.toString, scratchpad)
 
-            val input = FilesSearchInput(
-                rawPath = "doc.md", query = "alpha", recursive = true,
-                ignoreCase = true, linesContext = 1, maxMatches = 50,
-                include = None, useRegex = false
-            )
-            val output = FilesSearch.execute(input, ctx)
+            val output = FilesSearch.execute(searchInput("alpha", Some("doc.md")), ctx)
 
-            assert(output.matches == 2, "both matching lines still count as matches")
-            assert(output.blocks.count(_ == "---") == 1,
-                "matches inside one table must produce a single expanded block")
+            assert(output.hits.size == 1,
+                "matches inside one table must produce a single merged hit")
         }
         finally
         {
@@ -247,21 +252,14 @@ class FilesReadScratchpadTest extends AnyFunSuite
             val scratchpad = SessionScratchpad()
             val ctx        = mkCtx(tmpDir.toString, scratchpad)
 
-            val input = FilesSearchInput(
-                rawPath = "doc.txt", query = "alpha,beta", recursive = true,
-                ignoreCase = true, linesContext = 1, maxMatches = 50,
-                include = None, useRegex = false
-            )
-            val output = FilesSearch.execute(input, ctx)
+            val output = FilesSearch.execute(searchInput("alpha,beta", Some("doc.txt")), ctx)
 
-            assert(output.matches == 3)
-            // Matches at lines 1 and 4 merge into one block; the line-11 match stays separate.
-            assert(output.blocks.count(_ == "---") == 2,
+            // Matches at lines 1 and 4 merge into one hit; the line-11 match stays separate.
+            assert(output.hits.size == 2,
                 "adjacent match windows must merge; a distant match must stay separate")
-            assert(output.blocks.count(_.startsWith("doc.txt:1:")) == 1,
-                "merged region must not duplicate lines")
-            assert(output.blocks.count(_.contains(">")) == 3,
-                "every match line is marked within its merged region")
+            assert(output.hits.head.snippet.contains("alpha line one"))
+            assert(output.hits.head.snippet.contains("beta line four"))
+            assert(output.hits.last.snippet.contains("beta again eleven"))
         }
         finally
         {
@@ -269,7 +267,7 @@ class FilesReadScratchpadTest extends AnyFunSuite
         }
     }
 
-    test("FilesSearch small results include counter-keyed stored: ref") {
+    test("FilesSearch small results are inline and not persisted") {
         val tmpDir = Files.createTempDirectory("agentica-scratchpad-search-small")
         try
         {
@@ -278,20 +276,15 @@ class FilesReadScratchpadTest extends AnyFunSuite
             val scratchpad = SessionScratchpad()
             val ctx        = mkCtx(tmpDir.toString, scratchpad)
 
-            val input = FilesSearchInput(
-                rawPath = "", query = "needle", recursive = true,
-                ignoreCase = false, linesContext = 0, maxMatches = 50,
-                include = None, useRegex = false
-            )
-            val output = FilesSearch.execute(input, ctx)
+            val output = FilesSearch.execute(searchInput("needle"), ctx)
             val result = FilesSearch.render(output, ctx)
 
             assert(result.body.exists(_.isInstanceOf[ToolBody.Inline]),
-                "small search result must return Inline body")
-            assert(scratchpad.size == 1,
-                "search result must be stored in scratchpad")
-            assert(result.metadata.get("stored").exists(_.startsWith("$scratch/__result_")),
-                "search result must include a counter-keyed stored: ref")
+                "small search result must return an Inline body")
+            assert(!result.metadata.contains("stored"),
+                "routine pages carry no stored: ref (only oversized pages overflow)")
+            assert(scratchpad.size == 0,
+                "routine pages are not persisted in the scratchpad")
         }
         finally
         {
@@ -299,28 +292,27 @@ class FilesReadScratchpadTest extends AnyFunSuite
         }
     }
 
-    test("FilesSearch counter key increments across multiple render calls") {
-        val tmpDir = Files.createTempDirectory("agentica-scratchpad-counter")
+    test("FilesSearch renders a continuation line when more hits exist") {
+        val tmpDir = Files.createTempDirectory("agentica-search-paging")
         try
         {
-            Files.writeString(tmpDir.resolve("a.txt"), "needle\n")
+            for (i <- 1 to 5)
+                Files.writeString(tmpDir.resolve(s"file$i.txt"), s"needle in file $i\n")
 
             val scratchpad = SessionScratchpad()
             val ctx        = mkCtx(tmpDir.toString, scratchpad)
-            val input = FilesSearchInput(
-                rawPath = "", query = "needle", recursive = true,
-                ignoreCase = false, linesContext = 0, maxMatches = 50,
-                include = None, useRegex = false
-            )
 
-            val r1 = FilesSearch.render(FilesSearch.execute(input, ctx), ctx)
-            val r2 = FilesSearch.render(FilesSearch.execute(input, ctx), ctx)
+            val output = FilesSearch.execute(searchInput("needle", None, limit = 2), ctx)
+            val result = FilesSearch.render(output, ctx)
 
-            val ref1 = r1.metadata.getOrElse("stored", "")
-            val ref2 = r2.metadata.getOrElse("stored", "")
-            assert(ref1 != ref2, "each search render must produce a distinct counter ref")
-            assert(ref1.contains("__result_1__"), s"first ref should be __result_1__, got $ref1")
-            assert(ref2.contains("__result_2__"), s"second ref should be __result_2__, got $ref2")
+            assert(output.hits.size == 2, "limit must cap the page size")
+            assert(output.moreCommand.exists(_.contains("cursor=2")),
+                "continuation command must point at the next cursor")
+            val text = result.body.get.asInstanceOf[ToolBody.Inline].text
+            assert(text.contains("For more entries, use: files_search"),
+                "page body must end with the exact next call")
+            assert(result.metadata.get("Displaying").contains("2 of 5"),
+                "metadata must report the page size against the total")
         }
         finally
         {
@@ -328,49 +320,29 @@ class FilesReadScratchpadTest extends AnyFunSuite
         }
     }
 
-    test("FilesSearch stores large results in scratchpad") {
-        // Tests that FilesSearch properly stores large search results in scratchpad
-        
+    test("FilesSearch overflows an oversized single hit to the scratchpad") {
         val tmpDir = Files.createTempDirectory("agentica-scratchpad-bug1-search")
         try
         {
-            // Create enough matching files to exceed the body budget
-            for (i <- 1 to 50)
-            {
-                val content = (1 to 20).map(j => s"needle line $j in file $i with extra padding").mkString("\n")
-                Files.writeString(tmpDir.resolve(s"file$i.txt"), content)
-            }
+            // One hit whose snippet alone exceeds the body budget.
+            val padding = "x" * 3000
+            val content = (1 to 12).map(j => s"needle line $j $padding").mkString("\n")
+            Files.writeString(tmpDir.resolve("big.txt"), content)
 
             val scratchpad = SessionScratchpad()
             val ctx        = mkCtx(tmpDir.toString, scratchpad)
 
-            val input = FilesSearchInput(
-                rawPath      = "",
-                query        = "needle",
-                recursive    = true,
-                ignoreCase   = false,
-                linesContext = 0,
-                maxMatches   = 500,
-                include      = None,
-                useRegex     = false
-            )
-            val output = FilesSearch.execute(input, ctx)
+            val output = FilesSearch.execute(searchInput("needle"), ctx)
             val result = FilesSearch.render(output, ctx)
 
-            // Verify scratchpad behavior based on result size
             result.body match
             {
                 case Some(ref: ToolBody.ScratchRef) =>
-                    val stored = scratchpad.get(ref.ref)
-                    assert(
-                        stored.isDefined,
-                        "FilesSearch must store large results in scratchpad so the ref resolves"
-                    )
-                case Some(ToolBody.Inline(_)) =>
-                    // Results fit inline — still stored with counter key; body just wasn't oversize
-                    assert(scratchpad.size >= 1, "even inline results must be stored in scratchpad")
-                case None =>
-                    fail("FilesSearch result must have a body")
+                    assert(scratchpad.get(ref.ref).isDefined,
+                        "oversized page must be stored so the ref resolves")
+                    assert(result.metadata.get("stored").contains(ref.ref))
+                case other =>
+                    fail(s"expected ScratchRef for an oversized page, got $other")
             }
         }
         finally

@@ -59,7 +59,7 @@ object Presentation
                 lines += "ok"
 
             case ToolStatus.Err(code, message, hints, trySuggestions) =>
-                lines += s"error: $code"
+                lines += s"error: ${code.value}"
                 lines += s"─ message: $message"
                 hints.foreach(h => lines += s"─ hint: $h")
                 trySuggestions.foreach(t => lines += s"─ try: ${t.replaceFirst("\\.", "_")}")

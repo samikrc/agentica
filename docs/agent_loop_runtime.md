@@ -281,7 +281,16 @@ Rules:
 - Binary content → `<binary N KB mime/type>` placeholder.
 - Errors: always include `─ hint: ...` and `─ try: ...` lines.
 
-**Decision (Q-6):** Body budget is a **fixed constant of 8000 characters** (~2000 tokens), sufficient for any local model with ≥4K context window. This is a named constant in `Presentation.scala` (`BODY_BUDGET_CHARS = 8000`), not a user-configurable setting. When the body exceeds this limit, the presentation layer routes the full content to the `SessionScratchpad` (§4.7) instead of truncating.
+**Decision (Q-6):** Body budget is a **fixed constant of 15000 characters** (~4K tokens), sufficient for any local model with ≥4K context window. This is a named constant in `Presentation.scala` (`BODY_BUDGET_CHARS = 15000`), not a user-configurable setting. When the body exceeds this limit, the presentation layer routes the full content to the `SessionScratchpad` (§4.7) instead of truncating.
+
+**Why 15000 (history).** Raised from 8000 on 2026-10-13 for eval quality: the doc-eval
+document was 9,981 chars — 25% over the 8K budget — so every model's first `files_read`
+returned only metadata plus a `$scratch/` ref, and answers were built entirely from
+`files_search` snippets. Candidate models advertise ≥100K context and 15K chars is ~3.75K
+tokens, so the inline limit was raised rather than working around it; bodies over 15K still
+take the `ScratchRef` path. The cost to watch: `AgentLoop` accumulates every tool result of
+a run in `toolResultTurns`, outside the history budget, so larger inline bodies multiply
+across iterations — see `docs/serving_optimization.md` for the context-sizing implication.
 
 Overflow response shape:
 
@@ -297,7 +306,7 @@ ok
 
 ### 4.6 Scratchpad — `SessionScratchpad`
 
-A **session-scoped, in-memory content cache** that holds full tool output bodies too large for the context window. Entries are keyed by source path (not a sequence number), so the same file resolves to the same ref across multiple turns within a session.
+A **run-scoped, in-memory content cache** that holds full tool output bodies too large for the context window. Entries are keyed by source path (not a sequence number), so the same file resolves to the same ref across all iterations of one agent turn; file-backed refs are re-hydrated from disk in later turns (§7.5.10).
 
 ```scala
 // shell/Scratchpad.scala
@@ -322,13 +331,13 @@ class SessionScratchpad:
   private def evictOldestIfFull(): Unit
 ```
 
-**Lifecycle**: one `SessionScratchpad` per active session, held in a `TrieMap[sessionId, SessionScratchpad]` in `BackendServer`. Removed when the session is deleted. Lost on backend restart — the agent re-reads files on the next turn (graceful degradation).
+**Lifecycle**: one `SessionScratchpad` per **agent run** (one user message → one agent turn), created in `AgentLoop` before the iteration loop and shared by every iteration of that run. It is not persisted: a new run starts with an empty pad, and the `__result_N__` counter restarts at 1. Lost on backend restart — the agent re-reads files on the next turn (graceful degradation). Eviction keeps at most 20 entries and is **true LRU** (position refreshes on `get`/re-`put`) as of AG-31; earlier behavior was insertion-ordered.
 
 **Staleness**: when `files_read` is called for a path already in the scratchpad, `isStale()` compares the file's current `lastModifiedTime` against the stored value. If stale, the entry is replaced. If fresh, the existing ref is returned without re-reading.
 
 **Substitution pass**: the tokenizer/executor resolves `$scratch/<path>` refs in any argument value before dispatching to the tool. The tool receives the full `String` content directly — it never sees the ref. This means `llm_summarize text=$scratch/data/report.txt` passes the full content straight into `LLMProvider.complete()` without it ever appearing in the agent's conversation history.
 
-**Scope**: `ExecutionContext` carries a reference to the session's `SessionScratchpad`.
+**Scope**: `ExecutionContext` carries a reference to the current run's `SessionScratchpad`.
 
 ### 4.7 Automatic Scratchpad Chaining
 
@@ -339,7 +348,7 @@ class SessionScratchpad:
 - **Path-keyed** (file reads): key is the source file path relative to the workspace root, e.g. `data/report.txt`. Enables staleness detection across turns — re-reading the same file returns the same ref if the file is unchanged.
 - **Counter-keyed** (computed results): key is `__result_N__` where `N` is a monotonically-increasing integer from `SessionScratchpad.nextComputedKey()`. Used for search matches, `llm_*` outputs, and any tool result with no natural file-path key.
 
-**Response shape — small result** (body ≤ 8000 chars): return the inline content as normal, plus a `stored:` metadata line so the model has the ref without re-reading:
+**Response shape — small result** (body ≤ 15000 chars): return the inline content as normal, plus a `stored:` metadata line so the model has the ref without re-reading:
 
 ```
 $ files_read path=src/config.py
@@ -349,7 +358,7 @@ ok
 <full file content inline>
 ```
 
-**Response shape — large result** (body > 8000 chars): scratchpad ref only, no inline body (unchanged from §4.6 overflow behaviour):
+**Response shape — large result** (body > 15000 chars): scratchpad ref only, no inline body (unchanged from §4.6 overflow behaviour):
 
 ```
 $ files_read path=big_report.txt
@@ -389,7 +398,7 @@ llm_summarize text=$scratch/__result_1__
 
 **Implementation changes:**
 - `Tool.render()` gains a `ctx: ExecutionContext` parameter so the render stage can access the scratchpad directly: `def render(output: O, ctx: ExecutionContext): ToolResult`.
-- `FilesRead.render()`: always calls `ctx.scratchpad.store(sourcePath, entry)`; for bodies ≤ 8000 chars returns `ToolBody.Inline` with a `stored:` metadata entry alongside the inline content; for large bodies returns `ToolBody.ScratchRef` as before.
+- `FilesRead.render()`: always calls `ctx.scratchpad.store(sourcePath, entry)`; for bodies ≤ 15000 chars returns `ToolBody.Inline` with a `stored:` metadata entry alongside the inline content; for large bodies returns `ToolBody.ScratchRef` as before.
 - `FilesSearch.render()`: calls `ctx.scratchpad.store(ctx.scratchpad.nextComputedKey(), entry)` and returns the counter-keyed ref in metadata alongside inline content (if small) or as a `ScratchRef` (if large).
 - `[SCRATCHPAD]` section in `system_prompt.txt` updated to tell the model that all results include a `stored:` ref passable to any compatible tool argument. No `[CHAINING]` section needed.
 
@@ -439,10 +448,10 @@ The `validate → execute → render` pipeline is the contract. `VirtualShell` c
 
 | Command | Args | Returns |
 |---|---|---|
-| `files_read` | `path`, `lines` (optional range, e.g. `1-50`) | File text content; always stored in `SessionScratchpad` (path-keyed); inline body + `stored:` ref if ≤8000 chars; ref only if larger |
+| `files_read` | `path`, `lines` (optional range, e.g. `1-50`) | File text content; always stored in `SessionScratchpad` (path-keyed); inline body + `stored:` ref if ≤15000 chars; ref only if larger |
 | `files_write` | `path`, `content` | Confirmation + bytes written |
 | `files_list` | `path` (optional), `recursive` (default false), `all` (dotfiles, default false), `depth` (default 3), `pattern` (glob filter) | Indented tree listing with size and date per file |
-| `files_search` | `query`, `path` (optional), `recursive` (default true), `ignore_case` (default false), `lines_context` (default 2), `max_matches` (default 50), `include` (glob), `regex` (default false) | Grep-style matches; always stored in `SessionScratchpad` (counter-keyed `__result_N__`); inline body + `stored:` ref if ≤8000 chars; ref only if larger |
+| `files_search` | `query`, `path` (optional), `recursive` (default true), `ignore_case` (default false), `lines_context` (default 2), `max_matches` (default 50), `include` (glob), `regex` (default false) | Grep-style matches; always stored in `SessionScratchpad` (counter-keyed `__result_N__`); inline body + `stored:` ref if ≤15000 chars; ref only if larger. *(Hybrid ranked search supersedes this contract — see §7.5.)* |
 | `files_stat` | `path` | File size, modified time, type |
 
 **`files_write` is a sensitive (mutating) tool** — subject to permission scope check before execution (§6).
@@ -476,7 +485,7 @@ src/
     test_main.py   0.8 KB  2025-05-01
 ```
 
-Binary files encountered during search are skipped with a `<binary file skipped>` note. Results exceeding `max_matches` or the 8000-char body budget route to the scratchpad as normal.
+Binary files encountered during search are skipped with a `<binary file skipped>` note. Results exceeding `max_matches` or the 15000-char body budget route to the scratchpad as normal.
 
 ### 5.3 `memory` Family
 
@@ -636,6 +645,208 @@ Rationale: summarization requires an extra `llm_*` call mid-assembly, adding lat
 ### 7.4 Workspace File Context (RAG Deferral)
 
 The task list includes "Decide how workspace files enter context." For Phase 2, workspace files enter context only via explicit `files_read` tool calls issued by the agent. Proactive file injection (embedding-based retrieval, RAG) is Phase 5. The Phase 2 decision to document: *files enter context on demand via agent tool calls, not via automatic injection.*
+
+*Superseded in part by §7.5: ranked lexical retrieval over workspace and stored content lands in Phase 6 (AG-31), while semantic/embedding retrieval remains deferred (§7.5.13).*
+
+### 7.5 Retrieval — Hybrid Lexical Search (AG-31, Phase 6)
+
+#### 7.5.1 Problem
+
+Two retrieval failures dominate doc-eval:
+
+1. **No ranking.** `files_search` is an unranked regex line scan (§5.2); results arrive in walk order, so the two passages that matter are buried among dozens of incidental matches.
+2. **No way to query stored content.** Bodies above `BODY_BUDGET_CHARS` land in the `SessionScratchpad`, but the only way to consume a `$scratch/` ref is to re-inline the entire content as a tool argument (§4.6 substitution pass). A 150 KB document is therefore either unreadable or re-inlined whole.
+
+Agents compensate by looping: 15–20 iterations of read/search/read, often on data that is not present at all.
+
+#### 7.5.2 Decisions (locked)
+
+1. **Split by lexical vs semantic, not grep vs FTS.** Grep (exact substring: numbers, IDs, table cells) and BM25 (tokenized ranked: prose) are two *arms of one lexical capability*; the tool fuses them. Semantic retrieval is a separate capability (§7.5.13).
+2. **One lexical search tool.** `files_search` gains a ranked arm and a `scope` dimension; there is **no** separate `scratch_search` tool.
+3. **No duplicate full text in the database.** The FTS5 table stores chunk text as its own content (required for `snippet()`); everything else is metadata.
+4. **Budget-driven paging.** Page size = the number of hits that fit the character budget, capped by `limit`. Output reports `Displaying: N of M` and ends with `For more entries, use: <exact next call>`.
+5. **Indexing is incremental refresh-on-search** — no build trigger, no background indexer, no startup crawl.
+6. **Fast text-layer indexing first, VLM conversion on demand** — see §7.5.6 and §7.5.7.
+7. **Re-indexing is gated by `(mtime, size)`** — unchanged files cost one metadata lookup.
+
+#### 7.5.3 Corpus model
+
+One chunk table with two kinds of rows:
+
+| | `kind = workspace` | `kind = stored` |
+|---|---|---|
+| Source | crawled workspace files | `SessionScratchpad` entries (index-on-write) |
+| `source_path` | path relative to workspace root | scratch key (`data/report.md` or `__result_N__`) |
+| `session_id` | NULL (shared across sessions) | owning session |
+| Lifetime | persistent, refreshed by mtime | purged on eviction; computed keys purged at run end; session delete purges all |
+| Selected by | `scope=workspace` (default) | `scope=stored` |
+
+The pad's `__result_N__` counter restarts every run (§4.6), so computed rows are keyed `(session_id, run_id, key)` to avoid cross-turn collisions. File-backed stored rows are keyed by path and survive restarts; their refs re-hydrate by re-reading the file (§7.5.10).
+
+#### 7.5.4 Index schema
+
+- **`chunk_fts`** — FTS5 virtual table: `text` (indexed), plus unindexed `kind, session_id, run_id, source_path, chunk_index, start_line, end_line`. Tokenizer `unicode61` with `remove_diacritics 2`. No stemming: business corpora are dominated by numbers, tickers, and identifiers where stemming hurts precision. If doc-eval later shows morphology-driven misses ("decelerate"/"deceleration"), add a `porter` companion table rather than switching.
+- **`chunk_meta`** — `(kind, session_id, run_id, source_path)` → `last_modified, size_bytes, line_count, chunk_count, indexed_at, replaced_by`. No text.
+- **Index availability probe** — `init()` creates the FTS5 table and runs a `MATCH` smoke query; failure disables the ranked arm with a logged warning instead of failing at first search. (`sqlite-jdbc` bundles FTS5; the probe guards against future driver changes.)
+
+#### 7.5.5 Chunking
+
+~60 lines per chunk, 10-line overlap, split preferentially at blank lines so table rows and paragraphs stay together. Deterministic `chunk_index` per path; re-index = delete-by-path then insert. Chunking is a pure function over `(path, text)` — independently testable.
+
+#### 7.5.6 Indexing — refresh-on-search
+
+There is no build phase. Each `scope=workspace` search performs an incremental refresh of its target scope first:
+
+1. **Enumerate** every candidate in the scope (`path=` subtree, or workspace root), skipping filtered entries (§7.5.8). Discovery is metadata-only for known extensions — unknown and extensionless files cost one bounded sniff of their leading bytes (§7.5.8), never a full read — so the walk is cheap even for large trees.
+2. **Classify** each candidate against the persisted metadata in memory. Currency includes the supersede state: a row is current only when `(mtime, size)` matches *and* its `replaced_by` alias matches reality, so deleting a converted `.md` re-indexes the raw document rather than leaving it permanently empty.
+3. **Index** the files that need work, ordered **never-indexed first, then stalest** (`indexed_at` ascending), under a soft time budget (~2–3 s; calibrated by benchmark, not guessed).
+4. **Purge** rows for paths no longer present in the walked set.
+5. **Search** (grep arm over the scope; BM25 arm over the index).
+
+Discovery and indexing are separate phases deliberately: because current files cost only a map lookup, every pass considers the *whole* scope and never-indexed files are always prioritised. An early design truncated discovery at 5,000 files/50 MB mid-walk, which — filesystem walk order being stable — starved everything past the prefix permanently. `pending` counts only files that still need work (never-indexed or stale), not merely unexamined ones.
+
+Steady state for the target use case (10–20 files): the first search indexes everything; later searches do a stat-walk and find nothing changed. Cost is milliseconds.
+
+If the budget is exhausted, results are returned from the partial index with honest metadata — `index: partial · indexed: N · pending: M`. Stale-first ordering means the *next* search continues rather than restarting, so repeated searching converges. The agent is never blocked, and it can narrow with `path=` to prioritize.
+
+`mode=exact` skips the refresh entirely: it is the grep-only escape hatch and pays no indexing cost.
+
+Progress is reported opportunistically via `AgentEvent.ToolProgress` (§9.2) as `Indexing: N / M files`, but nothing depends on the progress channel; the budget bounds worst-case latency regardless. (The `tool_progress` indicator's reliability is a separate, known issue tracked in the tasklist.)
+
+#### 7.5.7 Document formats — text layer first, VLM on demand
+
+The indexer **never invokes the VLM**. Three distinct costs, only one of which is indexing:
+
+| Step | Typical cost | In index path |
+|---|---|---|
+| PDF/DOCX/PPTX → `.md` via VLM (`files_read_*_to_markdown`) | ~1 s/page → 50 s for a 50-page doc | **No** — agent-driven, unchanged |
+| Text extraction from the raw document (PDFBox text layer, POI) | tens–hundreds of pages/s | **Yes** (raw docs) |
+| Chunk + FTS5 insert of existing text | ~1–5k chunks/s | **Yes** |
+
+Raw documents are indexed from their text layer so the corpus is searchable immediately — including PDFs the agent has never opened, which is the discovery problem AG-31 exists to fix. Vision-only content (charts, scanned pages) is absent until conversion, which is the deliberate trade: convert only the files that matter.
+
+**Supersede rule.** When a converted sibling exists (`<stem>.md` next to `<stem>.pdf`, at least as new as the source), the raw document's rows are purged and only the `.md` is indexed — one authoritative source per document, no double-counting in BM25. The purge and the `chunk_meta.replaced_by` alias are written atomically, so `path=<stem>.pdf` always resolves through the alias to the `.md`; otherwise the model would search a path with no rows. The same rule applies to DOCX/PPTX. Currency checks include the alias state: when the `.md` is deleted or goes stale, the document is re-indexed from its own text layer and the alias cleared (a plain content write always clears `replaced_by`). Direct `path=<doc>` redirection applies the same freshness rule, so a stale `.md` never shadows the document.
+
+#### 7.5.8 File filters
+
+- **Binary detection:** content sniff of the first 8 KB (NUL byte → skip). Known text extensions are a fast classification path only; unknown and extensionless files (`.rs`, `.toml`, `Dockerfile`, scripts) are sniffed rather than excluded, in both the indexer and the grep arm.
+- **Size cap:** 2 MB per file, plus a per-file chunk cap (~2,000 chunks).
+- **Skip directories:** `.git`, `node_modules`, `target`, `build`, `dist`, `.venv`, `venv`, `__pycache__`, `.idea`, `.gradle`, and Agentica's `*_debug/` image directories.
+- **Symlinks:** not followed. **Dotfiles:** skipped by default.
+- **Walk safety cap:** 5,000 candidates per refresh. Extraction cost is governed by the time budget, not a byte cap — walking reads no content. Hitting the file cap marks the pass `index: partial`.
+
+#### 7.5.9 Read path
+
+1. **Query preparation.** Split terms; build a grep pattern (literal OR, or raw regex when `regex=true`); build an escaped FTS5 `MATCH` expression — every term is emitted as a quoted phrase (`"term"`, or `"term"*` for prefix matching on terms ≥ 4 chars), so uppercase `AND`/`OR`/`NOT` in user input become literal tokens and can never produce a syntax error. The ranked arm is additionally failure-isolated: an index or expression error degrades to no ranked hits rather than discarding exact-arm results.
+2. **Semantics — AND first, OR fallback.** Run the AND query; if it yields fewer than `limit` hits, re-run with OR and merge, preferring AND hits. Quoted phrases become FTS5 phrase queries. Rationale: never return empty when something matches, without diluting the common case. (FTS5's default for space-separated terms is AND; the expression is built by us.)
+3. **Grep arm.** Bounded scan of the scope; exact matches score 1.0.
+4. **Fusion.** Reciprocal rank fusion, `1/(60 + rank)` per arm; a hit found by both arms wins. Overlapping ranges from the same source are merged, keeping the exact-match snippet.
+5. **Render.** Unified hit shape; budget-driven page; `Displaying` + `For more entries`.
+
+**Hit ceiling.** The fused list is capped at 200 hits; when the cap is reached the output shows `200+` and logs `scan_truncated`. The grep arm additionally has a scan budget (2,000 files / 50 MB) after which it stops and reports `scan: partial`.
+
+**Scope pushdown.** A `path=` constraint is pushed into the ranked query itself (`source_path` exact-or-prefix match in SQL), so out-of-scope rows neither appear in file-scoped searches nor consume the hit budget ahead of in-scope rows. `recursive`/`include` are applied to the fused set so both arms honour them identically. The continuation command quotes every argument value, so paths with spaces survive copy-through.
+
+#### 7.5.10 Tool contract — `files_search`
+
+| Arg | Required | Meaning |
+|---|---|---|
+| `query` | yes | Search terms; quoted phrases supported |
+| `path` | no | Workspace path scope (subtree or file) |
+| `scope` | no | `workspace` (default) \| `stored` |
+| `ref` | no | Stored entry to drill into, e.g. `$scratch/__result_3__`; implies `scope=stored` |
+| `limit` | no | Hit cap per page (default 8) |
+| `cursor` | no | Paging offset (default 0) |
+| `mode` | no | `hybrid` (default) \| `exact` \| `ranked` — advanced escape hatch, visible to the model |
+| `regex` | no | Treat `query` as a raw regex for the exact arm (advanced) |
+| `recursive` | no | Descend into subdirectories of `path` (default `true`) |
+| `include` | no | Glob matched against file names, e.g. `*.md` (default: none) |
+
+Validation matrix:
+
+| `scope` | `ref` | `path` | Behavior |
+|---|---|---|---|
+| omitted | — | — | Whole workspace corpus |
+| workspace | — | given | Restrict to subtree/file (alias-resolved) |
+| workspace | — | `$scratch/…` | Error + hint: use `scope=stored` or `ref=` |
+| workspace | given | — | Error: `ref` implies stored scope |
+| omitted | given | — | Scope inferred `stored`, single entry |
+| stored | given | — | That one stored entry |
+| stored | — | — | All stored entries for this session |
+| stored | — | given | Error: use `ref=` for stored entries |
+| stored | given | given | Error: mutually exclusive |
+
+Output — one shape for both arms; a grep hit is an exact-match snippet with score 1.0, so the renderer never branches on mode:
+
+```
+$ files_search query="revenue growth slowing" path=reports/
+ok
+─ Displaying: 2 of 7
+─ cursor: 0
+─ scope: workspace
+─ mode: hybrid
+─────
+[1] reports/q3-financials.md  lines 118-124  score 0.049  (exact+ranked)
+    …APAC revenue growth slowing to 6%…
+[2] reports/q2-financials.md  lines 44-88  score 0.016  (ranked)
+    …we expect the pace of expansion to moderate…
+For more entries, use: files_search query="revenue growth slowing" path=reports/ cursor=2
+```
+
+An `index` metadata line appears when the refresh pass was budget-truncated
+(`index: partial · indexed: N · pending: M`).
+
+```
+$ files_search query="APAC revenue" scope=stored
+ok
+─ Displaying: 1 of 2
+─ cursor: 0
+─ scope: stored
+─ mode: hybrid
+─────
+[1] $scratch/__result_3__  lines 88-110  score 0.032
+    …APAC segment commentary: revenue mix shifted…
+For more entries, use: files_search query="APAC revenue" scope=stored cursor=1
+```
+
+- `Displaying: N of M` — N = hits actually rendered, M = fused list size (capped, `200+` when truncated).
+- Paging is model-driven; `cursor` is a stateless offset. Offsets can drift if new content is indexed between pages — documented and accepted; a score-token cursor is the upgrade path if it ever matters.
+- `scope=stored` with an empty corpus returns `ok`, `Displaying: 0 of 0`, and a hint to read/search files first. An evicted ref behaves the same way.
+- Scores are **not comparable across scopes, refs, or corpora** — BM25 normalizes within the searched set. The score orders a result set; it is not a confidence measure. Stated in the tool docs.
+- If a page's body would exceed `BODY_BUDGET_CHARS`, the full list is stored in the scratchpad as a computed entry and the top hits plus the ref are returned. Only this overflow case stores search results — routine pages are not persisted.
+
+**`resolveRefs` guard.** `VirtualShell.resolveRefs` substitutes any argument value starting with `$scratch/` with the stored content. `files_search`'s `ref` and `path` arguments must be exempt (they consume the *reference*, not the content). This is an explicit allowlist in the substitution pass.
+
+#### 7.5.11 Lifecycle and durability
+
+- **Pad/index lockstep:** eviction purges index rows for the evicted entry, so `scope=stored` never returns content without a live ref.
+- **Session delete** purges all stored rows for the session.
+- **Run end** purges computed-key rows (`__result_N__`); file-backed stored rows persist.
+- **Restart:** workspace rows and file-backed stored rows persist; the in-memory pad is empty, so the exact arm over stored content returns nothing while the ranked arm still works. Ref hydration: an unresolved `$scratch/<path>` whose path exists in the workspace is re-read from disk, re-stored (re-indexing only if changed), and resolved — no DB text copy needed.
+- **True LRU:** `SessionScratchpad` eviction refreshes entry position on `get`/re-put; `MAX_ENTRIES` stays 20. Earlier behavior was insertion-ordered (the doc previously called it LRU).
+
+#### 7.5.12 Degradation
+
+| Condition | Behavior |
+|---|---|
+| Index unavailable / FTS5 probe failed | Grep-only, same output shape, `mode: exact` in metadata |
+| File unindexable (binary, over cap, read error) | Zero-chunk marker row keyed by `(mtime, size)`; skipped cheaply on later passes instead of retried forever |
+| Budget exhausted | `index: partial · indexed: N · pending: M`; stale-first ordering converges |
+| `scope=stored`, empty corpus | `Displaying: 0 of 0` + hint |
+| Legacy `mode=exact` output shape | Not retained — one renderer only; a regression is reverted in git rather than carried as a second contract |
+
+**Known constraint:** `AgentLoop` polls `cancelFlag` between tool calls, not inside them, so a refresh cannot be interrupted. The 2–3 s budget keeps the worst case a nuisance rather than a bug; the future fix is to thread a cancellation probe into `ExecutionContext`.
+
+#### 7.5.13 Out of scope — semantic retrieval (Phase B2)
+
+Embeddings over the same chunk corpus via a configurable OpenAI-compatible endpoint (nomic-embed-text on the eval box is the candidate; benchmark against EmbeddingGemma 2 before choosing). Vectors as float32 blobs with brute-force cosine in Scala — no `sqlite-vec` dependency at document scale. Fused as a third RRF arm and exposed as a **separate semantic tool**, not a `files_search` mode, preserving the lexical/semantic split.
+
+#### 7.5.14 Tests and evaluation
+
+- **Unit:** chunker (overlap, blank-line preference, short content); FTS5 probe; filters; refresh (skip-unchanged, replace-on-change, purge-missing); supersede rule + alias; true-LRU eviction; run-end/session-delete purges; ref hydration.
+- **Tool:** validation matrix; AND→OR fallback; fusion ordering (both arms > single arm); overlap merge; budget paging and `Displaying`/`For more entries` strings; `200+` ceiling; stored-scope session isolation; `ref=` drill-down; empty/evicted hints; degradation; `resolveRefs` guard.
+- **Benchmark (recorded):** on this machine — FTS5 insert ~3–4 MB/s (6.8 MB / 1,700 chunks in ~1.6–2.2 s); a top-10 BM25 query over that corpus in 67–182 ms including a fresh SQLite connection (pooled in production); PDFBox text extraction ~150–200 ms/page (a 2-page fixture takes ~0.3–0.5 s warm, independent of `sortByPosition`). A 50-page PDF therefore costs ~8–10 s of extraction, so a PDF-heavy workspace converges over several searches rather than one pass. Mitigation shipped: the refresh orders cheap text files before raw documents (stale-first within each class) and reports `index: partial` so the model can narrow with `path=`. Reproduce with `agentica.misctests.SearchBenchmark`.
+- **Evaluation:** doc-eval before/after on the QAT Gemma retrieval config; compare tool-call counts and `llmUsage` (AG-42) per sweep; the success metric is fewer iterations and fewer futile retries, not just answer quality.
 
 ---
 
@@ -1001,8 +1212,8 @@ enum AgentEvent:
 | ~~**Q-2**~~ | ~~Is `maxIterations` hardcoded, global setting, or per-session?~~ | **Decided**: global `AppSettings` field, default 20, exposed in Settings UI |
 | ~~**Q-3/Q-4/Q-13**~~ | ~~Tool result injection and tool call format~~ | **Decided**: plain `assistant`/`user` turns; inline `run(command="...")` text; `ToolCallParser` extracts and logs all calls |
 | ~~**Q-5**~~ | ~~Final answer: absence of `run()` sufficient, or require explicit marker?~~ | **Decided**: explicit `<done>` marker required; soft fallback (accept without marker, log warning) if absent |
-| ~~**Q-6**~~ | ~~Token budget for a single tool result body?~~ | **Decided**: fixed 8000 char constant in `Presentation.scala`; overflow → `SessionScratchpad` with path-keyed stable refs + staleness check + LRU eviction (max 20 entries) |
-| ~~**Q-7**~~ | ~~`files_search`: grep-based or index-based?~~ | **Decided**: grep-based (`java.nio.file`, no subprocess); Unix-aligned args for both `files_search` (grep-style) and `files_list` (ls-style); index-based search deferred to Phase 5 |
+| ~~**Q-6**~~ | ~~Token budget for a single tool result body?~~ | **Decided**: fixed constant in `Presentation.scala` — 8000 originally, **15,000 since Oct 2026** (§4.5); overflow → `SessionScratchpad` with path-keyed stable refs + staleness check + LRU eviction (max 20 entries, true LRU since AG-31) |
+| ~~**Q-7**~~ | ~~`files_search`: grep-based or index-based?~~ | **Decided**: grep-based (`java.nio.file`, no subprocess); Unix-aligned args for both `files_search` (grep-style) and `files_list` (ls-style); index-based search deferred to Phase 5. **Superseded**: hybrid grep + FTS5 BM25 with RRF landed in Phase 6 (AG-31, §7.5) |
 | ~~**Q-8**~~ | ~~`memory_*`: session-scoped only or global cross-session in Phase 2?~~ | **Decided**: session-scoped only; `MemoryStore` trait with `Option[sessionId]` ready for Phase 6 global upgrade |
 | ~~**Q-9**~~ | ~~`llm_*` tools: same provider or configurable separate model?~~ | **Decided**: same `LLMProvider`; fresh isolated message list per tool call, no session context shared; `callType="tool_llm"` in token accounting |
 | ~~**Q-10**~~ | ~~Permission prompts: SSE-based run suspension or natural language relay + re-submit?~~ | **Decided**: Option A — `PermissionRequired` SSE event; run suspends through `PermissionCoordinator` on a per-request `CompletableFuture`; UI modal with Allow once/session/always/Deny; `POST /permissions/:runId` with `requestId`; 60s timeout → graceful `permission_denied` |
@@ -1012,6 +1223,7 @@ enum AgentEvent:
 | ~~**Q-14**~~ | ~~System prompt: file-based template or programmatically generated?~~ | **Decided**: hybrid — `system_prompt.txt` resource file with `{{TOOL_INDEX}}`, `{{ROOT_PATH}}`, `{{TODAY}}` substitution slots; `TOOL_INDEX` filled from `CommandRegistry` at startup |
 | ~~**Q-15**~~ | ~~Tool run persistence: per-call or end-of-run batch?~~ | **Decided**: per-call (covered by Q-3 logging decision) |
 | ~~**Q-16**~~ | ~~Mock LLM in tests: pre-recorded or scripted sequences?~~ | **Decided**: hybrid — `ScriptedLLMProvider` for new scenarios; `RecordingLLMProvider` + `ReplayLLMProvider` for regression lock-in once system prompt stabilises |
+| **Q-17** | **Retrieval architecture (AG-31, Phase 6)** | **Decided**: FTS5 chunk index (one table, `workspace` + `stored` kinds) with hybrid grep + BM25 fused by RRF; `files_search` gains `scope`/`ref` and budget-driven paging (`Displaying: N of M`, `For more entries, use:`); no separate `scratch_search` tool; incremental refresh-on-search with a 2–3 s budget; raw-doc text-layer indexing with VLM conversion on demand and a supersede rule; semantic retrieval deferred to a separate tool. See §7.5. |
 
 ---
 

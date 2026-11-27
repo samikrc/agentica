@@ -257,7 +257,7 @@ Both are deferred until the DOCX pipeline (Stages C–D) is stable. Tool surface
 | DOCX → PDF | LibreOffice headless | Highest fidelity for complex DOCX layouts; no vendor lock-in |
 | VLM configuration | Separate from chat LLM (Settings → VLM tab) | Allows fast hosted VLM for vision while keeping local LLM for chat; falls back to primary LLM when not configured |
 | Markdown caching | Persist `<document>.md` alongside source (e.g., `report.pdf` → `report.md`); reuse if source not modified | Avoids redundant VLM calls across sessions; enables `files.read`/`files.search`/BM25/vector search on document content |
-| Scratchpad routing | Existing `SessionScratchpad` | Large document content (>8000 chars) stored as `$scratch/` refs; consistent with other tools |
+| Scratchpad routing | Existing `SessionScratchpad` | Large document content (>15,000 chars) stored as `$scratch/` refs; consistent with other tools |
 | PPTX write/edit | Deferred (POI XSLF) | POI already present from ingestion; write complexity justified only after DOCX pipeline is proven |
 
 ---

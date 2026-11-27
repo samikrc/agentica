@@ -293,7 +293,7 @@ object FilesReadPPTXToMarkdown extends Tool[FilesReadPPTXToMarkdownInput, FilesR
                     hints   = List("For PPTX conversion, ensure the file is a valid PPTX and a Vision LLM is configured.")
                 ))
             case Some(error) =>
-                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"PPTX conversion failed: ${error.toErrorCode}"))
+                ToolResult(status = ToolStatus.Err(code = error.toErrorCode, message = s"PPTX conversion failed: ${error.toErrorCode.value}"))
             case None =>
                 val cacheStatus = if (output.wasRegenerated) "generated" else "cached"
                 ToolResult(

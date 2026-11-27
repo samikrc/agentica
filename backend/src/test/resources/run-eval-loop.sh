@@ -56,14 +56,16 @@ trap restore_config EXIT
 # Provider entries: label|llmModel|llmBaseURL|llmAPIKey
 # llmAPIKey may be a ${VAR} placeholder resolved from the environment at runtime.
 MODELS=(
-    "local-qwen-3.5|qwen3.5-9b-mtp|${LM_STUDIO_URL}|lm-studio"
+    # "local-qwen-3.5|qwen3.5-9b-mtp|${LM_STUDIO_URL}|lm-studio"
     # "local-ministral-3|mistralai/ministral-3-14b-reasoning|${LM_STUDIO_URL}|lm-studio"
     # "local-gemma4-it|google/gemma-4-12b|${LM_STUDIO_URL}|lm-studio"
-    "local-gemma4-qat|google/gemma-4-12b-qat|${LM_STUDIO_URL}|lm-studio"
+    # "local-gemma4-qat|google/gemma-4-12b-qat|${LM_STUDIO_URL}|lm-studio"
+    # "local-gemma4-26b-a4b-qat|google/gemma-4-26b-a4b-qat|${LM_STUDIO_URL}|lm-studio"
     # "local-gemma4-e4b|google/gemma-4-e4b|${LM_STUDIO_URL}|lm-studio"
     # "valar-glm-5.3|zai-org/GLM-5.3|https://api.valarhq.ai|\${VALAR_API_KEY}"
     # "valar-glm-5.3-flash|zai-org/GLM-5.3-Flash|https://api.valarhq.ai|\${VALAR_API_KEY}"
     # "valar-kimi-k3|moonshotai/Kimi-K3|https://api.valarhq.ai|\${VALAR_API_KEY}"
+    "valar-gemma-4-26b-a4b-it|google/gemma-4-26b-a4b-it|https://api.valarhq.ai|\${VALAR_API_KEY}"
 )
 
 for entry in "${MODELS[@]}"; do

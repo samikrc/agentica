@@ -80,7 +80,7 @@ class VirtualShell(
         val t0 = System.currentTimeMillis()
 
         // Substitution pass: resolve $scratch/<path> refs in all arg values
-        val resolvedArgs = resolveRefs(cmd.args, ctx)
+        val resolvedArgs = resolveRefs(cmd, ctx)
         val resolvedCmd  = cmd.copy(args = resolvedArgs)
 
         // Help command handled inline
@@ -115,7 +115,12 @@ class VirtualShell(
      */
     def toolSchemas: List[ToolSpec] = registry.nativeToolSchemas
 
-    /** Returns the canonical display form of a native call without executing it. */
+    /**
+     *  Returns the canonical display form of a native call without executing it.
+     *  @param name           Wire function name, e.g. `files_read`.
+     *  @param argumentsJson  Raw JSON object string of call arguments.
+     *  @return               `family_verb arg=val` string used in events and logs.
+     */
     def describeNative(name: String, argumentsJson: String): String =
     {
         registry.commandFromNative(name, argumentsJson).map(displayCommand)
@@ -154,7 +159,11 @@ class VirtualShell(
         }
     }
 
-    /** Canonical `family_verb key="value"` display string for a command. */
+    /**
+     *  Canonical `family_verb key="value"` display string for a command.
+     *  @param cmd  Parsed command.
+     *  @return     Display string used in events, logging, and persistence.
+     */
     private def displayCommand(cmd: Command): String =
     {
         val argStr = cmd.args.map { case (k, v) =>
@@ -168,21 +177,37 @@ class VirtualShell(
 
     /**
      *  Resolves scratchpad references in command argument values.
-     *  @param args  Command arguments before substitution.
-     *  @param ctx   Execution context containing the session scratchpad.
-     *  @return      Argument map with known scratch references replaced by their content.
+     *
+     *  `files_search`'s `ref` and `path` arguments are exempt: they consume the
+     *  reference itself rather than the referenced content. A file-backed ref
+     *  that is no longer in the pad (a later run) is re-hydrated by re-reading
+     *  the workspace file, so refs survive across runs.
+     *
+     *  @param cmd  Command whose arguments are being resolved.
+     *  @param ctx  Execution context containing the session scratchpad.
+     *  @return     Argument map with known scratch references replaced by their content.
      */
-    private def resolveRefs(args: Map[String, String], ctx: ExecutionContext): Map[String, String] =
+    private def resolveRefs(cmd: Command, ctx: ExecutionContext): Map[String, String] =
     {
-        args.map { case (k, v) =>
-            if (v.startsWith("$scratch/"))
+        val keepRef = cmd.fullName == "files_search"
+        cmd.args.map { case (k, v) =>
+            if (keepRef && (k == "ref" || k == "path"))
+            {
+                k -> v
+            }
+            else if (v.startsWith("$scratch/"))
             {
                 ctx.scratchpad.get(v) match
                 {
                     case Some(entry) => k -> entry.content
                     case None        =>
-                        TraceLogger.warn(ctx.traceId, "scratch_ref_not_found", Map("ref" -> v))
-                        k -> v   // pass through unresolved; the tool will produce a not_found error
+                        hydrateRef(v, ctx) match
+                        {
+                            case Some(entry) => k -> entry.content
+                            case None        =>
+                                TraceLogger.warn(ctx.traceId, "scratch_ref_not_found", Map("ref" -> v))
+                                k -> v   // pass through unresolved; the tool will produce a not_found error
+                        }
                 }
             }
             else
@@ -191,6 +216,18 @@ class VirtualShell(
             }
         }
     }
+
+    /**
+     *  Re-hydrates a file-backed scratch ref by re-reading the workspace file.
+     *
+     *  Delegates to [[ScratchHydration]]; see there for the rationale.
+     *
+     *  @param ref  Scratch ref, e.g. `$scratch/data/report.md`.
+     *  @param ctx  Execution context providing the workspace root and pad.
+     *  @return     The re-stored entry, or `None` when the file is unavailable.
+     */
+    private def hydrateRef(ref: String, ctx: ExecutionContext): Option[ScratchEntry] =
+        ScratchHydration.hydrate(ref, ctx.scratchpad, ctx.session.rootPath.getOrElse(""))
 
     // ── Help handler ──────────────────────────────────────────────────────────
 

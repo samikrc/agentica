@@ -40,7 +40,7 @@ Or on error:
 Error codes: not_found, permission_denied, invalid_args, path_escaped, cancelled, internal_error.
 
 [SCRATCHPAD]
-Every tool result is stored automatically in the scratchpad. Small results include their content inline and also a stored: ref you can use later:
+File reads are stored automatically in the scratchpad. Small results include their content inline and also a stored: ref you can use later:
 
   $ files_read path=src/config.py
   ok
@@ -58,7 +58,7 @@ Large results return only the ref (content too large for context):
   - try: files_read path="big_report.txt" lines="1-50"
   - try: llm_summarize text="$scratch/data/big_report.txt"
 
-Search results and computed outputs use a counter ref:
+Oversized search pages use a counter ref (routine pages stay inline):
 
   - stored: $scratch/__result_1__
 
@@ -67,6 +67,37 @@ Rules for scratchpad refs:
 - Pass any $scratch/ ref as the value of any tool argument that accepts text (e.g. text, content). The full content is substituted before the tool runs — it never appears in the conversation history.
 - Re-reading the same file returns the same ref if the file has not changed.
 - Use stored refs to chain outputs, e.g. llm_summarize with text="$scratch/__result_1__".
+
+[SEARCH]
+files_search is hybrid: it returns exact line matches and ranked passages together, best first.
+
+  $ files_search query="revenue growth" path=reports/
+  ok
+  - Displaying: 2 of 7
+  - cursor: 0
+  - scope: workspace
+  - mode: hybrid
+  -----
+  [1] reports/q3-financials.md  lines 118-124  score 0.049  (exact+ranked)
+      ...APAC revenue growth slowing to 6%...
+  [2] reports/q2-financials.md  lines 44-88  score 0.016  (ranked)
+      ...we expect the pace of expansion to moderate...
+  For more entries, use: files_search query="revenue growth" path=reports/ cursor=2
+
+How to read it:
+- "Displaying: N of M" means this page shows N of the M hits found; M followed by "+" means the list was capped.
+- "For more entries, use:" is the exact next call — copy it verbatim when you need the following page.
+- Scores order hits inside one result set only. Never compare scores across different searches or scopes.
+- (exact+ranked) means both an exact line match and a ranked passage matched the same region; (exact) is a literal match; (ranked) is a ranked passage only.
+
+Search tips:
+- Use quoted phrases for exact wording: query="revenue growth".
+- Use path= to narrow to a directory or file, recursive="false" for the immediate directory only, and include="*.md" to filter by file name. Use mode="exact" to force literal matching (numbers, IDs), or mode="ranked" to force passage ranking.
+- To query content you already read this session without re-reading it, use scope="stored":
+  files_search query="APAC" scope="stored"
+  To drill into one stored entry: files_search query="APAC" ref="$scratch/__result_1__".
+- Raw documents (PDF/DOCX/PPTX) are indexed from their text layer only; if a hit is in a PDF, convert it once with files_read_pdf_to_markdown and continue from the .md file.
+- "index: partial" means the workspace index is still being built — narrow with path= to prioritise that area.
 
 [PERMISSIONS]
 - Never attempt to access files outside the workspace ({{ROOT_PATH}}). path_escaped errors mean the path left the workspace boundary.
@@ -88,7 +119,7 @@ Rules for scratchpad refs:
 Reading strategy — choose based on file size:
 - Use files_stat to check a file's size and line count before deciding how to read it.
 - Small files (< 200 lines): read the whole file with files_read in one call. Do NOT issue multiple files_search calls across a small file — just read it.
-- Medium files (200–1000 lines): use files_search with lines_context=5 to locate relevant sections, then files_read with lines= to read those sections.
+- Medium files (200–1000 lines): use files_search to locate relevant sections, then files_read with lines= to read those sections.
 - Large files (> 1000 lines): always search first; read only specific line ranges confirmed by search results.
 
 Avoid search loops:
