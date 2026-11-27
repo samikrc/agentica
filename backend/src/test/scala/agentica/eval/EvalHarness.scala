@@ -924,9 +924,9 @@ object EvalHarness
      *  @param index  Provider run's shared index.
      *  @param root   Workspace root to index (the sweep directory).
      */
-    private def warmWorkspaceIndex(index: SearchIndex, root: Path): Unit =
+    private def warmWorkspaceIndex(index: SearchIndex, root: Path): Option[ujson.Value] =
     {
-        if (!index.isAvailable) return
+        if (!index.isAvailable) return None
         val indexer = new WorkspaceIndexer(index)
         var stats   = indexer.refresh(root, None, budgetMs = 30000)
         var passes  = 1
@@ -936,6 +936,12 @@ object EvalHarness
             passes += 1
         }
         log(s"Index warm-up: indexed=${stats.indexed} pending=${stats.pending} partial=${stats.partial} passes=$passes")
+        Some(ujson.Obj(
+            "indexed" -> ujson.Num(stats.indexed.toDouble),
+            "pending" -> ujson.Num(stats.pending.toDouble),
+            "partial" -> ujson.Bool(stats.partial),
+            "passes"  -> ujson.Num(passes.toDouble)
+        ))
     }
 
     /**
@@ -1623,7 +1629,8 @@ object EvalHarness
         providerLabel: String,
         mdScore:       MarkdownScore,
         answers:       List[AnswerResult],
-        llmUsage:      LLMUsage
+        llmUsage:      LLMUsage,
+        indexWarmup:   Option[ujson.Value]
     ): Unit =
     {
         val judged   = answers.filter(_.judgeStatus == JudgeStatus.Judged)
@@ -1634,6 +1641,7 @@ object EvalHarness
         val json = Obj(
             "providerLabel" -> Str(providerLabel),
             "docFile"       -> Str(fileStem),
+            "indexWarmup"  -> indexWarmup.getOrElse(ujson.Null),
             "markdownScore" -> Obj(
                 "wordCountRatio" -> Num(mdScore.wordCountRatio),
                 "tokenOverlap"   -> Num(mdScore.tokenOverlap),
@@ -1864,7 +1872,7 @@ object EvalHarness
                 log(s"Markdown score: ${mdScore.pretty}")
 
                 // Phase 1: generate answers for every session type.
-                // Each entry is (sessionType, sweepDir, mdSavePath, mdScore, qaPairs, llmUsage).
+                // Each entry is (sessionType, sweepDir, mdSavePath, mdScore, qaPairs, llmUsage, indexWarmup).
                 val phaseOneResults = bundle.sessionTypes.map { sessionType =>
                     log(s"--- Generating answers: ${bundle.label} / ${sessionType.label} ---")
                     val sweepDir = Files.createDirectory(providerDir.resolve(sessionType.label))
@@ -1873,7 +1881,7 @@ object EvalHarness
                     val mdSavePath = sweepDir.resolve(s"$fileStem.md")
                     Files.writeString(mdSavePath, markdown)
 
-                    warmWorkspaceIndex(agent.searchIndex, sweepDir)
+                    val indexWarmup = warmWorkspaceIndex(agent.searchIndex, sweepDir)
                     log(s"Generating answers (${sessionType.label} session) for ${questions.length} questions...")
                     val callsBefore = agent.accounting.snapshot
                     val qaPairs = generateAnswers(questions, mdRelPath, agent, sweepDir, sessionType, questionTimeoutMs, retryDelayMs)
@@ -1881,7 +1889,7 @@ object EvalHarness
                     log(s"LLM usage: ${llmUsage.calls} calls, ${llmUsage.promptTokens} prompt tokens, " +
                         s"${llmUsage.completionTokens} completion tokens, ${llmUsage.latencyMs}ms total")
 
-                    (sessionType, sweepDir, mdSavePath, mdScore, qaPairs, llmUsage)
+                    (sessionType, sweepDir, mdSavePath, mdScore, qaPairs, llmUsage, indexWarmup)
                 }
 
                 // Phase 2: provider-specific pre-judge hook (e.g. LM-Studio model swap).
@@ -1892,7 +1900,7 @@ object EvalHarness
                 }
 
                 // Phase 3: judge all answers across all session types.
-                phaseOneResults.map { case (sessionType, sweepDir, mdSavePath, mdScore, qaPairs, llmUsage) =>
+                phaseOneResults.map { case (sessionType, sweepDir, mdSavePath, mdScore, qaPairs, llmUsage, indexWarmup) =>
                     try
                     {
                         log(s"--- Judging: ${bundle.label} / ${sessionType.label} (${qaPairs.length} answers) ---")
@@ -1908,7 +1916,7 @@ object EvalHarness
                         }
 
                         saveQuestions(sweepDir, answerResults)
-                        saveSummary(sweepDir, fileStem, bundle.label, mdScore, answerResults, llmUsage)
+                        saveSummary(sweepDir, fileStem, bundle.label, mdScore, answerResults, llmUsage, indexWarmup)
 
                         EvalResult(bundle.label, sessionType.label, mdSavePath, mdScore, answerResults)
                     }

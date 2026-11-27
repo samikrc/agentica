@@ -189,6 +189,18 @@ class EvalHarnessSmokeTest extends AnyFunSuite
 
         results.foreach { r =>
             assert(Files.exists(r.markdownPath), s"expected Markdown inside sweep workspace: ${r.markdownPath}")
+
+            // Regression guard: the harness must wire a live search index and warm it
+            // per sweep — a disabled index previously slipped through silently.
+            val summaryJson = ujson.read(Files.readString(r.markdownPath.getParent.resolve("summary.json")))
+            val warmup      = summaryJson.obj.get("indexWarmup").filterNot(_ == ujson.Null)
+            assert(warmup.isDefined,
+                s"${r.providerLabel}/${r.sessionType}: summary.json must carry indexWarmup stats")
+            val indexed = warmup.get("indexed").num.toInt
+            assert(indexed >= 1,
+                s"${r.providerLabel}/${r.sessionType}: warm-up must index the sweep workspace, got indexed=$indexed")
+            assert(!warmup.get("partial").bool,
+                s"${r.providerLabel}/${r.sessionType}: warm-up must converge within budget")
             assert(r.markdownPath.getParent.getFileName.toString == r.sessionType,
                 s"Markdown parent must be the session-type workspace for ${r.providerLabel}/${r.sessionType}")
             assert(r.answers.length == questions.length,
