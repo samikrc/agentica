@@ -14,7 +14,7 @@ affect accuracy, latency, and eval reproducibility.
 |---|---|---|
 | Agent LLMs | **40960** | History is capped at 8K tokens, but **tool-result turns are not budgeted and accumulate for the whole run**: with `BODY_BUDGET_CHARS = 15000` (~3.75K tokens each), 10 iterations of full-budget results exceed 32K before history is added. 40K covers the realistic worst case; the durable fix is budgeting tool-result turns (see note below). |
 | Judge LLM | **40960** | Same provider path |
-| VLM (`lfm2.5-vl-3b`) | **16384** | Peak request ≈ 8–10K (prompt + page image tokens + Markdown output); model's native ceiling is 32K |
+| VLM (`lfm3-vl-2b`) | **16384** | Peak request ≈ 8–10K (prompt + page image tokens + Markdown output) |
 
 **Why tool results dominate.** `AgentLoop` appends every tool result of the run to
 `toolResultTurns` and sends the whole list on each iteration; only *history* is capped by
@@ -44,7 +44,39 @@ speedup with no quality loss (1.00 → 0.98 avg judge score, within noise).
 Set GPU Offload to **all layers** for every model on a 12 GB card. Any layer on
 CPU costs several × decode speed. Approximate Q4/Q6 weights: 9B ≈ 5–6 GB,
 12–14B ≈ 7–9 GB, e4b ≈ 3–4 GB, gpt-oss-20b (judge) ≈ 12 GB (spills some layers
-to CPU — judging is slower; expected, not a bug).
+to CPU — judging is slower; expected, not a bug). Exception: models too large
+to fit at all — for MoE models see the cpu-moe section below.
+
+### Oversized MoE models: cpu-moe offload + expert cache
+
+The all-layers rule breaks when the model physically cannot fit — e.g.
+`gemma-4-26b-a4b-qat` (~14–15 GB at Q4_0) on a 12 GB card. For **MoE** models
+the better split is: dense tensors (attention, embeddings, shared experts)
+fully on GPU, expert weights streamed from system RAM, hot experts cached in
+VRAM. Expert weights dominate MoE size but only the active ones (~4B of 26B
+here) are read per token, so CPU residency costs far less than for dense
+layers.
+
+Configuration (validated 2026-11-26 on RTX 4080 12 GB):
+
+- **GPU offload: max/all** — after experts are forced out, the dense remainder
+  (~5 GB incl. KV at 40960 context, 1 slot) fits easily.
+- **cpu-moe layers: slider maximum** — forces all expert tensors to system RAM;
+  overshooting the true layer count clamps harmlessly.
+- **MoE expert cache: 4096–5120 MiB** — the critical knob. Measured decode:
+  7.1 tok/s dense partial offload → 6.7 cpu-moe with no cache → **15.6 tok/s
+  with 5120 MiB cache**; 13.3 tok/s sustained over 3.3K-token generations;
+  ~400 tok/s prompt ingestion. Leave ≥1–1.5 GB VRAM headroom for activations
+  on long prompts.
+- **q8_0 K/V cache quantization and low slot count** free VRAM for the cache —
+  but note they only *free* memory: with a manually pinned layer count nothing
+  automatically spends it, and quantization alone slightly *costs* speed.
+- CPU thread pool matters: experts are computed CPU-side; 7 threads
+  bottlenecked, 15 performed better.
+- Watch for the load-log warning about mmap with CPU tensor overrides; the
+  first generation after load is cold (pages experts from disk, ~2× slower) —
+  warm the model with one throwaway generation before measuring or running
+  evals.
 
 ### Speculative decoding (Qwen MTP)
 
